@@ -1,0 +1,12 @@
+flask>=3.0
+requests>=2.31
+cryptography>=42
+python-dotenv>=1.0
+psutil>=6.0
+numpy>=1.26
+ddgs>=9.0
+playwright>=1.62,<1.63
+mcp>=1.26,<2
+huggingface_hub>=0.24
+tokenizers>=0.22,<0.23
+psycopg[binary]>=3.3,<4

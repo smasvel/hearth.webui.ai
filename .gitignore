@@ -1,0 +1,25 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+certs/
+.env
+data/
+
+.env.postgres
+
+# Local credentials and runtime state
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.log
+
+# Local tooling artifacts
+.claude/
+.playwright-mcp/
+.pytest_cache/
+scratchpad_test/

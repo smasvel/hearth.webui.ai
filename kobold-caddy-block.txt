@@ -1,0 +1,10 @@
+
+192.0.2.10:8446, hearth-host:8446, localhost:8446, 127.0.0.1:8446 {
+	tls internal
+
+	route {
+		@authorized header Authorization "Bearer {$HEARTH_BACKEND_TOKEN}"
+		reverse_proxy @authorized localhost:5001
+		respond 401
+	}
+}

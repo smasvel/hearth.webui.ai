@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>DMV Practice Test — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body dmv-body">
+
+        <!-- START SCREEN -->
+        <section id="dmv-start" class="dmv-screen">
+          <div class="console-head">
+            <h1>DMV Practice Test</h1>
+            <p class="hint">
+              Sharpen up before the real thing. Practice questions drawn from the official state
+              driver's handbook, with an explanation after every answer. This is study material —
+              not the official exam.
+            </p>
+          </div>
+
+          <div class="dmv-start-card console-card">
+            <label class="dmv-field-label" for="dmv-state">State</label>
+            <select id="dmv-state" class="panel-input"></select>
+
+            <div id="dmv-state-info" class="dmv-state-info"></div>
+
+            <button id="dmv-start-btn" class="panel-btn dmv-start-btn" type="button">
+              Start practice test
+            </button>
+          </div>
+        </section>
+
+        <!-- QUIZ SCREEN -->
+        <section id="dmv-quiz" class="dmv-screen hidden">
+          <div class="dmv-quiz-topbar">
+            <div class="dmv-progress-meta">
+              <span id="dmv-qnum">Question 1</span>
+              <span id="dmv-score-live" class="dmv-score-live"></span>
+            </div>
+            <div class="dmv-progress-track"><div id="dmv-progress-fill" class="dmv-progress-fill"></div></div>
+          </div>
+
+          <div class="dmv-question-card console-card">
+            <p id="dmv-question" class="dmv-question-text"></p>
+            <div id="dmv-options" class="dmv-options"></div>
+            <div id="dmv-explain" class="dmv-explain hidden"></div>
+            <div class="dmv-quiz-actions">
+              <button id="dmv-next-btn" class="panel-btn hidden" type="button">Next question</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- RESULTS SCREEN -->
+        <section id="dmv-results" class="dmv-screen hidden">
+          <div class="dmv-results-card console-card">
+            <div id="dmv-result-badge" class="dmv-result-badge"></div>
+            <div id="dmv-result-score" class="dmv-result-score"></div>
+            <p id="dmv-result-msg" class="hint"></p>
+            <div class="dmv-results-actions">
+              <button id="dmv-review-btn" class="panel-btn dmv-ghost-btn" type="button">Review answers</button>
+              <button id="dmv-retake-btn" class="panel-btn" type="button">Take another test</button>
+            </div>
+          </div>
+          <div id="dmv-review" class="dmv-review hidden"></div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+  <script src="{{ asset('dmv.js') }}"></script>
+</body>
+</html>

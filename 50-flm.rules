@@ -1,0 +1,9 @@
+// Let user 'HEARTH_USER' (the webui) start/stop/restart flm.service without a password,
+// so the app can coordinate NPU access between FastFlowLM and Lemonade.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        /^flm\.service$/.test(action.lookup("unit") || "") &&
+        subject.user == "HEARTH_USER") {
+        return polkit.Result.YES;
+    }
+});

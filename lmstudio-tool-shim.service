@@ -1,0 +1,13 @@
+[Unit]
+Description=LM Studio tool-calling compatibility shim
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/YOUR_USERNAME/ai_projects/ai-webui
+ExecStart=/home/YOUR_USERNAME/ai_projects/ai-webui/.venv/bin/python /home/YOUR_USERNAME/ai_projects/ai-webui/lmstudio_tool_shim.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

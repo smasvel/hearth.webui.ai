@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "id": "QWEN35_27B_TEXT",
+  "display_name": "Qwen3.8-27B Q4NX Text",
+  "architecture": "Qwen3_5ForConditionalGeneration",
+  "converter_profile": "QWEN35_27B",
+  "runtime": {
+    "family": "qwen3.5",
+    "tag": "qwen3.5:27b",
+    "minimum_version": "1.0.2",
+    "xclbin_directory": "Qwen3.8-27B-NPU2",
+    "abi": "unpublished-qwen3.5-npu2",
+    "host_libraries": [
+      "libqwen3_5vl_npu.so",
+      "liblm_head.so",
+      "libq4_npu_eXpress.so"
+    ]
+  },
+  "capabilities": {
+    "text": true,
+    "vision": false,
+    "mtp": false,
+    "default_context_length": 32768,
+    "architecture_max_context_length": 262144
+  },
+  "weights": {
+    "format": "Q4NX",
+    "quantization": "mixed Q4_1/Q8_0",
+    "q4_block_shape": [32, 256, 5120],
+    "q8_block_shape": [32, 256, 8704],
+    "lm_head_packed_shape": [7760, 20, 8704],
+    "source_identity_policy": "GGUF architecture, dimensions, and tensor coverage are validated; repository identity is not inferred from a filename"
+  },
+  "dimensions": {
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "num_hidden_layers": 64,
+    "full_attention_interval": 4,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "linear_num_key_heads": 16,
+    "linear_num_value_heads": 48,
+    "linear_key_head_dim": 128,
+    "linear_value_head_dim": 128,
+    "vocab_size": 248320
+  },
+  "package_files": [
+    "model.q4nx",
+    "tokenizer.json",
+    "config.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+    "conversion.json",
+    "installation.json"
+  ],
+  "compatibility_manifest": "compatibility.json",
+  "config_fields": [
+    "addr_qk",
+    "addr_kv"
+  ],
+  "kernels": {
+    "layer.xclbin": {
+      "policy": "new-build",
+      "reason": "Dimension-specific fused layer for hidden=5120, ffn=17408, Q heads=24, linear V heads=48"
+    },
+    "lm_head.xclbin": {
+      "policy": "new-build",
+      "reason": "Dimension-specific vocabulary projection for 5120x248320"
+    },
+    "GateDeltaNet_prefill.xclbin": {
+      "policy": "new-build-or-validated-reuse",
+      "reason": "A v1.0.2 reuse candidate only; 48 linear value heads and SSM width 6144 are untested"
+    },
+    "conv.xclbin": {
+      "policy": "new-build-or-validated-reuse",
+      "reason": "A same-generation v1.0.2 reuse candidate; never mix with installed v0.9.45 kernels"
+    },
+    "attn.xclbin": {
+      "policy": "validated-reuse-allowed",
+      "reason": "Binary is shared by supported Qwen3.5 sizes, but Q=24 remains outside published coverage"
+    },
+    "mm.xclbin": {
+      "policy": "validated-reuse-allowed",
+      "reason": "Binary is shared by supported Qwen3.5 sizes; runtime ABI validation is still mandatory"
+    }
+  },
+  "validation_gates": [
+    "kernel-sha256",
+    "runtime-abi",
+    "fixed-prompt-logits",
+    "deterministic-short-decode",
+    "32768-token-soak"
+  ]
+}

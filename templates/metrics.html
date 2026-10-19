@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Metrics — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab active" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left:auto;">
+          <select id="range" class="panel-input" style="width:auto;">
+            <option value="1">Last hour</option>
+            <option value="24" selected>Last 24h</option>
+            <option value="168">Last 7 days</option>
+            <option value="0">All time</option>
+          </select>
+          <button id="refresh" class="panel-btn" type="button">Refresh</button>
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Performance metrics</h1>
+          <p class="hint">
+            Every inference request — webui chat, OpenCode, and VSCode/Continue — with response
+            time, request/ask type, tokens and NPU TOPS. Chat rows have exact tokens &amp; TOPS;
+            LAN-tool rows (via the Caddy proxy) carry timing, type, source, backend and status.
+          </p>
+        </div>
+
+        <div id="kpis" class="metric-kpis"></div>
+
+        <div class="console-grid">
+          <div class="console-card span-all">
+            <h2>Model performance and coding report</h2>
+            <p class="hint">Generation requests in the selected time range, grouped by model and backend.
+              Errors count recorded HTTP failures; HTTP success does not establish coding correctness.
+              Coding accuracy is the pass rate of manually reviewed coding requests. Mark Pass or Fail in Recent requests after checking the result.
+              Unreviewed requests are excluded. Missing measurements appear as —; sample counts show coverage.</p>
+            <div class="metric-table-wrap">
+              <table class="console-table metric-table">
+                <thead><tr><th>Model</th><th>Backend</th><th class="num">Requests</th>
+                  <th class="num">Input tokens</th><th class="num">Generated tokens</th><th class="num">Token samples</th>
+                  <th class="num">Avg tok/s</th><th class="num">Speed samples</th><th class="num">Avg response (s)</th>
+                  <th class="num">HTTP success</th><th class="num">4xx</th><th class="num">5xx</th><th class="num">Unknown status</th>
+                  <th class="num">Error rate</th><th class="num">Coding requests</th><th class="num">Coding HTTP errors</th>
+                  <th class="num">Coding accuracy</th><th class="num">Reviewed</th></tr></thead>
+                <tbody id="model-report"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="console-card span-all">
+            <h2>Live developer logs <span id="live-count" class="hint"></span>
+              <span id="npu-status" class="metric-npu-status"></span>
+            </h2>
+            <p class="hint">Timestamped request lifecycle logs, updated every second and retained for two days —
+              Hearth chat, plus any named client (including market_analysis) going through Lemonade or FastFlowLM.
+              Active rows update token counts and throughput in place; completed and failed rows remain available
+              for diagnosis.
+              Streaming tokens right now are visible for Hearth chat, plus OpenCode/Continue
+              traffic through Lemonade or FastFlowLM (their LAN-facing shims report it directly). LM Studio/vLLM/
+              KoboldCPP LAN traffic still has no per-token visibility at the proxy layer, see Help. Each row also
+              shows whether it's actually running on the NPU — Lemonade serves several non-NPU recipes too
+              (llamacpp/GGUF, whisper, embeddings), so a model's name alone isn't a reliable signal (confirmed
+              live: a Lemonade model literally named "...-Coder-NPU" turned out to be a plain GGUF/llamacpp model).</p>
+            <div id="live-feed" class="metric-live-feed metric-dev-log" aria-live="polite"></div>
+          </div>
+          <div class="console-card span-all">
+            <h2>Requests over time <span id="series-tokens" class="hint"></span></h2>
+            <div id="series" class="metric-timeline"></div>
+          </div>
+          <div class="console-card">
+            <h2>By source</h2>
+            <div id="by-source" class="metric-bars"></div>
+          </div>
+          <div class="console-card">
+            <h2>By backend</h2>
+            <div id="by-backend" class="metric-bars"></div>
+          </div>
+          <div class="console-card">
+            <h2>By type of ask</h2>
+            <div id="by-type" class="metric-bars"></div>
+          </div>
+          <div class="console-card span-all">
+            <h2>Recent requests</h2>
+            <div class="metric-filters">
+              <select id="f-source" class="panel-input" data-all-label="All sources"><option value="">All sources</option></select>
+              <select id="f-backend" class="panel-input" data-all-label="All backends"><option value="">All backends</option></select>
+              <select id="f-type" class="panel-input" data-all-label="All types"><option value="">All types</option></select>
+              <select id="f-status" class="panel-input">
+                <option value="">All statuses</option>
+                <option value="ok">OK (2xx/3xx)</option>
+                <option value="warn">Client error (4xx)</option>
+                <option value="err">Server error (5xx)</option>
+              </select>
+              <input id="f-model" class="panel-input" type="text" placeholder="Filter by model…" autocomplete="off" />
+              <button id="f-clear" class="panel-btn" type="button">Clear filters</button>
+            </div>
+            <div class="metric-table-wrap">
+              <table class="console-table metric-table">
+                <thead>
+                  <tr>
+                    <th class="num">ID</th><th>Time</th><th>Source</th><th>Backend</th><th>Model</th>
+                    <th>Type</th><th>Ask</th><th class="num">Response&nbsp;(s)</th>
+                    <th class="num">Prompt</th><th class="num">Output</th><th class="num">Total</th>
+                    <th class="num">Tok/s</th><th class="num">TOPS</th><th class="num">NPU&nbsp;%</th>
+                    <th>NPU served</th><th class="num">Status</th><th>Client IP</th><th>User</th><th>Coding review</th>
+                  </tr>
+                </thead>
+                <tbody id="recent"></tbody>
+              </table>
+            </div>
+            <div class="metric-pagination">
+              <span id="recent-count" class="hint"></span>
+              <div class="metric-pagination-controls">
+                <button id="page-prev" class="panel-btn" type="button">&larr; Prev</button>
+                <span id="page-indicator" class="hint"></span>
+                <button id="page-next" class="panel-btn" type="button">Next &rarr;</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <nav class="metrics-scroll-controls" aria-label="Page scroll controls">
+    <button id="metrics-scroll-top" type="button" title="Scroll to top" aria-label="Scroll to top">↑</button>
+    <button id="metrics-scroll-bottom" type="button" title="Scroll to bottom" aria-label="Scroll to bottom">↓</button>
+  </nav>
+  <script src="{{ asset('metrics.js') }}"></script>
+</body>
+</html>

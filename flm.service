@@ -1,0 +1,21 @@
+[Unit]
+Description=FastFlowLM NPU server (standalone, OpenAI-compatible)
+Documentation=https://github.com/FastFlowLM/FastFlowLM
+After=network-online.target
+
+[Service]
+Type=simple
+User=HEARTH_USER
+SupplementaryGroups=render
+WorkingDirectory=/opt/fastflowlm
+Environment=LD_LIBRARY_PATH=/opt/fastflowlm/lib
+Environment=HOME=/home/HEARTH_USER
+LimitMEMLOCK=infinity
+# MiniCPM uses its 256K maximum; models with a verified kernel limit retain 8K.
+ExecStart=/path/to/ai-webui/.venv/bin/python /path/to/ai-webui/flm_serve.py
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

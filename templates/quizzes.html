@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Quiz Builder — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <h2 class="console-title">Quiz Builder</h2>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Build your own practice tests</h1>
+          <p class="hint">
+            Author a custom deck of multiple-choice questions, save it, then take it in the
+            chat window by typing <code class="inline-code">start &lt;deck name&gt; test</code>.
+            Your decks are private to your account. Prefer to skip the typing? In chat you can
+            also say <code class="inline-code">quiz me on &lt;any topic&gt;</code> and the loaded
+            model will generate one for you.
+          </p>
+        </div>
+
+        <div class="console-grid">
+          <div class="console-card span-all">
+            <h2>New deck</h2>
+            <div class="download-row" style="margin-bottom:14px;">
+              <input id="deck-name" class="panel-input" type="text" placeholder="Deck name — e.g. AWS Solutions Architect" autocomplete="off" />
+            </div>
+
+            <div id="questions"></div>
+
+            <div class="quizb-actions">
+              <button id="add-q" class="panel-btn" type="button">+ Add question</button>
+              <button id="save-deck" class="panel-btn primary" type="button">Save deck</button>
+              <span id="save-msg" class="hint"></span>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Your decks</h2>
+            <div id="deck-list"><p class="hint">Loading…</p></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <template id="q-template">
+    <div class="quizb-q console-card">
+      <div class="quizb-q-head">
+        <span class="quizb-q-num">Question</span>
+        <button class="quizb-remove" type="button" title="Remove question">Remove</button>
+      </div>
+      <textarea class="panel-input quizb-qtext" rows="2" placeholder="Question text"></textarea>
+      <div class="quizb-options"></div>
+      <input class="panel-input quizb-explain" type="text" placeholder="Explanation (optional) — why the correct answer is right" />
+    </div>
+  </template>
+
+  <script src="{{ asset('quizzes.js') }}"></script>
+</body>
+</html>

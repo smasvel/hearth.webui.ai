@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "profile": "QWEN35_27B_TEXT",
+  "runtime_tag": "qwen3.5:27b",
+  "installed_weight": null,
+  "binding": "symlink-or-hardlink",
+  "ready": false
+}

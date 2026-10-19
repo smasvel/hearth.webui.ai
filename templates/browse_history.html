@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>AI Browser History — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab active" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>AI Browser History</h1>
+          <p class="hint">
+            Every page the AI's headless Chrome browser actually visited — live searches,
+            explicit browse requests, pasted URLs, and shopping price checks — newest first.
+            Failed visits are listed too, dimmed: the AI tried that link and it didn't load.
+          </p>
+        </div>
+
+        <div class="console-card span-all">
+          <div class="console-toolbar">
+            <input id="history-search" class="panel-input" type="search"
+                   placeholder="Search url, title, or the query that led there…" autocomplete="off" />
+            <span id="history-count" class="toolbar-meta"></span>
+          </div>
+
+          <table class="console-table">
+            <thead>
+              <tr>
+                <th>Visited</th>
+                <th>Page</th>
+                <th>Triggered by (chat query)</th>
+                <th>Source</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="history-rows"></tbody>
+          </table>
+          <p id="history-empty" class="hint hidden" style="margin-top: 14px;">No visits recorded yet.</p>
+
+          <div class="console-pager">
+            <button id="history-prev" class="panel-btn" type="button">&larr; Newer</button>
+            <span id="history-page-label" class="hint"></span>
+            <button id="history-next" class="panel-btn" type="button">Older &rarr;</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="{{ asset('browse_history.js') }}"></script>
+</body>
+</html>

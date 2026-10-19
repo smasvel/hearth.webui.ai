@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>FLM Converter — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab active" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>FLM NPU Converter</h1>
+          <p class="hint">Admin-only engine workspace for converting eligible local GGUF weights into FLM/Q4NX artifacts.</p>
+        </div>
+
+        <div class="console-grid">
+          <section class="console-card span-all">
+            <h2>Convert local GGUF weights</h2>
+            <p class="hint">
+              Current engine-development target: <strong>Qwen3.8-27B text-only Q4NX</strong>
+              using the <code class="inline-code">QWEN35_27B</code> converter profile and
+              <code class="inline-code">qwen3.5</code> runtime family. Validation checks architecture,
+              exact 5120/17408/64 dimensions, and tensor coverage; it does not infer a source repository
+              or NVFP4/MTP capability from the filename.
+            </p>
+            <div id="converter-availability" class="converter-notice">Checking converter&hellip;</div>
+            <form id="converter-form" class="download-form">
+              <label for="converter-source">Local GGUF source</label>
+              <div class="download-row">
+                <select id="converter-source" class="panel-input" required></select>
+                <button id="refresh-models" class="panel-btn" type="button">Refresh</button>
+                <button id="validate-model" class="panel-btn" type="button">Validate</button>
+              </div>
+              <label for="converter-name">Output directory name</label>
+              <input id="converter-name" class="panel-input" type="text" maxlength="100"
+                     pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,99}" required
+                     value="Qwen3.8-27B-Q4NX-Text-FLM" />
+              <div id="validation-result" class="converter-validation hint">Select a model, then validate it.</div>
+              <label class="converter-ack">
+                <input id="kernel-ack" type="checkbox" required />
+                I understand this creates FLM weights only. The model remains blocked until all six
+                kernels, the FastFlowLM host ABI, the exact installed-artifact binding, and numerical/32K
+                acceptance tests are validated.
+              </label>
+              <button id="start-conversion" class="panel-btn" type="submit" disabled>Start conversion</button>
+            </form>
+          </section>
+
+          <section class="console-card span-all">
+            <h2>Conversion job</h2>
+            <div id="conversion-empty" class="hint">No conversion has been started in this server session.</div>
+            <div id="conversion-job" class="download-progress hidden">
+              <div class="download-progress-header">
+                <strong id="conversion-title">Conversion</strong>
+                <div class="download-progress-actions">
+                  <span id="conversion-percent">0%</span>
+                  <button id="cancel-conversion" class="panel-btn danger hidden" type="button">Cancel</button>
+                </div>
+              </div>
+              <div class="progress-bar-track"><div id="conversion-bar" class="progress-bar-fill"></div></div>
+              <div id="conversion-detail" class="download-progress-detail hint"></div>
+              <pre id="conversion-log" class="download-log"></pre>
+            </div>
+          </section>
+
+          <section class="console-card span-all">
+            <h2>27B kernel readiness</h2>
+            <div id="backend-readiness" class="converter-notice">Checking backend profile&hellip;</div>
+            <div id="kernel-readiness-grid" class="converter-kernel-grid"></div>
+            <h3>Current blockers</h3>
+            <ul id="backend-blockers" class="hint"><li>Checking&hellip;</li></ul>
+            <p class="hint">Completed conversions appear on the Models page for visibility, but their Load action remains safely blocked until every readiness gate passes.</p>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="{{ asset('flm_converter.js') }}"></script>
+</body>
+</html>

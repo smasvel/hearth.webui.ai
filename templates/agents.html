@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="csrf-token" content="{{ csrf_token }}" /><script src="{{ asset('csrf.js') }}"></script>
+<title>Agents — Hearth</title><link rel="stylesheet" href="{{ asset('style.css') }}" /></head>
+<body><div class="app"><main class="chat"><header class="chat-header">
+<a class="icon-btn text-icon-btn" href="{{ url_for('index') }}">← Chat</a>
+<nav class="console-tabs"><a class="console-tab active" href="{{ url_for('agents_page') }}">Agents</a><a class="console-tab" href="{{ url_for('models_page') }}">Models</a></nav>
+<span class="hint" style="margin-left:auto">{{ username }}</span></header>
+<div class="console-body"><h1>Assign an agent</h1>
+<p class="hint">Give an agent a project and target. It reads and edits real files, uses OpenCode tools, verifies progress, and continues unfinished work. Assignments run sequentially and survive closing this page or restarting Hearth. Questions and permissions appear here.</p>
+<div class="agent-layout"><section class="console-card"><form id="agent-create" class="agent-form">
+<label>Assignment title<input name="title" class="panel-input" required maxlength="120" placeholder="Build the invoice API" /></label>
+<label>Assigned agent<input name="assignee" class="panel-input" value="Project agent" required maxlength="120" /></label>
+<label>Project folder on this machine<input name="project" class="panel-input" required placeholder="/home/YOUR_USERNAME/AI_Projects/my-project" /></label>
+<label><input name="create_project" type="checkbox" /> Create the project folder if it does not exist</label>
+<label>Model<select id="agent-model" class="panel-input" required></select></label>
+<p class="hint">This OpenCode worker needs at least 16K context for its instructions and tools. Smaller configured models are disabled.</p>
+<label>Goal<textarea name="goal" class="panel-input" rows="5" required maxlength="20000" placeholder="Describe the outcome the agent must achieve."></textarea></label>
+<label>Acceptance criteria<textarea name="criteria" class="panel-input" rows="3" maxlength="10000" placeholder="What must be true when the work is complete?"></textarea></label>
+<label>Verification command (optional; runs automatically)<input name="verification_command" class="panel-input" placeholder="python -m unittest discover -s tests" maxlength="4000" /></label>
+<p class="hint">With a command, completion requires its successful exit. Without one, completion is agent-reported and includes its evidence. Commands run as your local account in the selected working directory; the folder is not a sandbox.</p>
+<label><input name="auto_commands" type="checkbox" /> Allow the agent to run project commands without asking</label>
+<p class="hint">File edits are authorized by assignment. Otherwise shell commands wait for your approval. External-directory requests and loop warnings still require input.</p>
+<div class="agent-budget"><label>Continuation cycles<input name="max_cycles" type="number" min="1" max="1000" value="50" class="panel-input" required /></label>
+<label>Verification timeout (seconds)<input name="verification_timeout" type="number" min="10" max="3600" value="300" class="panel-input" required /></label></div>
+<p class="hint">If the cycle budget is reached or progress repeats three times, the task waits for review. Resume grants 50 more cycles when needed.</p>
+<button class="panel-btn" type="submit" id="agent-assign">Assign and start</button></form>
+<p id="agent-create-status" role="status"></p></section>
+<section class="console-card"><h2>Assignments</h2><div id="agent-list"></div></section></div>
+<section class="console-card" id="agent-detail" hidden><h2 id="agent-title"></h2><p id="agent-status" role="status" aria-live="polite"></p>
+<p id="agent-target" class="hint"></p><pre id="agent-goal" class="agent-output"></pre>
+<div class="model-test-controls"><button class="panel-btn" id="agent-pause">Pause</button><button class="panel-btn" id="agent-resume">Resume</button><button class="panel-btn" id="agent-stop">Stop</button></div>
+<p id="agent-error" role="alert"></p>
+<form id="agent-steer" class="agent-form"><label>Additional instructions<textarea id="agent-steering" class="panel-input" rows="2" maxlength="10000" required></textarea></label><button class="panel-btn" type="submit" id="agent-send-instructions">Send instructions</button></form><div id="agent-prompts"></div>
+<h3>Result and verification</h3><pre id="agent-result" class="agent-output"></pre>
+<h3>Agent activity</h3><div id="agent-messages" class="agent-output"></div>
+<details><summary>Supervisor history</summary><pre id="agent-activity" class="agent-output"></pre></details></section>
+<p id="agent-network" role="status"></p></div></main></div><script src="{{ asset('agents.js') }}"></script></body></html>

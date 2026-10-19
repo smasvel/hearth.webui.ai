@@ -1,0 +1,151 @@
+"""Initialize a new Hearth installation without overwriting existing data or secrets."""
+import argparse
+import getpass
+import os
+from pathlib import Path
+import secrets
+import shutil
+import subprocess
+import sys
+
+from dotenv import dotenv_values, set_key
+from werkzeug.security import generate_password_hash
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
+def write_private(path, content):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'w') as handle:
+        handle.write(content)
+
+
+def prepare_environment(port):
+    env_path = ROOT / '.env'
+    postgres_path = ROOT / '.env.postgres'
+    values = dotenv_values(env_path) if env_path.exists() else {}
+    if values.get('DATABASE_URL') and not postgres_path.exists():
+        raise RuntimeError('An existing DATABASE_URL has no matching .env.postgres. Restore that configuration; setup will not replace it.')
+    if not postgres_path.exists():
+        password = secrets.token_hex(32)
+        write_private(postgres_path, f'POSTGRES_DB=hearth\nPOSTGRES_USER=hearth\nPOSTGRES_PASSWORD={password}\nPOSTGRES_PORT={port}\nDATABASE_URL=postgresql://hearth:{password}@127.0.0.1:{port}/hearth\n')
+    postgres = dotenv_values(postgres_path)
+    if not postgres.get('DATABASE_URL') or not postgres.get('POSTGRES_PASSWORD'):
+        raise RuntimeError('.env.postgres is incomplete; restore its database URL and password.')
+    if values.get('DATABASE_URL') and values['DATABASE_URL'] != postgres['DATABASE_URL']:
+        raise RuntimeError('.env and .env.postgres select different databases. Setup will not switch an existing installation.')
+    if not env_path.exists():
+        write_private(env_path, (ROOT / '.env.example').read_text())
+    if not values.get('DATABASE_URL'):
+        set_key(str(env_path), 'DATABASE_URL', postgres['DATABASE_URL'])
+    if not values.get('FLASK_SECRET_KEY'):
+        set_key(str(env_path), 'FLASK_SECRET_KEY', secrets.token_hex(32))
+    for path in (env_path, postgres_path):
+        os.chmod(path, 0o600)
+    return dotenv_values(env_path)
+
+
+def has_sqlite_data():
+    # Fresh setup must never silently strand an old installation's history.
+    import sqlite3
+    from contextlib import closing
+    for path in (ROOT / 'chat_history.db', *(ROOT / 'data').glob('*.db')):
+        if not path.exists() or not path.stat().st_size:
+            continue
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            for name, in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+                quoted = '"' + name.replace('"', '""') + '"'
+                if conn.execute('SELECT 1 FROM ' + quoted + ' LIMIT 1').fetchone():
+                    return True
+    return False
+
+
+def service_text(root):
+    # ExecStart accepts quoted arguments; WorkingDirectory takes an unquoted
+    # whole-line path. Both interpret percent specifiers.
+    if '\n' in str(root) or '\r' in str(root):
+        raise ValueError('The installation path must not contain newlines.')
+    def quote(value):
+        return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+    return f'''[Unit]
+Description=Hearth local AI web UI
+After=network.target
+
+[Service]
+WorkingDirectory={str(root).replace('%', '%%')}
+ExecStart={quote(root / '.venv/bin/python')} {quote(root / 'app.py')}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+'''
+
+
+def install_service():
+    directory = Path.home() / '.config/systemd/user'
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / 'ai-webui.service'
+    # Preserve customized services from earlier installations.
+    if not path.exists():
+        path.write_text(service_text(ROOT))
+    subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
+    subprocess.run(['systemctl', '--user', 'enable', '--now', 'ai-webui.service'], check=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--no-service', action='store_true', help='Configure the app without installing or starting a user service')
+    parser.add_argument('--admin-username', help='Initial administrator name (default: ADMIN_USERNAME or admin)')
+    parser.add_argument('--admin-password-stdin', action='store_true', help='Read the initial admin password from standard input instead of prompting')
+    parser.add_argument('--postgres-port', type=int, default=55432, help='Host database port for a new configuration')
+    parser.add_argument('--project-name', help='Optional separate Compose project name')
+    args = parser.parse_args()
+    if not 1 <= args.postgres_port <= 65535:
+        parser.error('--postgres-port must be between 1 and 65535')
+    if os.geteuid() == 0:
+        parser.error('Run as your regular user, not sudo; use the host dependency installer for privileged packages.')
+    if not shutil.which('docker'):
+        raise RuntimeError('Install Docker Engine and Compose with deploy/install-host-deps.sh --base-only first.')
+    subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL)
+    existing = dotenv_values(ROOT / '.env')
+    if not existing.get('DATABASE_URL') and has_sqlite_data():
+        raise RuntimeError('Existing SQLite data found. Use tools/cutover_postgres.py to migrate it before running first-time setup.')
+    values = prepare_environment(args.postgres_port)
+    # This process must use the selected configuration even if the caller exported
+    # a different URL for a previous development/test session.
+    os.environ['DATABASE_URL'] = values['DATABASE_URL']
+    compose = ['docker', 'compose', '--env-file', str(ROOT / '.env.postgres'), '-f', str(ROOT / 'compose.yaml')]
+    if args.project_name:
+        compose += ['--project-name', args.project_name]
+    subprocess.run(compose + ['up', '-d', '--wait', 'postgres'], check=True, cwd=ROOT)
+    import database
+    import users_store
+    database.init_schema()
+    if users_store.count_users() == 0:
+        username = args.admin_username or values.get('ADMIN_USERNAME') or 'admin'
+        password_hash = values.get('ADMIN_PASSWORD_HASH')
+        if not password_hash:
+            if args.admin_password_stdin:
+                password = sys.stdin.readline().rstrip('\r\n')
+            else:
+                password = getpass.getpass(f'Password for {username}: ')
+                if password != getpass.getpass('Confirm password: '):
+                    raise ValueError('Passwords do not match; rerun setup to finish creating the admin account.')
+            if not password:
+                raise ValueError('Admin password must not be empty.')
+            password_hash = generate_password_hash(password)
+        users_store.seed_user_with_hash(username, password_hash, 'admin')
+        set_key(str(ROOT / '.env'), 'ADMIN_USERNAME', username)
+        set_key(str(ROOT / '.env'), 'ADMIN_PASSWORD_HASH', password_hash)
+        print(f'Created administrator {username}.')
+    else:
+        print('Existing user accounts preserved.')
+    if not args.no_service:
+        install_service()
+    print('Setup complete. Open https://localhost:5443' if not args.no_service else 'Database and administrator ready. Start Hearth with .venv/bin/python app.py')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,3 @@
+# Hearth may run exactly this read-only Lynis audit without a password.
+# All other sudo commands for HEARTH_USER retain their normal password requirement.
+HEARTH_USER ALL=(root) NOPASSWD: /usr/sbin/lynis audit system --quick --no-colors

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Users — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab active" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Users</h1>
+          <p class="hint">
+            Passwords are hashed (never stored or shown in plain text) — an admin can reset a
+            user's password to a new one, but can never retrieve their existing one.
+          </p>
+        </div>
+
+        <div class="console-grid">
+          <div class="console-card">
+            <h2>Add a user</h2>
+            <form id="add-user-form" class="download-form">
+              <input id="new-username" class="panel-input" type="text" placeholder="Username" autocomplete="off" />
+              <input id="new-password" class="panel-input" type="password" placeholder="Password (min 8 characters)" autocomplete="new-password" />
+              <select id="new-role" class="panel-input">
+                <option value="user">User (no model management)</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button id="add-user-btn" class="panel-btn" type="submit">Add user</button>
+            </form>
+          </div>
+
+          <div id="caddy-snippet-card" class="console-card span-all hidden">
+            <div class="users-list-header">
+              <h2>LAN token for <span id="caddy-snippet-username"></span></h2>
+              <button id="caddy-snippet-close" class="icon-btn" title="Close">&times;</button>
+            </div>
+            <p class="hint">
+              A personal credential for the LAN OpenAI-compatible endpoints (same ports
+              OpenCode/Continue use) — this app can't write to Caddy's own config file, so
+              paste this in yourself and reload Caddy. See the Help panel for background on
+              why each client gets its own token instead of one shared secret.
+            </p>
+            <div class="code-copy-wrap">
+              <pre id="caddy-snippet-text" class="download-log"></pre>
+              <button id="caddy-snippet-copy" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+          </div>
+
+          <div class="console-card">
+            <div class="users-list-header">
+              <h2>All users</h2>
+              <button id="refresh-users" class="icon-btn" title="Refresh user list">&#8635;</button>
+            </div>
+            <div id="users-list" class="model-list">
+              <p class="hint">Loading users&hellip;</p>
+            </div>
+            <div id="users-pagination" class="console-pager"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="{{ asset('users.js') }}"></script>
+</body>
+</html>

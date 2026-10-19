@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Download Models — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab active" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Download Models</h1>
+            <label><input id="tools-only" type="checkbox" /> Tool calling only (all searches)</label>
+            <p class="hint">Shows declared tool calling support. Models with unknown support are excluded. Backend configuration may also be required.</p>
+
+          <p class="hint">
+            Search Ryzen AI (Lemonade)'s catalog or Hugging Face and download directly, or
+            resolve-and-download by exact name. Once downloaded, loading/unloading/deleting a
+            model still happens from the Models panel in the chat window.
+          </p>
+        </div>
+
+        <div id="getting-started-banner" class="getting-started-banner hidden">
+          <button id="getting-started-dismiss" class="getting-started-dismiss" type="button" title="Dismiss" aria-label="Dismiss">&times;</button>
+          <h2 style="margin-top: 0;">New to Hearth? Start here.</h2>
+          <p class="hint">
+            <strong>Ryzen AI (Lemonade)</strong>, <strong>vLLM</strong>, and
+            <strong>FastFlowLM (NPU)</strong> below already list ready-to-download models the
+            moment you open this page — no search needed. Look for the
+            <span class="badge staff-pick" style="vertical-align: middle;">staff pick</span> tag on
+            a card for a safe first choice.
+          </p>
+          <p class="hint">
+            <strong>LM Studio</strong> and <strong>KoboldCPP</strong> only search Hugging Face on
+            demand (they have no built-in catalog to browse), so their sections start empty — try
+            searching <code class="inline-code">qwen2.5 3b instruct</code> in either to get a
+            solid, fast general-purpose model to start with.
+          </p>
+        </div>
+
+        <div id="download-progress" class="download-progress hidden">
+          <div class="download-progress-header">
+            <strong id="download-progress-title">Downloading&hellip;</strong>
+            <div class="download-progress-actions">
+              <span id="download-progress-pct">0%</span>
+              <button id="download-cancel-btn" class="panel-btn danger hidden" type="button">
+                Cancel &amp; clear partial files
+              </button>
+            </div>
+          </div>
+          <div class="progress-bar-track"><div id="download-progress-bar" class="progress-bar-fill"></div></div>
+          <div id="download-progress-detail" class="download-progress-detail hint"></div>
+          <pre id="download-progress-log" class="download-log hidden"></pre>
+        </div>
+
+        <div class="console-grid">
+          <div class="console-card span-all">
+            <h2>Local AI video model</h2>
+            <div class="model-card2{% if video_model.state == 'loaded' %} loaded{% endif %}">
+              <div class="model-card2-main">
+                <div class="model-card2-name">{{ video_model.id }}</div>
+                <div class="model-card2-meta">
+                  {{ video_model.publisher }} · {{ video_model.quantization }} · video ·
+                  {{ '%.1f'|format(video_model.size_gb) }} GB
+                </div>
+              </div>
+              <span class="badge {{ 'loaded' if video_model.downloaded else 'not-loaded' }}">
+                {{ 'downloaded · ready' if video_model.downloaded else 'not downloaded' }}
+              </span>
+            </div>
+            <p class="hint">
+              Installed as a three-file ComfyUI pipeline (Wan diffusion model, UMT5 text encoder,
+              and Wan VAE). It loads automatically when chat detects a request such as
+              <strong>“create a video of…”</strong>; it is intentionally excluded from the chat
+              model selector because it generates MP4 video rather than text.
+            </p>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Search all backends</h2>
+            <p class="hint">
+              Search once to compare every supported backend. Each result identifies its
+              backend, model format, execution compatibility, download size and status, and
+              links to the verified model source used for downloading.
+            </p>
+            <form id="all-search-form" class="download-form">
+              <div class="download-row">
+                <input id="all-search-input" class="panel-input" type="text"
+                       placeholder="e.g. qwen coder, llama 3, phi" autocomplete="off" />
+                <button class="panel-btn" type="submit">Search all</button>
+              </div>
+            </form>
+            <div id="all-results" class="result-grid">
+              <p class="hint">Search every backend from one place.</p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Ryzen AI / Lemonade — catalog &amp; Hugging Face (GGUF)</h2>
+            <p class="hint">
+              Searches Lemonade's own curated catalog (llamacpp/GGUF chat models, embeddings,
+              image generation, and more) <strong>and</strong> live results from Hugging Face —
+              the same public search Lemonade's own app uses, so it finds real, current models
+              its ~111 built-in entries don't carry (e.g. "glm 5.2"). Each result shows its real download size (the default quantization for GGUF repos),
+              last-updated date,
+              likes/downloads, and a short description from the model's README.
+            </p>
+            <form id="catalog-search-form" class="download-form">
+              <div class="download-row">
+                <input id="catalog-search-input" class="panel-input" type="text" placeholder="e.g. qwen, llama, embed, whisper" autocomplete="off" />
+                <button id="catalog-search-btn" class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="catalog-results" class="result-grid">
+              <p class="hint">Loading catalog&hellip;</p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>vLLM — suggested models &amp; Hugging Face</h2>
+            <p class="hint">
+              Below are <strong>suggested models vetted to load on vLLM</strong> — full Hugging
+              Face repos (safetensors, supported architectures, non-gated), smallest/fastest
+              first, since this is a CPU-only box. vLLM can't serve GGUF models (those go through
+              Ryzen AI / LM Studio) — sticking to these avoids the "GGUF won't load" failure. Or
+              search Hugging Face for any other causal-LM repo. Real file sizes are shown up
+              front; downloading caches the repo, and serving it happens from the Models panel's
+              Load button (see Help).
+            </p>
+            <form id="vllm-search-form" class="download-form">
+              <div class="download-row">
+                <input id="vllm-search-input" class="panel-input" type="text" placeholder="e.g. qwen2.5, llama, phi" autocomplete="off" />
+                <button id="vllm-search-btn" class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="vllm-results" class="result-grid">
+              <p class="hint">Search Hugging Face for a model to download.</p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>LM Studio — search Hugging Face (GGUF)</h2>
+            <p class="hint">
+              LM Studio has no catalog API of its own, but it installs GGUF repos straight
+              from Hugging Face — so this searches the same public GGUF index and downloads
+              the chosen repo via <code class="inline-code">lms get</code>, auto-picking a
+              quantization. Real download sizes shown up front. Or, below, resolve an exact
+              or fuzzy name / full HF URL directly.
+            </p>
+            <form id="lmstudio-search-form" class="download-form">
+              <div class="download-row">
+                <input id="lmstudio-search-input" class="panel-input" type="text" placeholder="e.g. qwen coder, llama, phi" autocomplete="off" />
+                <button id="lmstudio-search-btn" class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="lmstudio-results" class="result-grid">
+              <p class="hint">Search Hugging Face for a GGUF model to download.</p>
+            </div>
+            <form id="lmstudio-download-form" class="download-form" style="margin-top: 12px;">
+              <div class="download-row">
+                <input id="lmstudio-download-query" class="panel-input" type="text" placeholder="or resolve by exact name / full HF URL — e.g. qwen3-coder" autocomplete="off" />
+                <button id="lmstudio-download-btn" class="panel-btn" type="submit">Get</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>KoboldCPP — search Hugging Face (GGUF)</h2>
+            <p class="hint">
+              KoboldCPP is a llama.cpp server that loads a single GGUF at a time. Same source
+              as LM Studio above — search Hugging Face's GGUF index and download the chosen
+              repo (a balanced quant is auto-picked). Real download sizes shown up front; once
+              downloaded, load it from the Models panel.
+            </p>
+            <form id="kobold-search-form" class="download-form">
+              <div class="download-row">
+                <input id="kobold-search-input" class="panel-input" type="text" placeholder="e.g. qwen coder, llama, mistral" autocomplete="off" />
+                <button id="kobold-search-btn" class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="kobold-results" class="result-grid">
+              <p class="hint">Search Hugging Face for a GGUF model to download.</p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Ryzen AI NPU (FastFlowLM) — catalog</h2>
+            <p class="hint">
+              FastFlowLM ships its own fixed NPU catalog (searched here directly, not Hugging
+              Face). Each result shows its real on-NPU size and whether it's already
+              downloaded. Or, below, pull an exact tag by name.
+            </p>
+            <form id="npu-search-form" class="download-form">
+              <div class="download-row">
+                <input id="npu-search-input" class="panel-input" type="text" placeholder="e.g. qwen, llama, deepseek, gpt-oss" autocomplete="off" />
+                <button id="npu-search-btn" class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="npu-results" class="result-grid">
+              <p class="hint">Loading NPU catalog&hellip;</p>
+            </div>
+            <form id="npu-download-form" class="download-form" style="margin-top: 12px;">
+              <div class="download-row">
+                <input id="npu-download-query" class="panel-input" type="text" placeholder="or pull an exact tag — e.g. qwen3.5:9b" autocomplete="off" />
+                <button id="npu-download-btn" class="panel-btn" type="submit">Get</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="{{ asset('downloads.js') }}"></script>
+</body>
+</html>

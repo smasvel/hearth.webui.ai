@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Models — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body class="models-page">
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab active" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left:auto;">
+          <button id="refresh" class="panel-btn" type="button">Refresh</button>
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Models</h1>
+          <p class="hint">
+            View models already on disk and their current state, grouped by backend. Chat models
+            can be loaded, unloaded, and deleted; media models load automatically when requested. Need a different
+            model? Get it from the <a href="{{ url_for('downloads_page') }}">Downloads page</a>.
+          </p>
+        </div>
+
+        <!-- summary strip -->
+        <div id="model-summary" class="model-summary"></div>
+
+        <div class="model-toolbar">
+          <input id="model-search" class="panel-input" type="search" aria-label="Filter models by name" placeholder="Filter models by name…" autocomplete="off" />
+          <label class="model-warning-filter"><input id="model-warnings-only" type="checkbox" /> Resource warnings only</label>
+          <details class="advanced model-load-opts">
+            <summary>Load options (advanced)</summary>
+            <div class="model-load-opts-grid">
+              <label>Identifier <input id="opt-identifier" class="panel-input" type="text" placeholder="defaults to model key" /></label>
+              <label>Context length <input id="opt-context" class="panel-input" type="number" placeholder="default" min="1" /></label>
+              <label>TTL (seconds) <input id="opt-ttl" class="panel-input" type="number" placeholder="none" min="1" /></label>
+              <label>GPU offload <input id="opt-gpu" class="panel-input" type="text" placeholder="max / off / 0-1" /></label>
+            </div>
+            <p class="hint">Applied on the next Load. Most backends ignore fields that don't apply to them.</p>
+          </details>
+        </div>
+
+        <p class="hint model-resource-hint">Resource warnings identify recorded incidents on this machine.
+          Expand a warning to see the measurements, conditions, and log dates. Unmarked models have no reviewed warning.</p>
+
+        <section class="console-card model-test-panel" id="model-tests" aria-labelledby="model-tests-heading">
+          <h2 id="model-tests-heading">Model tests &amp; automatic repair</h2>
+          <p class="hint">Run chat, streaming, tool choices, typed arguments, file-tool contracts,
+            long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures,
+            large-code input, and context-limit checks. Question answers and tool results are simulated.
+            Dependent steps stop if an earlier step fails. Models are tested sequentially; local
+            loads unload other local chat models and leave the final local model loaded.
+            Returned tools are inspected; no generated shell commands or
+            changes to your projects are executed.</p>
+          <div class="model-test-controls">
+            <label><input id="tests-auto-repair" type="checkbox" checked /> Automatically try verified compatibility repairs</label>
+            <button id="tests-all" type="button" class="panel-btn">Test all chat models</button>
+            <button id="tests-cancel" type="button" class="panel-btn" disabled>Cancel after current request</button>
+            <label>Reports <select id="tests-history" class="panel-input" aria-label="Previous test reports"></select></label>
+            <a id="tests-download" class="panel-btn" hidden>Download report</a>
+          </div>
+          <p class="hint">Automatic repair applies a reversible per-model tool-instruction profile,
+            reruns failed checks, and keeps it only if results improve. It cannot retrain a model
+            or repair arbitrary application code. Repairs affect Hearth requests and local
+            compatibility proxies; clients connecting directly to remote servers need their own
+            configuration. Reports keep the latest 30 runs. Use Reset repair on a model card to undo it.</p>
+          <p id="tests-status" role="status" aria-live="polite">Choose Test tools on a model card, or test all chat models.</p>
+          <div id="tests-repairs" class="hint"></div>
+          <div class="model-test-results" role="region" aria-label="Model test results" tabindex="0"><table id="tests-table" aria-label="Model test results" hidden>
+            <thead><tr><th scope="col">Model</th><th scope="col">Check</th><th scope="col">Mode</th><th scope="col">Attempt</th><th scope="col">Result</th><th scope="col">Seconds</th><th scope="col">Details</th></tr></thead>
+            <tbody id="tests-results"></tbody>
+          </table></div>
+        </section>
+
+        <div id="model-groups" class="model-groups">
+          <p class="hint">Loading models…</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="users-toast" style="display:none;"></div>
+  <script src="{{ asset('model_tests.js') }}"></script>
+  <script src="{{ asset('models.js') }}"></script>
+</body>
+</html>

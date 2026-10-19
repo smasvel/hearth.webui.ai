@@ -1,0 +1,15 @@
+[Unit]
+Description=Hearth LM Studio API compatibility and metrics proxy
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/ai-webui
+ExecStart=/path/to/ai-webui/.venv/bin/python /path/to/ai-webui/lmstudio_shim.py
+ExecStartPost=/path/to/ai-webui/.venv/bin/python /path/to/ai-webui/wire_lmstudio_proxy.py
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

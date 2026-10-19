@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <h1>Chats</h1>
+        <button id="new-chat" class="icon-btn" title="New chat">+</button>
+      </div>
+
+      <div id="chat-history-list" class="model-list">
+        <p class="hint">Loading history&hellip;</p>
+      </div>
+
+      <div class="sidebar-footer">
+        {% if is_admin %}
+        <a href="{{ url_for('settings_page') }}" class="icon-btn text-icon-btn mobile-settings-link"
+           title="Backend settings">Settings</a>
+        {% endif %}
+        <span id="backend-status" class="status-dot" title="LM Studio connection"></span>
+        <span id="backend-status-text" class="hint"></span>
+        <span class="hint" style="margin-left: auto;">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <button id="menu-toggle" class="icon-btn menu-toggle" title="Menu" aria-label="Menu">&#9776;</button>
+        <select id="model-select">
+          <option value="">No model loaded</option>
+        </select>
+        {% if is_admin %}
+        <div id="system-stats" class="system-stats" title="System CPU / RAM / disk usage">
+          <span id="stat-cpu">CPU –</span>
+          <span id="stat-ram">RAM –</span>
+          <span id="stat-disk">Disk –</span>
+          <span id="stat-temp"></span>
+        </div>
+        {% endif %}
+        <div class="chat-header-actions">
+          {% if is_admin %}
+          <a href="{{ url_for('agents_page') }}" class="icon-btn text-icon-btn" title="Assign persistent project work">Agents</a>
+          <a href="{{ url_for('models_page') }}" class="icon-btn text-icon-btn" title="Manage models">Models</a>
+          <a href="{{ url_for('downloads_page') }}" class="icon-btn text-icon-btn" title="Download models">Downloads</a>
+          <a href="{{ url_for('browse_history_page') }}" class="icon-btn text-icon-btn" title="AI browser history">History</a>
+          <a href="{{ url_for('metrics_page') }}" class="icon-btn text-icon-btn" title="Performance metrics">Metrics</a>
+          <button id="security-scan-btn" class="icon-btn text-icon-btn" type="button"
+                  title="Run a read-only host security scan in admin chat">Security</button>
+          <a href="{{ url_for('users_page') }}" class="icon-btn text-icon-btn" title="Manage users">Users</a>
+          <a href="{{ url_for('settings_page') }}" class="icon-btn text-icon-btn" title="Backend settings">Settings</a>
+          <a href="{{ url_for('quizzes_page') }}" class="icon-btn text-icon-btn" title="Build your own practice tests (admin)">Quizzes</a>
+          {% endif %}
+          <button id="help-toggle" class="icon-btn text-icon-btn" title="Help">Help</button>
+          <label class="hint temp-label" for="temperature">temp</label>
+          <input id="temperature" type="number" step="0.1" min="0" max="2" value="0.7" />
+          <button id="clear-chat" class="icon-btn" title="Clear conversation">&#128465;</button>
+        </div>
+
+        <div id="help-panel" class="models-panel help-panel hidden">
+          <div class="sidebar-header">
+            <h1>Help</h1>
+          </div>
+
+          <p class="hint">
+            Connect an AI coding tool (Continue, OpenCode) running on another PC on this network to
+            a model served on this machine. None of LM Studio, Lemonade (Ryzen AI NPU), vLLM,
+            KoboldCPP, or FastFlowLM listen beyond this machine on their own — each goes through its
+            own Caddy reverse-proxy port instead (<code class="inline-code">/etc/caddy/Caddyfile</code>,
+            enforces a real bearer token, unlike any of the servers' own unenforced/absent API key):
+            <strong>port {{ help.ports.lmstudio }}</strong> for LM Studio, <strong>port {{ help.ports.lemonade }}</strong> for Lemonade, <strong>port {{ help.ports.vllm }}</strong> for vLLM,
+            <strong>port {{ help.ports.kobold }}</strong> for KoboldCPP, <strong>port {{ help.ports.fastflowlm }}</strong> for FastFlowLM (the Ryzen AI NPU
+            runtime run standalone). They all share the same CA cert below (Step 1), but
+            OpenCode and Continue each get their own dedicated bearer token (not a shared
+            secret) — baked into their respective auto-generated configs below (Step 2) — so
+            traffic from each tool is identified by the credential it actually presents, not a
+            self-reported (and spoofable) User-Agent string.
+          </p>
+          <p class="help-heading">Client tracking with X-Hearth-Client</p>
+          <p class="hint">
+            <strong>LM Studio tool calls:</strong> the authenticated API supports
+            <code class="inline-code">tool_choice: auto</code>,
+            <code class="inline-code">required</code>, and named-function choices through
+            Hearth's compatibility proxy. For reasoning models such as Qwen, allow at least
+            1,024 output tokens for tool requests: reasoning and function arguments share
+            the same output budget. The proxy preserves your requested token cap.
+          </p>
+          <p class="hint"><strong>Persistent agents:</strong> open <a href="{{ url_for('agents_page') }}">Agents</a>, assign a project folder, goal, acceptance criteria and model, then start. Work continues after closing the browser and reconnects after Hearth restarts. Answer questions and permissions on the Agents page; pause or stop at any time. Supply a verification command for independently checked completion. Without one, completion is agent-reported. Cycle limits and repeated blockers require review and Resume.</p>
+          <p id="help-flm-status" class="hint">{{ help.flm_status }}</p>
+          <p class="hint">
+            <strong>Test and repair models:</strong> open
+            <a href="{{ url_for('models_page') }}#model-tests">Models → Model tests &amp; automatic repair</a>.
+            Use <strong>Test tools</strong> on a chat-model card or <strong>Test all chat models</strong>
+            for a sequential run. Tests include multi-step OpenCode builds, question prompts with
+            single/multiple choices and custom answers, dismissed questions, denied permissions,
+            parallel reads, checkpoint resume, and edit/test recovery. Answers and tool results are simulated;
+            each step checks the model response before continuing. Progress and reports survive
+            closing the browser. Automatic
+            repair tests a reversible compatibility profile against the full suite and keeps it
+            only when failures decrease without introducing regressions. Remaining failures
+            stay visible; a model may need a different runtime or stronger coding capabilities.
+            Use <strong>Reset repair</strong> to undo a profile. Generated tools are inspected,
+            not executed against your files, shell, or connected accounts.
+          </p>
+          <p class="hint">
+            FLM context limits are model-specific in the generated OpenCode and Continue
+            configurations. With the model-aware FLM service installed, MiniCPM-V-4.7:1b
+            uses 262,144 tokens; Gemma E4B and Llama 3.2 use 131,072. Gemma Flash has a
+            fixed 1,024-token single-turn window. Qwen3.8 uses its verified
+            8,192-token context with up to 4,096 output tokens. Qwen3 8B uses an
+            8,192-token context with up to 2,048 output tokens. Other FLM models
+            retain output caps of up to 2,048 tokens.
+            Input and output share the same context window.
+            For OpenCode, select <code class="inline-code">flm-small</code> to reduce tool
+            overhead. The agent reads project instructions and relevant source before editing,
+            allows file edits, and keeps shell commands subject to approval. It follows each
+            client's tool schema, including OpenCode 2's <code class="inline-code">path</code>
+            and older clients' <code class="inline-code">filePath</code>. Refresh Help and
+            re-copy your configuration after changing the service.
+          </p>
+          <p class="hint">
+            Add <code class="inline-code">X-Hearth-Client</code> to every OpenAI-compatible
+            request. Its value becomes the client name shown in Metrics, recent requests, and
+            the live developer log, including the streamed request/response trace. Use a stable,
+            descriptive lowercase name such as <code class="inline-code">market_analysis</code>,
+            <code class="inline-code">opencode</code>, or
+            <code class="inline-code">vscode_continue</code>. Valid values start with a letter
+            or number, contain only lowercase letters, numbers, underscores, or hyphens, and
+            are at most 48 characters. Missing or invalid values are grouped as
+            <code class="inline-code">lan</code>. This is a tracking label, not authentication;
+            the bearer token is still required.
+          </p>
+          <div class="code-wrap">
+            <pre class="download-log">curl -kN https://{{ help.lan_ip }}:{{ help.ports.lemonade }}/v1/chat/completions \
+  -H "Authorization: Bearer {{ help.lan_token }}" \
+  -H "X-Hearth-Client: my_app" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.6-moe-35b-a3b","messages":[{"role":"user","content":"Hello"}],"max_tokens":256,"stream":true}'</pre>
+          </div>
+          <p class="hint">
+            The generated Continue and OpenCode configurations below already include
+            <code class="inline-code">X-Hearth-Client: vscode_continue</code> and
+            <code class="inline-code">X-Hearth-Client: opencode</code>, respectively. Give every
+            additional application its own value so traffic can be filtered and debugged
+            independently.
+          </p>
+          <p class="hint">
+            <strong>Individual people, not just tools, can have their own LAN credential
+            too</strong> — every account on the <a href="{{ url_for('users_page') }}">Users
+            page</a> gets a personal token for the same 5 ports (view or regenerate it from
+            that user's card there). Same reasoning as the OpenCode/Continue tokens above: a
+            named credential instead of everyone sharing one secret. This app can't write to
+            Caddy's own config file itself (same reason the CA cert below is something you
+            save and trust yourself, not something this app installs for you) — adding one
+            means pasting the snippet the Users page hands you into
+            <code class="inline-code">/etc/caddy/Caddyfile</code> and reloading Caddy.
+          </p>
+          <p class="hint">
+            <strong>vLLM runs CPU-only via <code class="inline-code">vllm.service</code></strong>
+            (a user-level systemd unit this app controls directly, no sudo — always on like
+            Lemonade's own service) — this machine's iGPU has no supported ROCm/CUDA path for
+            vLLM, so it serves a small model on CPU, mainly a real connectivity/config smoke test
+            rather than a daily-driver model (Ryzen AI NPU below is the fast path on this hardware).
+            Unlike LM Studio/Lemonade it has no runtime load/unload API of its own, but this app
+            builds one on top anyway — Load/Unload/Download/Delete all work the same way from the
+            Models and Downloads panels; Load just restarts the underlying service with the new
+            model instead of calling an HTTP endpoint. Searching Hugging Face from the Downloads
+            page shows each result's real file size up front (fetched live, not the "varies by
+            quantization" placeholder Lemonade's GGUF search shows), and downloading now drives a
+            real byte-level progress bar instead of a scrolling log.
+          </p>
+          <p class="hint">
+            <strong>Every backend has its own search on the Downloads page.</strong> Lemonade and
+            vLLM search their curated catalogs plus Hugging Face; LM Studio and KoboldCPP search the
+            public Hugging Face GGUF index (both install GGUF repos — LM Studio via
+            <code class="inline-code">lms get</code>, Kobold by fetching the <code class="inline-code">.gguf</code>
+            and auto-picking a quant); FastFlowLM searches its own fixed NPU catalog
+            (<code class="inline-code">flm list</code>), showing each model's real on-NPU size and
+            whether it's already downloaded. Every result shows a size before you commit to the
+            download. LM Studio and FastFlowLM also keep a by-exact-name/tag box for when you already
+            know the id.
+          </p>
+          <p class="hint">
+            <strong>Text-only models only</strong> — every Load runs vLLM with
+            <code class="inline-code">--language-model-only</code>, so vision/multimodal models
+            (anything with an image encoder, e.g. Qwen3.5-family checkpoints) will never finish
+            loading; a model whose Load never becomes ready is very likely this, not a stuck
+            download or a resource problem (see Troubleshooting below). A pre-flight size check
+            also refuses anything over 65% of this machine's RAM before it ever reaches the
+            service, rather than letting it hang or crash-loop.
+          </p>
+
+          <p class="help-heading">Step 1 — Trust the CA (one command)</p>
+          <p class="hint">
+            Public CAs (Let's Encrypt/ZeroSSL) can't issue certificates for a private IP or
+            LAN-only hostname like this machine's — that's a hard protocol constraint (they
+            need public DNS/HTTP reachability to validate domain ownership), not something this
+            app chooses. Caddy's automatic HTTPS for exactly this situation is its own internal
+            CA (<code class="inline-code">tls internal</code>): certs are auto-issued and
+            auto-renewed with zero server-side cert management — the one thing that can't be
+            automated away is trusting that CA on each client once. Run the matching command
+            below on the <em>other</em> machine (fetches the cert from this app and trusts it
+            in one step — no separate save-then-import):
+          </p>
+
+          <details class="advanced">
+            <summary>Why trust the CA at all (not just the tool's config)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Confirmed the hard way with Continue: its chat requests go through the OpenAI SDK's
+              own <code class="inline-code">fetch()</code>, which (at least on macOS) doesn't
+              reliably honor a config-level <code class="inline-code">caBundlePath</code>/CA-bundle
+              setting for that code path. A plain <code class="inline-code">curl --cacert</code>
+              test worked fine while the tool's own chat still failed with a generic connection
+              error, until the cert was installed as a trusted root in the OS's own certificate
+              store. Node and Bun-based CLIs (what both Continue and OpenCode are) tend to share
+              this quirk.
+            </p>
+          </details>
+
+          <p class="hint" style="margin-top: 8px;"><strong>Linux</strong> (bash):</p>
+          <div class="code-copy-wrap">
+            <pre id="help-linux-trust" class="download-log">{{ help.ca_trust_commands.linux }}</pre>
+            <button id="copy-linux-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+          </div>
+
+          <p class="hint"><strong>macOS</strong> (Terminal):</p>
+          <div class="code-copy-wrap">
+            <pre id="help-mac-trust" class="download-log">{{ help.ca_trust_commands.macos }}</pre>
+            <button id="copy-mac-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+          </div>
+
+          <p class="hint"><strong>Windows</strong> (PowerShell, run as Administrator — needs PowerShell 7+ for <code class="inline-code">-SkipCertificateCheck</code>):</p>
+          <div class="code-copy-wrap">
+            <pre id="help-windows-trust" class="download-log">{{ help.ca_trust_commands.windows }}</pre>
+            <button id="copy-windows-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+          </div>
+
+          <details class="advanced">
+            <summary>Prefer to do it by hand, or need the raw cert for something else</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Same content the command above fetches, read live from Caddy's CA at page load —
+              save as <code class="inline-code">{{ help.cert_filename }}</code> and trust it
+              via your OS's normal "install a root certificate" flow, or point a tool's own CA
+              setting at it directly.
+            </p>
+            <div class="code-copy-wrap">
+              <pre id="help-ca-cert" class="download-log">{{ help.ca_cert }}</pre>
+              <button id="copy-ca-cert" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+          </details>
+
+          <p class="help-heading">Step 2 — Configure your tool</p>
+
+          <details class="advanced" open>
+            <summary><strong>Continue (VS Code)</strong></summary>
+            <p class="hint" style="margin-top: 8px;">
+              Save as <code class="inline-code">~/.continue/config.yaml</code> (fix
+              <code class="inline-code">caBundlePath</code> to wherever you saved the cert above).
+              This config is <strong>generated at runtime</strong> from the live model list, so it
+              already lists every currently-downloaded chat model (and drops deleted ones) — pick one
+              from Continue's model switcher, matching whichever is actually <em>loaded</em> at
+              request time (see Models panel). Re-copy it after downloading a new model.
+            </p>
+            <div class="code-copy-wrap">
+              <pre id="help-config-yaml" class="download-log">{{ help.continue_yaml }}</pre>
+              <button id="copy-config-yaml" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            <p class="hint">
+              Restart VS Code (a config reload isn't always enough after installing an OS trust
+              change) and try the chat again.
+            </p>
+            <p class="hint">
+              <strong>Codebase RAG (<code class="inline-code">@codebase</code>):</strong> the
+              <code class="inline-code">Nomic Embed</code> entry above (<code class="inline-code">roles: [embed]</code>)
+              is what powers it — Continue auto-selects whichever configured model has the
+              <code class="inline-code">embed</code> role, no separate embeddings config block
+              needed. It must actually be <em>loaded</em> in LM Studio to work: unlike chat models,
+              it's exempt from this app's "one model at a time" policy (~84MB, coexists fine
+              alongside any chat model) — load it once from the Models panel (or
+              <code class="inline-code">lms load text-embedding-nomic-embed-text-v1.5</code>) and it
+              stays loaded. Note this only enables <code class="inline-code">@codebase</code>'s
+              semantic search — it's unrelated to this webui's own separate cross-chat memory
+              feature, which uses the same embedding model but for a different purpose (recalling
+              past conversations here, not indexing a codebase).
+            </p>
+            <p class="hint">
+              <strong>vLLM:</strong> CPU-only (no supported ROCm/CUDA path for this iGPU — see
+              vllm.service's description), so treat it as a connectivity/config smoke test rather
+              than a real coding model, same caveat as <code class="inline-code">QwenFLM06B</code>
+              below. <code class="inline-code">contextLength: 8192</code> matches
+              vllm.service's <code class="inline-code">--max-model-len 8192</code> exactly — like
+              the Ryzen AI entries, this must be kept in sync with whatever the server was actually
+              started with, not guessed.
+            </p>
+            <p class="hint">
+              <strong>Ryzen AI (NPU) entries:</strong> point at Lemonade's own model ids, not LM
+              Studio ones — these are filled in automatically from whatever NPU models are pulled
+              via this app's Models/Downloads panels, so the list stays current on its own. No
+              <code class="inline-code">embed</code> role is offered for any of them — the Nomic
+              Embed entry above already covers <code class="inline-code">@codebase</code> RAG
+              regardless of which backend answers chat, so there's no need to duplicate it.
+            </p>
+            <p class="hint">
+              <strong>Which Ryzen AI model to pick — benchmarked live, not guessed:</strong> for a
+              real ~470-token coding prompt, <code class="inline-code">qwen3.6-moe-35b-a3b</code>
+              (MoE, only ~3B active params per token) measured ~9.6 tok/s decode after a ~9.2s
+              time-to-first-token; the smaller dense <code class="inline-code">qwen3.5-9b-npu</code>
+              had a much faster ~2.5s time-to-first-token but a <em>slower</em> ~5.7 tok/s decode —
+              a dense model has to compute all 9B params per token, more than the 35B MoE model's
+              active 3B. Counterintuitively, that makes the "smaller" model the slower one overall
+              past ~90 completion tokens: at a 200-token reply the 35B finishes in ~30s vs the 9B's
+              ~38s. So for actual code generation (functions, refactors — usually 100+ tokens), the
+              35B is the faster real choice; the 9B only wins for short replies/quick edits under
+              ~90 tokens. <code class="inline-code">QwenFLM06B</code> (0.6B) is faster still at both
+              ends but noticeably weaker at following coding instructions — treat it as a
+              connectivity smoke-test model, not a coding one. Also confirmed live while
+              investigating this: the NPU wasn't throttled or in a low-power mode — forcing
+              <code class="inline-code">turbo</code> power mode (above the default
+              <code class="inline-code">performance</code>) made zero measurable difference: this
+              is the real hardware/kernel ceiling for each model, not a config issue.
+            </p>
+            <p class="hint">
+              <strong><code class="inline-code">defaultCompletionOptions.contextLength: 32768</code>
+              on every chat entry above</strong> — added after a real report of Ryzen AI responses
+              via Continue seeming shallow/not following the actual ask, root-caused directly:
+              confirmed via the live API (both plain and through this exact Caddy LAN path) that the
+              model reasons and follows multi-step instructions correctly when given a full prompt,
+              so the problem wasn't the model. It was that Continue's config schema supports
+              <code class="inline-code">defaultCompletionOptions.contextLength</code> to tell it how
+              much context budget it has to work with — this field was missing from every entry
+              here (LM Studio's too, not just Ryzen AI), so Continue likely fell back to a
+              conservative built-in default and pre-truncated the system prompt/history/codebase
+              context <em>before ever sending the request</em>, regardless of how capable the model
+              actually is once it receives a full prompt. 32768 matches what both Lemonade models
+              actually load with (confirmed live via <code class="inline-code">GET /v1/health</code>)
+              and what this app already loads LM Studio models with by default.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary><strong>OpenCode</strong></summary>
+            <p class="hint" style="margin-top: 8px;">
+              Save as <code class="inline-code">~/.config/opencode/opencode.jsonc</code> (same path
+              on macOS/Linux; check OpenCode's docs for the Windows equivalent). The
+              <code class="inline-code">models</code> list below <strong>auto-updates</strong>: this
+              app regenerates it from what's actually downloaded and loadable right now — a model you
+              just downloaded appears here automatically, and a deleted one drops off (refresh this
+              page after a download to re-copy). Only whichever model is actually <em>loaded</em> in
+              its backend at request time will answer.
+            </p>
+            <p class="hint">
+              <strong>No <code class="inline-code">@codebase</code>-style RAG here</strong> —
+              checked OpenCode's config schema and CLI directly, there's no embeddings/vector-index
+              concept at all. It relies on agentic tool calls (grep/glob/read) to explore a codebase
+              on demand instead of a pre-built semantic index. Nothing to configure for this;
+              nothing broken either — it's just a different approach to the same problem.
+            </p>
+            <div class="code-copy-wrap">
+              <pre id="help-opencode-config" class="download-log">{{ help.opencode_config }}</pre>
+              <button id="copy-opencode-config" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            <p class="hint">
+              <strong>Every <code class="inline-code">models</code> block above is generated at
+              runtime</strong> from what's actually downloaded — LM Studio's is empty only because
+              its chat models were deleted 2026-07-21 to free ~305GB of disk (see README "Retiring
+              LM Studio's chat models"); Ryzen AI NPU now covers day-to-day chat. If you
+              <code class="inline-code">lms get &lt;model&gt;</code> a new LM Studio model (or
+              download any model from this app's Downloads panel), it appears here automatically on
+              the next refresh.
+              <strong>Always re-copy this after adding/removing a model</strong> — an old config
+              whose default model no longer exists makes OpenCode silently hang on every chat, with
+              no error (see Troubleshooting below — this happened for real, on two machines).
+            </p>
+            <p class="hint">
+              The top-level <code class="inline-code">"model"</code> line pins the default to the
+              NPU daily driver so a fresh install doesn't default to something dead or slow —
+              without it, OpenCode just picks the first provider/model it finds.
+            </p>
+            <p class="hint">
+              <strong><code class="inline-code">vllm</code></strong> runs CPU-only via
+              <code class="inline-code">vllm.service</code> (a user-level systemd unit this app
+              controls directly, always on like Lemonade's own service) — this iGPU has no
+              supported ROCm/CUDA path for vLLM, so it's a small model, mainly a connectivity/
+              config smoke test rather than a real coding option (same caveat as
+              <code class="inline-code">QwenFLM06B</code> above).
+              <code class="inline-code">limit.context: 8192</code> matches what it's currently
+              loaded with. To change the served model, use this app's own Models/Downloads panels
+              (Search, Download, Load — same as the Ryzen AI entries above; vLLM has no load API
+              of its own, but this app builds one on top via that systemd unit), then check the
+              new id via <code class="inline-code">GET https://{{ help.lan_ip }}:{{ help.ports.vllm }}/v1/models</code>
+              and update the key here to match.
+            </p>
+            <p class="hint">
+              <code class="inline-code">limit.context</code> is capped at 32768 for the Ryzen AI
+              entries, not necessarily each model's real max — this app loads NPU models with
+              <code class="inline-code">ctx_size: 32768</code> by default (see Models panel),
+              confirmed via <code class="inline-code">GET /v1/health</code>'s
+              <code class="inline-code">recipe_options.ctx_size</code>. Advertising a higher number
+              than what a model was actually loaded with causes agent-mode tools to send oversized
+              requests, which gets rejected — and on weaker local models under that pressure, the
+              failure can also look like a client-side tool-call schema error (e.g. OpenCode's
+              <code class="inline-code">write</code> tool rejecting a call with a missing
+              <code class="inline-code">content</code> field), not just a plain context error,
+              because the model truncates or malforms the JSON before that limit is even hit
+              cleanly. Newly downloaded models are added automatically with these default limits
+              (32768 context for Ryzen AI / LM Studio, 8192 for vLLM); curated entries that were
+              already tuned keep their values. If a model was reloaded with a different context in
+              the Models panel, raise or lower its number here to match.
+            </p>
+            <p class="hint">
+              Run with <code class="inline-code">opencode -m lemonade/&lt;model-id&gt;</code> (e.g.
+              <code class="inline-code">opencode -m lemonade/qwen3.6-moe-35b-a3b</code>), or select
+              one from the model picker. If it still can't connect after Step 1's CA-trust command,
+              this is a Bun-based CLI too, so the same fetch/CA-trust quirk is the first thing to
+              suspect — try restarting the terminal/shell session.
+            </p>
+          </details>
+
+          {% if help.tailscale_ip or help.tailscale_app_url %}
+          <details class="advanced">
+            <summary><strong>Connect over Tailscale</strong></summary>
+            {% if help.tailscale_app_url %}
+            <p class="hint" style="margin-top: 8px;">
+              Connect your device to the same Tailscale network, then open Hearth using its
+              DNS name. These links use trusted HTTPS through Tailscale Serve.
+            </p>
+            <ul>
+              <li><a id="help-tailscale-chat-link" href="{{ help.tailscale_links.chat }}">Chat — {{ help.tailscale_links.chat }}</a></li>
+              {% if session.role == 'admin' %}
+              <li><a id="help-tailscale-models-link" href="{{ help.tailscale_links.models }}">Models</a></li>
+              <li><a id="help-tailscale-downloads-link" href="{{ help.tailscale_links.downloads }}">Downloads</a></li>
+              <li><a id="help-tailscale-settings-link" href="{{ help.tailscale_links.settings }}">Settings</a></li>
+              {% endif %}
+              <li><a id="help-tailscale-ca_cert-link" href="{{ help.tailscale_links.ca_cert }}">Download the backend CA certificate</a></li>
+            </ul>
+            {% endif %}
+            <p class="hint">
+              Backend APIs for Continue and OpenCode use
+              <code class="inline-code">{{ help.tailscale_ip }}</code> and the Caddy ports listed
+              above. They require the bearer token and Caddy CA certificate. The browser app's
+              DNS link already has trusted HTTPS; installing the Caddy CA is only needed for
+              these backend API connections.
+            </p>
+            <p class="hint">
+              The LAN and Tailscale client configs are both available below. Choose the
+              Tailscale config for a device connecting through your tailnet.
+            </p>
+
+            {% if help.tailscale_ca_trust_commands %}
+            <p class="help-heading" style="margin-top: 16px;">Trust the CA — Tailscale-only devices</p>
+            <p class="hint">
+              Run the command for your operating system once to trust the backend API
+              certificate. The download uses Hearth's DNS link when Tailscale Serve is available.
+              If you already installed this Caddy CA using Step 1, skip this step.
+            </p>
+            <p class="hint" style="margin-top: 8px;"><strong>Linux</strong> (bash):</p>
+            <div class="code-copy-wrap">
+              <pre id="help-tailscale-linux-trust" class="download-log">{{ help.tailscale_ca_trust_commands.linux }}</pre>
+              <button id="copy-tailscale-linux-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            <p class="hint"><strong>macOS</strong> (Terminal):</p>
+            <div class="code-copy-wrap">
+              <pre id="help-tailscale-mac-trust" class="download-log">{{ help.tailscale_ca_trust_commands.macos }}</pre>
+              <button id="copy-tailscale-mac-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            <p class="hint"><strong>Windows</strong> (PowerShell, run as Administrator):</p>
+            <div class="code-copy-wrap">
+              <pre id="help-tailscale-windows-trust" class="download-log">{{ help.tailscale_ca_trust_commands.windows }}</pre>
+              <button id="copy-tailscale-windows-trust" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            {% endif %}
+
+            <p class="help-heading" style="margin-top: 16px;">Tailscale configs (Continue &amp; OpenCode)</p>
+            <p class="hint">
+              Same auto-generated configs as Step 2 above, pre-built with the Tailscale IP
+              instead of the LAN one — grab these directly for a device that reaches this machine
+              over Tailscale. Same bearer tokens, same CA cert, same model list; only the address
+              is different, and Step 2's LAN configs are completely unaffected by these.
+            </p>
+
+            <p class="hint" style="margin-top: 8px;"><strong>Continue (VS Code)</strong> — save as <code class="inline-code">~/.continue/config.yaml</code>:</p>
+            <div class="code-copy-wrap">
+              <pre id="help-tailscale-config-yaml" class="download-log">{{ help.tailscale_continue_yaml }}</pre>
+              <button id="copy-tailscale-config-yaml" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+
+            <p class="hint"><strong>OpenCode</strong> — save as <code class="inline-code">~/.config/opencode/opencode.jsonc</code>:</p>
+            <div class="code-copy-wrap">
+              <pre id="help-tailscale-opencode-config" class="download-log">{{ help.tailscale_opencode_config }}</pre>
+              <button id="copy-tailscale-opencode-config" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
+            </div>
+            <p class="hint">
+              <strong>macOS certificate setup:</strong> run the macOS CA-trust command above
+              on the laptop first. For Continue, replace every
+              <code class="inline-code">/home/YOUR_USERNAME/{{ help.cert_filename }}</code>
+              in <code class="inline-code">caBundlePath</code> with
+              <code class="inline-code">/Users/YOUR_MAC_USERNAME/{{ help.cert_filename }}</code>.
+              For OpenCode, start it with the downloaded CA explicitly included:
+            </p>
+            <div class="code-wrap">
+              <pre class="download-log">NODE_EXTRA_CA_CERTS="$HOME/{{ help.cert_filename }}" opencode</pre>
+            </div>
+            <p class="hint">
+              Keep the API key embedded in each generated configuration. A certificate
+              error happens before key authentication; HTTP 401 means the key is missing
+              or incorrect, while HTTP 502 means the proxy cannot reach that backend.
+              Loading a model may be necessary before a backend can answer requests.
+            </p>
+          </details>
+          {% endif %}
+
+          <p class="help-heading">Troubleshooting</p>
+
+          <details class="advanced" open>
+            <summary>OpenCode/Continue times out on the <em>first</em> request (then works)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              <strong>Most common cause of a LAN timeout when the port is actually open:</strong> a
+              cold model load. Ryzen AI (Lemonade) and vLLM each serve <em>one</em> chat model at a
+              time — if your tool requests a model that isn't the one currently loaded, the server
+              evicts the running model and loads the requested one before answering. On the NPU that
+              can take <strong>~a minute</strong> (measured live 2026-07-24: a 35B model cold-loaded
+              in ~59s vs ~4s once warm), which is longer than the tool's default request timeout, so
+              the first request times out — even though nothing is actually broken. The next request
+              is fast because the model stays loaded.
+            </p>
+            <p class="hint">
+              This config avoids it automatically: the default <code class="inline-code">"model"</code>
+              is now pinned to whatever chat model is <strong>currently loaded</strong> on this
+              machine (see the Models panel), so your tool hits a warm model and answers immediately.
+              Two things to know: (1) <strong>re-copy the config</strong> after you load a different
+              model here, since the pinned default changes; (2) if you pick a <em>different</em>
+              model in your tool's switcher, expect that one first request to take ~a minute while it
+              loads (or pre-load it here first from the Models panel).
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>OpenCode/Continue chat silently never responds (no error at all)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              <strong>From another machine on the LAN, check the firewall first</strong> — the
+              actual root cause of a real remote client connection failure (2026-07-24):
+              ufw on this machine allowed port 8443 but the 8444/8445 rules were never added when
+              those proxies were created later, and ufw <em>drops</em> (not rejects) blocked
+              connections, so the client hangs forever with no error — while every test run on
+              this machine itself passes, because same-host traffic bypasses ufw entirely. That
+              combination (works locally, silent hang from LAN, no error anywhere) is this.
+              Diagnose from the other machine with
+              <code class="inline-code">curl -sk https://{{ help.lan_ip }}:{{ help.ports.lemonade }}/v1/models -H
+              "Authorization: Bearer &lt;token above&gt;" -H
+              "X-Hearth-Client: connectivity_test"</code> — an immediate JSON reply means
+              the port is open; a hang means firewall. Fix on this machine:
+              <code class="inline-code">sudo ufw allow 8444/tcp</code> (and
+              <code class="inline-code">8445/tcp</code>), needs a password.
+            </p>
+            <p class="hint">
+              If the port responds but chat still hangs: the config's selected model no longer
+              exists on the server it points at — most likely because your config predates the
+              2026-07-21 LM Studio chat-model deletion and still defaults to one of the deleted
+              models
+              (<code class="inline-code">gemma-4-e4b</code>,
+              <code class="inline-code">qwen/qwen3.5-9b</code>,
+              <code class="inline-code">qwen/qwen3.6-35b-a3b</code> via the
+              <code class="inline-code">lmstudio</code> provider / port 8443). The server is up
+              and reachable, so nothing fails at connect time — the request just asks for a model
+              that isn't there, and the chat sits with no reply and no error. Confirmed from both a local client and a remote LAN client.
+            </p>
+            <p class="hint">
+              <strong>Fix:</strong> re-copy the current OpenCode config above (its default
+              <code class="inline-code">"model"</code> now pins
+              <code class="inline-code">lemonade/qwen3.6-moe-35b-a3b</code>, which is actually
+              served), or in the model picker switch to any
+              <code class="inline-code">lemonade/…</code> model.
+              <strong>Verify what a server actually has</strong> before blaming config/TLS:
+              <code class="inline-code">curl -s https://{{ help.lan_ip }}:{{ help.ports.lemonade }}/v1/models -H
+              "Authorization: Bearer &lt;token above&gt;" -H
+              "X-Hearth-Client: connectivity_test"</code> (8443 = LM Studio, currently
+              embedding-only; 8444 = Ryzen AI, the real chat models; 8445 = vLLM, one model at a
+              time). If the model you're selecting isn't in that list, no client-side setting can
+              make it respond.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>FastFlowLM coding: Qwen3 8B and tool compatibility</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Connect through the authenticated FastFlowLM endpoint on port
+              {{ help.ports.fastflowlm }} using the generated configuration above.
+              MiniCPM-V-4.7 1B supports automatic, required, and named-function tool choices,
+              parallel calls, and follow-up answers using tool results, in both streaming
+              and non-streaming requests. Use <code class="inline-code">tool_choice: none</code>
+              for a response without tool calls. The client executes returned calls and sends
+              their results back with the matching <code class="inline-code">tool_call_id</code>.
+            </p>
+            <p class="hint">
+              <strong>Qwen3 8B for coding:</strong> select
+              <code class="inline-code">fastflowlm/flm/qwen3:8b</code> with the
+              <code class="inline-code">flm-small</code> agent in OpenCode. The proxy sends
+              JSON tool calls inside <code class="inline-code">&lt;tool_call&gt;</code>
+              tags, matching this model's template. When thinking is disabled, it adds
+              <code class="inline-code">/no_think</code> to the latest user message;
+              an explicit thinking preference is respected. MiniCPM 1B remains available,
+              but was inconsistent at choosing the correct implementation and edit in
+              repeated project checks.
+            </p>
+            <p class="hint">
+              The compatibility proxy uses native tool templates for MiniCPM and Qwen3.8,
+              and adds tool instructions for older models. It recovers supported tool markup
+              into structured calls, restores schema-declared argument types, and preserves
+              unrelated text. File-tool arguments follow each client's schema, including
+              <code class="inline-code">path</code>, <code class="inline-code">filePath</code>,
+              and patch paths embedded in <code class="inline-code">patchText</code>. Empty
+              runtime calls finish as text instead of crashing the client. Generated FLM
+              configurations advertise model-specific context
+              limits and an output cap of up to 4,096 tokens for Qwen3.8
+              (up to 2,048 for other FLM models). Reply budgets shrink when long inputs need the space.
+            </p>
+            <p class="hint">
+              Refresh Help and re-copy the configuration after changing the active model or
+              runtime, run <code class="inline-code">opencode reload</code>, and start a fresh
+              session to avoid carrying earlier tool failures forward. Blocked tool operations end the turn with an explanation; revise the
+              request before continuing. A manual FLM unload blocks automatic retries until
+              a model is loaded again.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>OpenCode/Continue file creation failing — a second NPU guard shim (2026-07-26)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Lemonade auto-loads a model on demand when a chat request names one that isn't
+              loaded yet (the same just-in-time behavior LM Studio has). When that model is an
+              flm-recipe (NPU) one, Lemonade starts its own independent copy of FastFlowLM's
+              engine — completely separate from the standalone
+              <code class="inline-code">flm.service</code> the tool-calling shim above sits in
+              front of — and the two loaded at once can exceed this machine's RAM. Confirmed
+              live: reproducing it OOM-killed <code class="inline-code">flm.service</code>
+              outright, breaking whatever OpenCode/Continue request it was serving mid-generation
+              — this is what "file creation keeps failing" traced back to. Caddy itself was never
+              the problem; it was faithfully relaying a crashed backend's error.
+            </p>
+            <p class="hint">
+              <strong>Fix:</strong> a second small reverse-proxy shim
+              (<code class="inline-code">lemonade_guard_shim.py</code>, its own
+              <code class="inline-code">lemonade-guard-shim.service</code> on
+              <code class="inline-code">127.0.0.1:13306</code>) sits between Caddy's
+              <code class="inline-code">:{{ help.ports.lemonade }}</code> and Lemonade's raw
+              server: for any chat request naming an NPU model, it stops
+              <code class="inline-code">flm.service</code> first, then forwards the request
+              unmodified — every other request (embeddings, Whisper, Lemonade's own non-NPU chat
+              models) passes straight through untouched. Caddy's
+              <code class="inline-code">:{{ help.ports.lemonade }}</code> block now points at this
+              shim instead of Lemonade directly. Verified live: manually reproduced the exact
+              collision (it OOM-killed <code class="inline-code">flm.service</code> again), then
+              confirmed the shim stops it cleanly beforehand and the same request completes with
+              no crash.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>"Context size has been exceeded" (400/500 error)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Agent-mode tool definitions plus whatever codebase context the tool includes (open
+              files, etc.) can easily add up to more tokens than the model's currently *loaded*
+              context window. The Models panel's Load now defaults every load to a 32768 context
+              (and full GPU offload) automatically — LM Studio's own stock default is a much
+              smaller 8192 regardless of the model's actual max, which is what causes this. If you
+              still hit it with a very large agent preamble, unload the model and load it again
+              with an even bigger value in "Load options → Context length".
+              {% if is_admin %}From a terminal on this machine, the manual equivalent (which does
+              <em>not</em> get either default automatically) is
+              <code class="inline-code">lms load &lt;model-key&gt; -c 32768 --gpu max</code>.{% endif %}
+              A bigger context window uses more RAM (mainly the KV cache, multiplied by the number
+              of parallel request slots) — go bigger than you need, but not wildly so.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>vLLM: a model Loads but never becomes ready (looks hung, RAM climbs)</summary>
+            <p class="hint" style="margin-top: 8px;">
+              Almost always a vision/multimodal model (an architecture with an image encoder, e.g.
+              Qwen3.5-family checkpoints) — confirmed live (2026-07-23) that vLLM's CPU backend
+              deadlocks forever trying to warm up the image encoder, repeating "No available shared
+              memory broadcast block found" in <code class="inline-code">journalctl</code> every 60
+              seconds, indefinitely, regardless of model size or free RAM. Every Load already runs
+              with <code class="inline-code">--language-model-only</code> to avoid this for models
+              that don't strictly need multimodal support disabled, but a genuinely multimodal
+              checkpoint simply can't be served by this backend right now — pick a text-only model
+              instead, there's no config workaround for this one.
+              {% if is_admin %}If RAM is climbing toward 90%+ while this happens, don't wait it
+              out — <code class="inline-code">systemctl --user stop vllm</code> from a terminal on
+              this machine frees it immediately; a manual stop won't trigger
+              <code class="inline-code">Restart=on-failure</code>.{% endif %}
+              Separately, a pre-flight check refuses to even attempt a Load for a model whose
+              download size exceeds 65% of this machine's RAM, so a plain "too large" refusal at
+              Load time is a different, unrelated (and much simpler) situation than this one.
+            </p>
+          </details>
+
+          <details class="advanced">
+            <summary>vLLM: "502 Bad Gateway" through port 8445</summary>
+            <p class="hint" style="margin-top: 8px;">
+              The Caddy proxy itself is fine (a 502 means it authenticated your request and tried
+              to forward it) — nothing is listening on <code class="inline-code">localhost:8000</code>
+              for it to forward *to*, meaning <code class="inline-code">vllm.service</code> isn't
+              running. Most likely cause: every model was Unloaded from the Models panel and none
+              has been Loaded since — unlike LM Studio/Lemonade, vLLM's "unloaded" state really is
+              "the process isn't running at all" (see the Help panel's vLLM notes above), so Load
+              a model there first. If a Load itself is failing/timing out, check from a terminal on
+              this machine: <code class="inline-code">systemctl --user status vllm</code> and
+              <code class="inline-code">journalctl --user -u vllm -e</code> (no sudo needed — it's
+              a user-level service).
+              {% if is_admin %}Settings page → "Test vLLM via Caddy" reproduces this same check
+              without needing a terminal.{% endif %}
+            </p>
+          </details>
+
+          <p class="hint">
+            The Bearer token above is a real credential (same one Caddy already enforces) — treat
+            this panel's contents as sensitive.
+          </p>
+        </div>
+      </header>
+
+      <div id="messages" class="messages"></div>
+
+      <div id="composer-hint" class="composer-hint hint"></div>
+      <div id="voice-status" class="voice-status hidden"></div>
+      <form id="chat-form" class="composer">
+        <textarea id="chat-input" placeholder="Message the model&hellip;" rows="3"></textarea>
+        <div class="composer-btn-row">
+          <button type="button" id="insert-code-btn" class="composer-icon-btn" title="Insert a code block in a larger paste-friendly editor" aria-label="Insert code block">&lt;/&gt;</button>
+          <button type="button" id="multiline-toggle" class="composer-icon-btn" title="Toggle multi-line input (see hint above)" aria-pressed="false">A</button>
+          <button type="button" id="speak-toggle" class="composer-icon-btn" title="Speak assistant responses aloud (local text-to-speech)" aria-pressed="false" aria-label="Toggle spoken responses">&#128266;</button>
+          <button type="button" id="mic-btn" class="composer-icon-btn" title="Record a voice message (click to start, click again to stop)" aria-pressed="false" aria-label="Record voice message">&#127908;</button>
+          <select id="translate-language" class="voice-language" title="Voice translation target language" aria-label="Translation target language">
+            <option>English</option><option>Spanish</option><option>French</option>
+            <option>German</option><option>Hindi</option><option>Chinese</option>
+            <option>Japanese</option><option>Korean</option><option>Arabic</option>
+            <option>Portuguese</option><option>Italian</option><option>Polish</option>
+            <option value="Tamil">Tamil (தமிழ்)</option>
+            <option value="Telugu">Telugu (తెలుగు)</option>
+            <option value="Kannada">Kannada (ಕನ್ನಡ)</option>
+            <option value="Malayalam">Malayalam (മലയാളം)</option>
+          </select>
+          <button type="button" id="translate-mic-btn" class="composer-icon-btn" title="Record speech and translate it with local Gemma 4" aria-pressed="false" aria-label="Translate spoken audio">&#127760;</button>
+          <button type="button" id="translate-attach-btn" class="composer-icon-btn" title="Attach an image or video to translate with local Gemma 4" aria-label="Attach image or video to translate">&#128206;</button>
+          <input type="file" id="translate-attach-input" accept="image/*,video/*" class="hidden" aria-hidden="true">
+          <button type="button" id="conversation-btn" class="composer-icon-btn" title="Hands-free voice conversation: auto-detects when you start/stop talking and speaks responses back, looping automatically. Click to start, click again to end." aria-pressed="false" aria-label="Toggle hands-free voice conversation">&#128222;</button>
+          <button id="send-btn" type="submit">Send</button>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <div id="code-modal-overlay" class="code-modal-overlay hidden">
+    <div class="code-modal">
+      <div class="code-modal-header">
+        <h3>Insert code block</h3>
+        <select id="code-modal-lang">
+          <option value="">plain text</option>
+          <option value="python">python</option>
+          <option value="javascript">javascript</option>
+          <option value="typescript">typescript</option>
+          <option value="bash">bash</option>
+          <option value="json">json</option>
+          <option value="yaml">yaml</option>
+          <option value="html">html</option>
+          <option value="css">css</option>
+          <option value="sql">sql</option>
+          <option value="go">go</option>
+          <option value="rust">rust</option>
+          <option value="java">java</option>
+          <option value="c">c</option>
+          <option value="cpp">cpp</option>
+        </select>
+        <button type="button" id="code-modal-close" class="code-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <textarea id="code-modal-textarea" placeholder="Paste your code here&hellip;" spellcheck="false"></textarea>
+      <div class="code-modal-footer">
+        <button type="button" id="code-modal-cancel" class="composer-icon-btn">Cancel</button>
+        <button type="button" id="code-modal-insert" class="composer-icon-btn active">Insert into message</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ asset('quiz_chat.js') }}"></script>
+  <script src="{{ asset('app.js') }}"></script>
+</body>
+</html>

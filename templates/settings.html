@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Settings — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <main class="chat">
+      <header class="chat-header">
+        <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+        <nav class="console-tabs">
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+          <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+          <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+          <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+          <a class="console-tab active" href="{{ url_for('settings_page') }}">Settings</a>
+        </nav>
+        <div class="chat-header-actions" style="margin-left: auto;">
+          <span class="hint">{{ username }}</span>
+          <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="logout-button hint">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <div class="console-body">
+        <div class="console-head">
+          <h1>Settings</h1>
+          <p class="hint">
+            Where this app reaches each backend, and the credentials it sends — shown in plain text
+            since this page is already admin-only. Overrides here take effect immediately (no
+            restart) and persist across restarts — clear a field to fall back to whatever
+            <code class="inline-code">.env</code> has (or nothing, if <code class="inline-code">.env</code>
+            doesn't set it either).
+          </p>
+        </div>
+
+        <form id="settings-form">
+        <div class="console-grid">
+          <div class="console-card span-all">
+            <h2>LM Studio</h2>
+            <div class="download-form">
+              <input id="settings-lmstudio-url" class="panel-input" type="text" placeholder="http://localhost:1234" autocomplete="off" />
+              <input id="settings-lmstudio-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-lmstudio" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-lmstudio-result" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Ryzen AI (Lemonade)</h2>
+            <div class="download-form">
+              <input id="settings-lemonade-url" class="panel-input" type="text" placeholder="http://localhost:13305" autocomplete="off" />
+              <input id="settings-lemonade-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-lemonade" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-lemonade-result" class="hint"></p>
+            </div>
+            <label class="hint" style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+              <input id="settings-lemonade-thinking" type="checkbox" />
+              Enable model thinking/reasoning (Qwen3-style <code class="inline-code">enable_thinking</code>)
+            </label>
+            <p class="hint">
+              Applied per-request (Lemonade's own model-load API silently ignores this setting,
+              confirmed live) — covers both Hearth's own chat and OpenCode's config
+              (<code class="inline-code">extraBody</code>). Turning this off skips the model's
+              reasoning phase but does <strong>not</strong> meaningfully speed up a response
+              dominated by prompt-processing time on a large context — it only removes visibility
+              into what the model is doing. Ignored by models/templates that don't support it.
+            </p>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>vLLM</h2>
+            <p class="hint">
+              vLLM itself has no runtime load/unload API — a <code class="inline-code">vllm
+              serve</code> process only ever serves the one model it was started with. This app
+              builds Load/Unload/Download/Delete on top of that anyway (Models and Downloads
+              pages, same as LM Studio/Lemonade) by controlling a user-level systemd unit
+              (<code class="inline-code">vllm.service</code>, no sudo needed) behind the scenes —
+              Load rewrites its config and restarts it with the new model. Runs locally on this
+              machine, CPU-only — this iGPU isn't a supported vLLM/ROCm target, so no GPU offload
+              is used. Before Load ever touches the service, a pre-flight check refuses models
+              whose download size exceeds 65% of this machine's RAM (raised from an earlier, too
+              generous 80% after a real incident where a model that passed at 80% still hung the
+              whole system under swap pressure once its KV cache came in) — you'll get a clear
+              refusal instead of a stuck/crash-looping load.
+            </p>
+            <p class="hint">
+              <strong>Text-only models only.</strong> Every load always runs with
+              <code class="inline-code">--language-model-only</code> (disables all multimodal
+              inputs), because this app never sends images to vLLM and because a real incident
+              (2026-07-23) showed vLLM's CPU backend hangs forever — not crashes, an actual
+              deadlock — trying to warm up a multimodal image encoder, regardless of model size or
+              available RAM. If a model you Load never becomes ready and just sits there, check
+              whether it's a vision/multimodal architecture (e.g. Qwen3.5-family models with an
+              image encoder) — that's the likely cause, and there's currently no workaround short
+              of picking a text-only model.
+            </p>
+            <div class="download-form">
+              <input id="settings-vllm-url" class="panel-input" type="text" placeholder="http://localhost:8000" autocomplete="off" />
+              <input id="settings-vllm-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-vllm" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-vllm-result" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>SGLang — GLM-5.2 (remote)</h2>
+            <p class="hint">
+              Connects Hearth to an externally managed SGLang OpenAI server. GLM-5.2 is a
+              multi-GPU-class model, so Hearth discovers and chats with the model already
+              running at this endpoint; download, load, unload, and deletion stay with the
+              SGLang host. Launch that host with a GLM-compatible reasoning and tool parser,
+              then enter its base URL here (normally port <code class="inline-code">30000</code>).
+            </p>
+            <div class="download-form">
+              <input id="settings-sglang-url" class="panel-input" type="text" placeholder="http://sglang-host:30000" autocomplete="off" />
+              <input id="settings-sglang-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-sglang" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-sglang-result" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>KoboldCPP</h2>
+            <p class="hint">
+              A llama.cpp GGUF server that serves one model at a time. Like vLLM it has no runtime
+              load API — this app builds Load/Unload/Download/Delete on top by controlling a
+              user-level systemd unit (<code class="inline-code">kobold.service</code>, no sudo).
+            </p>
+            <div class="download-form">
+              <input id="settings-kobold-url" class="panel-input" type="text" placeholder="http://127.0.0.1:5001" autocomplete="off" />
+              <input id="settings-kobold-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-kobold" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-kobold-result" class="hint"></p>
+            </div>
+            <p class="hint" style="margin-top: 14px;">
+              <strong>GPU offload (Vulkan) &amp; speculative decoding (2026-07-27):</strong>
+              applies on the <em>next</em> Load, not live to whatever's currently running. GPU
+              layers offloads to this machine's iGPU via Vulkan (try a high number like
+              <code class="inline-code">99</code> for "all layers"; leave blank for CPU-only).
+              A draft model must share the <em>exact same tokenizer/vocab size</em> as whichever
+              model you Load next, or speculative decoding silently malfunctions — pairing
+              models from the same family/release (e.g. Qwen3-8B with Qwen3-0.6B) is the safe
+              way to guarantee that; matching-sounding names across different releases (e.g.
+              Qwen2.5-Coder's 7B vs. its own 0.5B) are <strong>not</strong> guaranteed to match.
+              Measured live on this machine: a matched pair gave a real but modest ~18% speedup
+              over plain GPU decode (83% draft-token acceptance) — worth it, not a silver bullet.
+            </p>
+            <div class="download-form">
+              <input id="settings-kobold-gpu-layers" class="panel-input" type="text" placeholder="GPU layers (e.g. 99 for all, blank for CPU-only)" autocomplete="off" />
+              <input id="settings-kobold-draft-model" class="panel-input" type="text" placeholder="Draft model id (e.g. koboldcpp/Qwen_Qwen3-0.6B-Q8_0), blank to disable" autocomplete="off" />
+              <input id="settings-kobold-draft-amount" class="panel-input" type="text" placeholder="Draft tokens per step (default 16)" autocomplete="off" />
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>FastFlowLM (Ryzen AI NPU)</h2>
+            <p class="hint">
+              The Ryzen AI NPU runtime run standalone (<code class="inline-code">flm serve</code>).
+              It shares the NPU with Lemonade — only one can hold it at a time, so loading a
+              FastFlowLM model frees Lemonade's NPU model first (and vice-versa). Runs as a
+              <em>system</em> unit (<code class="inline-code">flm.service</code>) since the NPU
+              needs raised memlock; this app starts/stops it via a passwordless polkit rule.
+            </p>
+            <div class="download-form">
+              <input id="settings-fastflowlm-url" class="panel-input" type="text" placeholder="http://127.0.0.1:52625" autocomplete="off" />
+              <input id="settings-fastflowlm-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-fastflowlm" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-fastflowlm-result" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Default LAN model (OpenCode)</h2>
+            <p class="hint">
+              Which model OpenCode's generated config (Help page) defaults to, grouped by
+              serving backend. Each option also shows the compute path reported by that backend;
+              choose an option marked <strong>NPU</strong> for full NPU inference (a model name
+              ending in “NPU” does not guarantee that its installed recipe uses the NPU). "Auto" picks
+              whatever's already loaded, falling back to the Ryzen AI NPU model — good for a
+              quick warm start, but the NPU is slow enough (~5 tok/s) that a large coding turn
+              can outlast OpenCode's own client-side timeout and look like it "didn't respond."
+              Pin a specific faster backend here instead if that keeps happening; this only
+              changes the <em>default</em> — every model is still listed and selectable in
+              OpenCode/Continue's config either way.
+            </p>
+            <select id="settings-default-model" class="panel-input">
+              <option value="">Auto (recommended)</option>
+            </select>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Web search and research</h2>
+            <p class="hint">
+              Controls when Hearth may search and whether it may open result pages. Relevance
+              filtering, sponsored-result rejection, and advertisement blocking are always
+              enforced. Disabling browser access still permits safe search-result snippets.
+            </p>
+            <div class="download-form">
+              <label class="hint" style="display: flex; align-items: center; gap: 8px;">
+                <input id="settings-web-search-enabled" type="checkbox" />
+                Enable web search
+              </label>
+              <label class="hint" for="settings-web-search-mode">Activation mode</label>
+              <select id="settings-web-search-mode" class="panel-input">
+                <option value="automatic">Automatic — search when current information is useful</option>
+                <option value="explicit">Explicit only — search only when the user asks</option>
+              </select>
+              <div class="download-row">
+                <label class="hint">
+                  Search results
+                  <input id="settings-web-search-max-results" class="panel-input" type="number"
+                         min="1" max="10" step="1" value="6" />
+                </label>
+                <label class="hint">
+                  Pages opened with Playwright
+                  <input id="settings-web-search-max-pages" class="panel-input" type="number"
+                         min="0" max="5" step="1" value="4" />
+                </label>
+              </div>
+              <label class="hint" style="display: flex; align-items: center; gap: 8px;">
+                <input id="settings-web-search-browser-enabled" type="checkbox" />
+                Allow Playwright to open approved organic result pages
+              </label>
+              <label class="hint" style="display: flex; align-items: center; gap: 8px;">
+                <input id="settings-web-search-direct-urls" type="checkbox" />
+                Allow direct opening of URLs pasted by the user
+              </label>
+              <p class="hint">
+                Set pages to <strong>0</strong> for snippet-only research. Direct URLs are
+                opened only when both direct URLs and Playwright are enabled.
+              </p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Tailscale</h2>
+            <p class="hint">
+              A second reachability path alongside the LAN, for a device that's on this
+              machine's <a href="https://tailscale.com/" target="_blank" rel="noopener">Tailscale</a>
+              tailnet — same Caddy ports, same bearer tokens, same CA cert, just a different IP.
+              The Help page's LAN config always stays LAN; when this is on, it also shows a
+              second, independent Continue/OpenCode config pair pre-built with the Tailscale IP
+              — both are shown together, nothing gets replaced. See the Help page for the full
+              DNS links for the browser app and certificate download. Backend API configs
+              use the numeric Tailscale IP on their Caddy ports.
+            </p>
+            <p id="settings-tailscale-detected" class="hint"></p>
+            <label class="hint" style="display: flex; align-items: center; gap: 8px;">
+              <input id="settings-tailscale-enabled" type="checkbox" />
+              Show the Tailscale section (and configs) on the Help page
+            </label>
+            <input id="settings-tailscale-ip-override" class="panel-input" type="text"
+                   placeholder="Manual IP override (optional) — only needed if auto-detection above fails"
+                   autocomplete="off" style="margin-top: 10px;" />
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Chat request limits</h2>
+            <p class="hint">
+              Ceilings the app enforces on Hearth's own chat requests. A request that doesn't ask
+              for a specific <code class="inline-code">max_tokens</code> uses <strong>Default max
+              tokens</strong>, which ships set to the cap. Clear a field to restore its built-in
+              default. These do not affect OpenCode/Continue, which talk to the backends directly.
+            </p>
+            <div class="download-row">
+              <label class="hint">
+                Default max tokens
+                <input id="settings-chat-default-max-tokens" class="panel-input" type="number"
+                       min="1" max="1000000" step="1" value="32768" />
+              </label>
+              <label class="hint">
+                Max tokens cap
+                <input id="settings-chat-max-max-tokens" class="panel-input" type="number"
+                       min="1" max="1000000" step="1" value="32768" />
+              </label>
+            </div>
+            <div class="download-row">
+              <label class="hint">
+                Max messages per request
+                <input id="settings-chat-max-messages" class="panel-input" type="number"
+                       min="1" max="100000" step="1" value="500" />
+              </label>
+              <label class="hint">
+                Max characters per message
+                <input id="settings-chat-max-message-chars" class="panel-input" type="number"
+                       min="1000" max="100000000" step="1" value="2000000" />
+              </label>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>OpenCode compaction</h2>
+            <p class="hint">
+              Baked into the OpenCode config the Help page generates. When a session nears the
+              model's context limit, OpenCode summarizes older conversation and keeps
+              <strong>Keep tokens</strong> of recent turns beside the summary. On a small-context
+              model the summarization request itself can overflow ("cannot be reduced further
+              without losing the latest exchange") — lower Keep tokens to leave more room for the
+              summary. <strong>Buffer</strong> starts automatic compaction earlier; leave it blank
+              to use OpenCode's own default (10% of the model's limit).
+            </p>
+            <div class="download-row">
+              <label class="hint">
+                Keep tokens
+                <input id="settings-opencode-compaction-keep-tokens" class="panel-input" type="number"
+                       min="0" max="10000000" step="1" value="15000" />
+              </label>
+              <label class="hint">
+                Buffer tokens (optional)
+                <input id="settings-opencode-compaction-buffer" class="panel-input" type="number"
+                       min="0" max="10000000" step="1"
+                       placeholder="OpenCode default (10% of limit)" />
+              </label>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>OpenCode context</h2>
+            <p class="hint">
+              Also baked into the generated OpenCode config. When on (default), each model
+              advertises the context its backend is <em>actually</em> loaded with, so OpenCode
+              never builds a request larger than the server's real window — a real report had
+              a model loaded in LM Studio at 8192 while the config claimed 32768, producing
+              "request (29899 tokens) exceeds the available context size (8192 tokens)". Turn
+              this off to always advertise the fixed per-backend defaults.
+              <strong>Fallback context</strong> applies only to models whose real context can't
+              be detected (e.g. not currently loaded); leave it blank to keep each backend's
+              tuned default.
+            </p>
+            <div class="download-form">
+              <label class="hint" style="display: flex; align-items: center; gap: 8px;">
+                <input id="settings-opencode-advertise-loaded-context" type="checkbox" checked />
+                Advertise each model's real loaded context
+              </label>
+              <div class="download-row">
+                <label class="hint">
+                  Fallback context (optional)
+                  <input id="settings-opencode-context-fallback" class="panel-input" type="number"
+                         min="1" max="10000000" step="1"
+                         placeholder="Per-backend default" />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <button id="settings-save-btn" class="panel-btn" type="submit">Save</button>
+          </div>
+        </div>
+        </form>
+
+        <div class="console-grid">
+          <div class="console-card span-all">
+            <h2>Caddy (LAN access)</h2>
+            <p class="hint">
+              Read-only — parsed live from <code class="inline-code">/etc/caddy/Caddyfile</code>
+              (this app doesn't write to it; edit that file and reload Caddy yourself to change
+              anything here). Same CA cert as the Help page's Continue/OpenCode configs; the
+              token shown below is the general-purpose "lan" one (manual/ad-hoc use) — OpenCode
+              and Continue each get their own dedicated token, embedded directly in their
+              generated configs in the Help page, not shown here.
+            </p>
+            <div id="settings-caddy-info" class="hint"></div>
+            <div class="download-row">
+              <button id="settings-test-caddy-lmstudio" class="panel-btn" type="button">Test LM Studio via Caddy</button>
+              <button id="settings-test-caddy-lemonade" class="panel-btn" type="button">Test Ryzen AI via Caddy</button>
+              <button id="settings-test-caddy-vllm" class="panel-btn" type="button">Test vLLM via Caddy</button>
+              <button id="settings-test-caddy-kobold" class="panel-btn" type="button">Test KoboldCPP via Caddy</button>
+              <button id="settings-test-caddy-fastflowlm" class="panel-btn" type="button">Test FastFlowLM via Caddy</button>
+            </div>
+            <p id="settings-test-caddy-result" class="hint"></p>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>Tailscale (via Caddy)</h2>
+            <p class="hint">
+              Same checks as "Caddy (LAN access)" above, but through the Tailscale IP instead
+              of localhost — confirms Caddy actually has a site block matching that address
+              (save any manual IP override above first if auto-detection isn't finding one).
+            </p>
+            <div class="download-row">
+              <button id="settings-test-tailscale-lmstudio" class="panel-btn" type="button">Test LM Studio via Tailscale</button>
+              <button id="settings-test-tailscale-lemonade" class="panel-btn" type="button">Test Ryzen AI via Tailscale</button>
+              <button id="settings-test-tailscale-vllm" class="panel-btn" type="button">Test vLLM via Tailscale</button>
+              <button id="settings-test-tailscale-kobold" class="panel-btn" type="button">Test KoboldCPP via Tailscale</button>
+              <button id="settings-test-tailscale-fastflowlm" class="panel-btn" type="button">Test FastFlowLM via Tailscale</button>
+            </div>
+            <p id="settings-test-tailscale-result" class="hint"></p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="{{ asset('settings.js') }}"></script>
+</body>
+</html>

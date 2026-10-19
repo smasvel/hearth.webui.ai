@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "profile": "QWEN35_27B_TEXT",
+  "target": "aie2p",
+  "runtime_abi": "unpublished-qwen3.5-npu2",
+  "host_libraries": {
+    "libqwen3_5vl_npu.so": {"sha256": null, "validated": false},
+    "liblm_head.so": {"sha256": null, "validated": false},
+    "libq4_npu_eXpress.so": {"sha256": null, "validated": false}
+  },
+  "dimensions": {
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "num_hidden_layers": 64,
+    "full_attention_interval": 4,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "linear_num_key_heads": 16,
+    "linear_num_value_heads": 48,
+    "linear_key_head_dim": 128,
+    "linear_value_head_dim": 128,
+    "vocab_size": 248320
+  },
+  "kernels": {
+    "layer.xclbin": {"sha256": null, "provenance": "new-build", "validated": false},
+    "lm_head.xclbin": {"sha256": null, "provenance": "new-build", "validated": false},
+    "GateDeltaNet_prefill.xclbin": {"sha256": null, "provenance": null, "validated": false},
+    "conv.xclbin": {"sha256": null, "provenance": null, "validated": false},
+    "attn.xclbin": {"sha256": null, "provenance": null, "validated": false},
+    "mm.xclbin": {"sha256": null, "provenance": null, "validated": false}
+  },
+  "validation": {
+    "status": "pending",
+    "gates": {
+      "kernel-sha256": false,
+      "runtime-abi": false,
+      "fixed-prompt-logits": false,
+      "deterministic-short-decode": false,
+      "32768-token-soak": false
+    },
+    "evidence": null,
+    "completed_at": null
+  }
+}
