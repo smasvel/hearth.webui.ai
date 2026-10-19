@@ -1,10 +1,26 @@
-# Hearth
+# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing
+
+*Local AI, kept at home.*
+
+**Hearth is a free, self-hosted AI WebUI for personal AI chat, local LLM testing,
+and agentic coding workflows.** Use one browser interface to manage local models,
+evaluate tool calling, supervise OpenCode agents, and keep a searchable conversation
+history with cross-chat memory. Run your own AI assistant on your hardware, with
+CPU, GPU, or AMD Ryzen AI NPU inference through supported model backends.
+
+Hearth brings together a **local AI chat interface**, **LLM tool-calling test suite**,
+**agent task dashboard**, and **personal AI workspace**. It is useful for trying a
+new model, checking whether a small language model follows a coding workflow, or
+using local AI for everyday questions, research, voice conversations, and learning.
+
+[Get started](#first-time-setup) · [Explore features](#what-you-can-do-with-hearth) ·
+[Test models](#local-llm-testing-and-tool-calling-evaluation) ·
+[Use coding agents](#agentic-ai-and-local-coding-agents) ·
+[Personal AI](#a-personal-ai-assistant-on-your-own-hardware)
 
 > Hearth uses PostgreSQL 18 through Docker Compose. The live SQLite migration is complete.
 > See [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md) for setup, data migration, backups,
 > and isolated test commands. Historical SQLite references below describe the previous deployment.
-
-*Local AI, kept at home.*
 
 A small Flask web UI for chatting with local models, with sidebar controls to load/unload
 models and switch which loaded model you're chatting with. Hearth started as an LM Studio
@@ -17,6 +33,99 @@ every one has the same Search / Download / Load / Unload / Delete lifecycle from
 Downloads pages. Beyond chat it also does cross-chat memory (RAG), auto-detected web search,
 voice in/out, a performance-metrics board, and an in-chat practice-test/quiz platform —
 all documented in their own sections below.
+
+## What you can do with Hearth
+
+| Use case | Included capabilities |
+|---|---|
+| Local AI chat | Browser chat, streamed responses, saved conversations, model switching, and supported reasoning displays |
+| Model management | Search, download, load, unload, and delete models through supported backends |
+| LLM evaluation | Per-model tool-calling checks, typed argument validation, streamed and ordinary responses, and saved test reports |
+| Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
+| Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
+| Web research | Web search and page retrieval, with optional Chromium scraping |
+| Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
+| Creative tools | Image and video generation through separately configured ComfyUI workflows |
+| Learning | In-chat practice tests and quizzes |
+| Performance monitoring | Request metrics, token usage, generation speed, and live request activity |
+
+## Local LLM testing and tool-calling evaluation
+
+Use Hearth to evaluate whether a local language model can follow the tool contracts
+needed by an AI coding agent. The **Models** page includes model tests with saved
+results, so you can inspect failures by model and backend rather than relying only
+on how convincing a chat response sounds.
+
+The evaluation workflows cover:
+
+- Automatic, required, named, and disabled tool choices.
+- JSON argument types, required fields, exact file content, and multiple tool calls.
+- Streaming and non-streaming OpenAI-compatible responses.
+- Multi-step coding scenarios: reading files, editing code, handling reported
+  failures, and responding to verification results.
+- Interactive agent behavior: single-choice and multiple-choice questions, custom
+  answers, dismissed questions, permission denials, and task continuations.
+- Compatibility diagnostics for model runtimes, response parsers, and tool schemas.
+
+These checks evaluate responses against simulated tool results; they do not execute
+model-generated commands. They are a practical tool-use evaluation suite, not a
+general intelligence benchmark. A passing check establishes only the behavior tested
+for that model, backend configuration, and run. See
+[model tests in the Models page](#model-tests-in-the-models-page) for details and
+[saved failure reviews](reports/saved-failure-review-2026-10-19.md) for known limitations.
+
+## Agentic AI and local coding agents
+
+Hearth's **Agents** workspace supervises real OpenCode sessions against a local
+project directory. Choose a configured local model, describe a task, follow its
+progress, and respond when the agent needs input. Agent task supervision and
+model testing serve different purposes: agent sessions work on real projects;
+the evaluation suite checks model responses using simulated workflows.
+
+For editor and terminal workflows, Hearth also provides integration with
+**OpenCode** and **Continue** through backend-specific OpenAI-compatible proxy
+endpoints. Compatibility layers address supported tool-call formats, argument
+handling, and request metrics. Actual coding reliability depends on the model,
+available context, runtime, and task; the saved reports document remaining failures.
+
+## A personal AI assistant on your own hardware
+
+Use Hearth as a self-hosted personal AI workspace for everyday chat, research,
+coding assistance, voice interaction, and study. Saved conversations and cross-chat
+memory let you return to earlier topics. Model controls let you try different
+local LLMs without moving between separate chat interfaces.
+
+Local inference keeps model generation on the configured hardware. Web search,
+model downloads, and any external services you configure can use the network.
+Chat history and application state use PostgreSQL; local model runtimes provide
+inference separately from the Flask application.
+
+## Frequently asked questions
+
+### Is Hearth a free AI WebUI?
+
+Hearth can be self-hosted without a Hearth subscription. You supply the hardware,
+model weights, and inference runtime. Model licenses and any separately configured
+services have their own terms and costs.
+
+### Can I test local models before using them as coding agents?
+
+Yes. Use the Models page to inspect tool-calling and workflow test results for a
+selected model. Review both failed checks and dependent steps that could not run.
+See the saved reports for evidence about previously evaluated configurations.
+
+### Which local AI backends does Hearth support?
+
+The main integrations are LM Studio, Lemonade, vLLM, KoboldCPP, and FastFlowLM.
+Hardware acceleration and model support depend on the runtime you install.
+AMD Ryzen AI NPU workflows use the relevant Lemonade or FastFlowLM configuration;
+not every model or backend supports every device.
+
+### Can I use Hearth as a local ChatGPT-style interface?
+
+Yes. Hearth provides browser-based assistant chat with local models, saved history,
+memory retrieval, and optional search, voice, and generation integrations. Feature
+availability depends on which supporting components you configure.
 
 ## Requirements
 
