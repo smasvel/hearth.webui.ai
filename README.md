@@ -1,4 +1,4 @@
-# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing with Tailscale Support
+# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing with Tailscale connection
 
 *Local AI, kept at home.*
 
