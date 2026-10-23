@@ -1,6 +1,6 @@
 # Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing with Tailscale connection
 
-*Local AI, kept at home.*
+*Local AI, kept at home, but can be accessed anywhere in the world.*
 
 **Hearth is a free, self-hosted AI WebUI for personal AI chat, local LLM testing,
 and agentic coding workflows.** Use one browser interface to manage local models,
