@@ -1,7 +1,7 @@
 """DMV practice-test question banks, keyed by state.
 
 Static content (no DB) — a question bank is reference data, not user data, so it
-lives in code like a catalog rather than in SQLite. Structured as {state_code:
+lives in code like a catalog rather than in the database. Structured as {state_code:
 {"name", "meta", "questions"}} so more states drop in beside NC without touching the
 routes or UI: get_states() and get_quiz() stay state-agnostic.
 

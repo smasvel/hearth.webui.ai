@@ -1,6 +1,6 @@
 # Hearth on example-host
 
-Configured initially on October 13, 2026; database deployment updated October 18, 2026.
+Configured initially on October 13, 2026.
 
 For a new machine, use [FIRST_TIME_INSTALL.md](FIRST_TIME_INSTALL.md). The commands
 and model inventory below describe the existing example-host host, not a generic installer.
@@ -28,19 +28,14 @@ Gemma's flash variant from the same downloaded weights.
 
 ## PostgreSQL database
 
-Hearth and its three proxies now use PostgreSQL 18 in Docker Compose, bound to
+Hearth and its three proxies use PostgreSQL 18 in Docker Compose, bound to
 `127.0.0.1:55432`. `.env` supplies `DATABASE_URL`; `.env.postgres` holds the Compose
-credentials. The migration verified 13,080 rows across ten tables. All 230 tests now pass against the Compose database; both browser suites also
-passed after cutover. SQLite originals and source
-snapshots are retained; a PostgreSQL backup is in
-`data/postgres-backups/after-cutover-2026-10-18.dump`.
+credentials.
 
 ```bash
 docker compose --env-file .env.postgres ps
 .venv/bin/python tools/run_tests.py --browser
 ```
-
-See [POSTGRES_MIGRATION.md](../POSTGRES_MIGRATION.md) for the report, recovery, and backups.
 
 ## Runtime and services
 
@@ -80,9 +75,8 @@ the browser app on Tailscale.
 
 Hearth's authenticated main, Settings, Models, Downloads, chat history and
 system statistics routes returned 200. Trusted Tailscale HTTPS returned 200.
-All three Python runtime dependency checks passed. The current PostgreSQL suite
-passes 230 tests, including startup, MCP, model handoffs, migration, and first-time
-setup. Fresh database/admin creation and idempotent installer reruns were checked
+All three Python runtime dependency checks passed. The PostgreSQL suite
+covers startup, MCP, model handoffs, and first-time setup. Fresh database/admin creation and idempotent installer reruns were checked
 in a separate disposable Compose deployment.
 
 Media generation runs on CPU. The 512×512 one-step image check took about

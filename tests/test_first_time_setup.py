@@ -57,7 +57,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         self.assertTrue(setup.has_sqlite_data())
         self.assertEqual(path.read_bytes(), original)
 
-    def test_empty_sqlite_does_not_require_migration(self):
+    def test_empty_sqlite_has_no_data(self):
         (self.root / 'chat_history.db').touch()
         self.assertFalse(setup.has_sqlite_data())
 

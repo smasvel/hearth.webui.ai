@@ -1,4 +1,4 @@
-# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing
+# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing with Tailscale Support
 
 *Local AI, kept at home.*
 
@@ -16,11 +16,14 @@ using local AI for everyday questions, research, voice conversations, and learni
 [Get started](#first-time-setup) · [Explore features](#what-you-can-do-with-hearth) ·
 [Test models](#local-llm-testing-and-tool-calling-evaluation) ·
 [Use coding agents](#agentic-ai-and-local-coding-agents) ·
-[Personal AI](#a-personal-ai-assistant-on-your-own-hardware)
+[Personal AI](#a-personal-ai-assistant-on-your-own-hardware) ·
+[Search and download models](#search-download-and-manage-local-ai-models) ·
+[Secure coding gateway](#secure-model-gateway-for-opencode-continue-and-vs-code) ·
+[Tailscale remote access](#tailscale-remote-access-for-chat-and-coding-models) ·
+[All features](#current-feature-directory)
 
-> Hearth uses PostgreSQL 18 through Docker Compose. The live SQLite migration is complete.
-> See [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md) for setup, data migration, backups,
-> and isolated test commands. Historical SQLite references below describe the previous deployment.
+> Hearth uses PostgreSQL 18 through Docker Compose. See the
+> [installation guide](deploy/FIRST_TIME_INSTALL.md) to get started.
 
 A small Flask web UI for chatting with local models, with sidebar controls to load/unload
 models and switch which loaded model you're chatting with. Hearth started as an LM Studio
@@ -48,6 +51,179 @@ all documented in their own sections below.
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
 | Performance monitoring | Request metrics, token usage, generation speed, and live request activity |
+
+## Search, download, and manage local AI models
+
+Hearth combines **local model discovery, Hugging Face model search, model downloads,
+and model management** in one browser interface. Open **Downloads** as an
+administrator to find models, then use **Models** to load and evaluate them.
+
+1. Use **Search all backends** to search LM Studio, Lemonade, vLLM, KoboldCPP,
+   and FastFlowLM together, or search a single backend.
+2. Compare result cards by backend, model format, execution compatibility, size,
+   task type, update date, popularity, download status, and source link. The
+   tool-calling filter shows models explicitly marked as supporting tools.
+3. Download a compatible model. Follow progress and logs, inspect active downloads,
+   or cancel a download. Progress detail depends on the runtime.
+4. Open **Models** to load, unload, or delete installed models. Select a loaded
+   chat model in the conversation model picker.
+5. Run **Test tools** before using a model for coding or tool-driven workflows.
+
+| Backend | Model discovery and download sources | Execution |
+|---|---|---|
+| LM Studio | Hugging Face GGUF search; direct model name or repository URL | CPU/GPU as supported by LM Studio |
+| Lemonade | Curated catalog and Hugging Face search, including GGUF models | CPU/GPU/NPU according to model recipe and hardware |
+| vLLM | Catalog and Hugging Face causal language model repositories | Depends on the installed vLLM runtime; the documented host uses CPU |
+| KoboldCPP | Hugging Face GGUF search and downloads | CPU/GPU according to the installed build |
+| FastFlowLM | FastFlowLM NPU catalog and exact model tags | Supported AMD Ryzen AI NPU hardware |
+
+A model appearing in search does not establish that it fits your hardware or
+supports every feature. Hearth includes resource checks and load feedback; runtime
+compatibility, available memory, context size, and model capabilities still apply.
+Embedding, speech, image, and video models have separate purposes from chat models.
+
+## Test and compare models before coding
+
+On **Models**, select **Test tools** on a loadable chat model. You can queue installed
+chat models, follow the current check and elapsed time, cancel after the current
+request, reopen recent runs, and download JSON reports.
+
+The local LLM test suite covers chat and streaming, tool selection, typed JSON
+arguments, parallel tool calls, file reads and edits, exact file content, error
+recovery, large inputs, and context overflow. OpenCode scenarios also exercise
+planning, multi-file workflows, questions and answers, permission decisions, and
+continuation after context compaction. Reports distinguish failed checks from
+steps blocked by an earlier failure.
+
+Use these results to compare model/backend configurations for your coding workflow.
+The tests supply simulated tool results; real project execution takes place in
+**Agents** or your connected coding client. See
+[the evaluation overview](#local-llm-testing-and-tool-calling-evaluation) and
+[model test details](#model-tests-in-the-models-page).
+
+## Secure model gateway for OpenCode, Continue, and VS Code
+
+Use local models from a terminal coding agent or an editor on another machine.
+Hearth integrates with **OpenCode** and **Continue for VS Code** through
+backend-specific **OpenAI-compatible API endpoints**, with **Caddy HTTPS reverse
+proxies and bearer-token authentication** when the gateway is configured.
+
+1. Configure the desired inference backend and load a compatible coding model in
+   **Models**. Check its tool-test results and loaded context size.
+2. Configure the host's Caddy gateway and backend proxy services. These are separate
+   from the basic first-time app/database installation.
+3. Open Hearth's **Help** panel for the detected gateway addresses, CA certificate
+   trust instructions, and generated Continue YAML or OpenCode JSON configuration.
+   Configurations use the current model inventory and backend settings.
+4. Trust the gateway's local CA on the client when using Caddy's internal
+   certificates, and apply any client-specific CA settings shown in Help.
+5. Copy the configuration for your **LAN** or configured **Tailscale** address into
+   your coding client, then select the corresponding model.
+
+Use the addresses displayed by your installation: backend ports can differ, and
+hosted services may already occupy a port. The gateway requires its configured
+bearer token. Administrators can retrieve or regenerate per-user gateway tokens
+from **Users** and apply the supplied Caddy configuration. Token changes require
+updating and reloading Caddy to take effect at the gateway.
+
+Hearth's compatibility layers handle supported tool-call formats and request
+policies. Generated coding-client configurations account for model context limits;
+Settings also exposes context and OpenCode compaction controls. Request attribution
+helps distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
+Continue can additionally use a configured embedding model for codebase indexing.
+
+See [codebase RAG](#rag-for-continue--opencode-codebase-indexing--separate-from-cross-chat-memory-above),
+[client attribution](#current-x-hearth-client-convention), and
+[Tailscale access](#lan-ports-also-reachable-over-tailscale).
+
+## Tailscale remote access for chat and coding models
+
+Hearth includes **Tailscale access inside the app**: detected connection details,
+clickable remote browser links, backend connection tests, and ready-to-copy
+OpenCode and Continue configurations. Use the app to find the correct connection
+for your phone, laptop, or remote coding workstation.
+
+### Find your remote access links in Hearth
+
+1. Open **Help** from the chat interface and expand **Connect over Tailscale**.
+2. When the host has a detected Tailscale Serve route, this section shows a
+   **Chat** link using the host's trusted HTTPS DNS address, including its configured
+   port. Connect your other device to the same tailnet, open that link, and sign in
+   with your Hearth account.
+3. Administrators also get direct **Models**, **Downloads**, and **Settings** links
+   in the same section. Use these to search/download models, manage loaded models,
+   and change settings remotely with your normal account permissions.
+4. Use **Download the backend CA certificate** when configuring a remote coding
+   client. The section also provides copyable trust commands for Linux, macOS,
+   and Windows.
+
+Browser links appear when Hearth detects a matching Serve route to its local web
+service. Backend configurations appear when a Tailscale IP is available. A missing
+browser link does not establish that the backend API is unavailable.
+
+### Connect OpenCode or Continue through the app
+
+In **Help → Connect over Tailscale**, find **Tailscale configs (Continue & OpenCode)**.
+Copy the generated Continue YAML or OpenCode JSON into your client, then select a
+compatible loaded model. Hearth generates these from the current model inventory,
+backend ports, credentials, and context settings. LAN configurations stay available
+alongside the Tailscale versions.
+
+The browser link uses the host's Tailscale Serve DNS address. Coding clients use
+the numeric Tailscale IP and the configured Caddy backend ports, with bearer-token
+checks and the Caddy CA certificate. Follow the app's certificate instructions for
+those API connections; the browser's trusted HTTPS link has its own certificate.
+
+### Configure and check Tailscale in Settings
+
+Administrators can open **Settings** to:
+
+- See the host's automatically detected Tailscale IP.
+- Enable **Show the Tailscale section (and configs) on the Help page** and save.
+- Set **Manual IP override** if automatic detection fails.
+- Run the Tailscale backend tests for LM Studio, Lemonade, vLLM, KoboldCPP, or
+  FastFlowLM to check the configured gateway address and authentication from the host.
+
+These host-side tests help diagnose gateway configuration. Also connect from your
+remote device to check its network access and certificate setup.
+
+Install and connect [Tailscale](https://tailscale.com/download) on the host and
+client devices first. Configure the host's
+[Tailscale Serve route](https://tailscale.com/docs/features/tailscale-serve) for
+private browser HTTPS and Caddy gateways for model API access. Hearth's Settings
+controls expose the integration; host networking and tailnet access policy are
+configured separately. The first-time Hearth installer does not perform that setup.
+
+## Current feature directory
+
+| Feature | What Hearth supports | Where to start |
+|---|---|---|
+| Local AI chat | Streamed replies, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
+| Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation | Downloads |
+| Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
+| Model evaluation | Tool and coding-workflow checks, queued runs, saved results, JSON reports, and repair-profile reset | Models → Test tools |
+| Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
+| Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
+| Persistent coding agents | Local project tasks, acceptance criteria, queued assignments, activity, questions, permission responses, steering, pause/resume/stop, and optional verification commands | Agents; OpenCode required |
+| Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
+| Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#rag-for-continue--opencode-codebase-indexing--separate-from-cross-chat-memory-above) |
+| Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-online-research); Browse history |
+| Voice | Microphone transcription, spoken replies, and hands-free conversation with configured speech models | [Voice](#voice-mic-input-and-spoken-responses-2026-07-22) |
+| Translation | Local voice, image, and video translation with configured compatible models | Chat translation controls |
+| Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#image-generation-comfyui--sd-turbo); [Video generation](#video-generation-comfyui--wan-21) |
+| Study and practice | Built-in and user-created quiz decks, generated questions, and state DMV practice | Quizzes; DMV |
+| Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, and supported NPU statistics | Metrics; system statistics |
+| User administration | Accounts, roles, password resets, per-user data, and gateway-token controls | Users |
+| Runtime settings | Backend URLs and credentials, connection tests, context settings, and configured Tailscale controls | Settings |
+| Host security checks | Administrator-triggered security scans and reports using the configured host tools | [Security scanner](#admin-chat-host-security-scanner-2026-07-30) |
+| FLM conversion tools | Conversion profile inspection and validation; job execution requires the matching converter and validated artifacts | FLM converter; experimental |
+| Self-hosted operation | PostgreSQL persistence, Docker Compose database, first-time installer, and a systemd user service | [Installation](deploy/FIRST_TIME_INSTALL.md) |
+
+Feature availability follows the components you install and configure. Speech,
+translation, embeddings, ComfyUI media generation, coding agents, gateway access,
+and NPU inference each require their corresponding runtime, models, or host setup.
+The experimental custom FLM conversion path remains unavailable without its required
+validation and kernel/ABI artifacts.
 
 ## Local LLM testing and tool-calling evaluation
 
@@ -150,9 +326,6 @@ The installer creates the Python environment, installs requirements and Chromium
 starts PostgreSQL in Docker Compose, generates private database/session credentials,
 prompts for the first admin password, and enables the Hearth user service. It keeps
 existing users and secrets on reruns. Model backends and weights are installed separately.
-
-For an existing SQLite installation, use [the migration procedure](POSTGRES_MIGRATION.md)
-instead of first-time setup. The installer refuses to leave SQLite data behind.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -274,9 +447,7 @@ sudo apt update
 sudo apt full-upgrade
 ```
 
-The first audit on this host also found that `.env`, the TLS private key, and SQLite files
-containing chat history, password hashes, settings, and personal Caddy tokens were readable by
-group/other users. They are now owner-only (`0600`); the public TLS certificate remains `0644`.
+Keep application credentials and the TLS private key readable only by their owner.
 Recommended permissions for every deployment:
 
 ```bash

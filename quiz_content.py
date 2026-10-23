@@ -4,7 +4,7 @@ A "deck" is one practice test: a slug, display name, category, matching aliases 
 natural phrases like "start DMV California test" resolve to it), meta (pass mark, official
 size, source), and a list of questions. Everything here is static reference material —
 question banks are catalog data, not user data, so they live in code. User-authored decks
-live in SQLite instead (see quiz_store.py); the two are merged into one registry there.
+live in PostgreSQL instead (see quiz_store.py); the two are merged into one registry there.
 
 Questions are practice material paraphrased from official sources (state driver handbooks,
 the USCIS civics test, MSF motorcycle guidance, the CDL manual). Always a study aid, never

@@ -4,9 +4,6 @@ Run these commands from the Hearth project directory. This installs the web app
 and PostgreSQL; model runtimes and model downloads are configured separately.
 Use an ordinary account with sudo access and a graphical or terminal login session.
 
-For an existing SQLite installation, follow [the migration guide](../POSTGRES_MIGRATION.md)
-instead. First-time setup refuses to skip over stored SQLite data.
-
 ## 1. Install system dependencies
 
 ```bash
@@ -87,7 +84,7 @@ and credentials under Settings. LM Studio's default endpoint is
 `http://localhost:1234`; Lemonade's is `http://localhost:13305`. Download a model
 and load it from Models. PostgreSQL setup does not install model weights.
 
-## Verify, maintain, and back up
+## Verify and maintain
 
 ```bash
 docker compose --env-file .env.postgres ps
@@ -106,8 +103,7 @@ For an application update, install requirements again and restart the service:
 systemctl --user restart ai-webui.service
 ```
 
-Keep `.env` and `.env.postgres` private and backed up. PostgreSQL lives in the
+Keep `.env` and `.env.postgres` private. PostgreSQL lives in the
 Compose named volume; changing `POSTGRES_PASSWORD` in a file does not rotate the
 password inside an existing database. Do not use `docker compose down -v` to update
-containers, because it deletes the database volume. Backup instructions and SQLite
-cutover details are in [POSTGRES_MIGRATION.md](../POSTGRES_MIGRATION.md).
+containers, because it deletes the database volume.

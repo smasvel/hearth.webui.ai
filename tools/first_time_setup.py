@@ -111,7 +111,7 @@ def main():
     subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL)
     existing = dotenv_values(ROOT / '.env')
     if not existing.get('DATABASE_URL') and has_sqlite_data():
-        raise RuntimeError('Existing SQLite data found. Use tools/cutover_postgres.py to migrate it before running first-time setup.')
+        raise RuntimeError('Existing local database files contain data. Configure DATABASE_URL for your installation before running setup.')
     values = prepare_environment(args.postgres_port)
     # This process must use the selected configuration even if the caller exported
     # a different URL for a previous development/test session.
