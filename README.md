@@ -82,6 +82,30 @@ supports every feature. Hearth includes resource checks and load feedback; runti
 compatibility, available memory, context size, and model capabilities still apply.
 Embedding, speech, image, and video models have separate purposes from chat models.
 
+### Model picks for faster replies
+
+For a smaller desktop that can fit a quantized 9B model, my recommended
+all-around pick is [Ornith-1.5-9B-GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF),
+starting with its **Q4_K_M** quantization. It is a dense 9B model distributed in
+GGUF for local inference, giving a stronger quality and capability balance than
+the tiny models below while remaining practical on a desktop. Actual memory use
+and speed depend on quantization, context length, and how much work can run on the
+GPU.
+
+For quick everyday chat on a supported Ryzen AI NPU, start with FastFlowLM's
+`qwen3:0.6b`. On the documented host it produced about **57 generated tokens per
+second** in a live chat request. Its small size helps response speed, while larger
+models are generally a better fit for complex reasoning and coding tasks.
+
+For coding on that host, the measured KoboldCPP setup with Qwen3 8B and Qwen3
+0.6B speculative decoding produced about **5.1 tokens per second**, compared with
+**4.3 tokens per second** without speculative decoding. Long coding histories can
+still make prompt processing slow; use a GPU-backed model that fits your hardware
+and keep context focused when turnaround matters. These are measurements from one
+machine and model configuration, not speed guarantees. Compare your own backend and
+model in **Metrics**, since hardware, quantization, context length, and workload all
+affect response time.
+
 ## Test and compare models before coding
 
 On **Models**, select **Test tools** on a loadable chat model. You can queue installed
