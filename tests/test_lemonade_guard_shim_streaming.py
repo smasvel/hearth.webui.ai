@@ -7,6 +7,7 @@ reasoning_content the moment it arrives (and streams everything live when the re
 declares no tools), matching flm_tool_shim.py's tee().
 """
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -54,12 +55,32 @@ class _FakeUpstream:
         pass
 
 
+class _StallingUpstream:
+    """Sends nothing until `gate` is set, like Lemonade ingesting a large prompt."""
+
+    ok = True
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
+    def __init__(self, gate):
+        self._gate = gate
+
+    def iter_lines(self, chunk_size=None):
+        self._gate.wait(5)
+        yield sse({"content": "late"})
+        yield b"data: [DONE]"
+
+    def close(self):
+        self._gate.set()
+
+
 class StreamedResponseTests(unittest.TestCase):
     """Drive the real view through Flask's test client, recording pull/yield ordering."""
 
-    def _collect(self, body, lines):
+    def _collect(self, body, lines=None, upstream=None):
         events = []
-        upstream = _FakeUpstream(lines, events)
+        if upstream is None:
+            upstream = _FakeUpstream(lines, events)
         with patch.object(shim, "model_test_profiles"), \
                 patch.object(shim, "_prepare_agent_request", side_effect=lambda b: b), \
                 patch.object(shim, "_is_npu_model", return_value=False), \
@@ -76,13 +97,16 @@ class StreamedResponseTests(unittest.TestCase):
                 events.append(("out", chunk if isinstance(chunk, bytes) else chunk.encode()))
         return events
 
-    def test_no_tools_streams_every_line_immediately(self):
+    def test_no_tools_streams_lines_without_buffering_the_response(self):
         lines = [sse({"reasoning_content": "think"}), sse({"content": "answer"}),
                  sse({}, finish="stop"), b"data: [DONE]"]
         events = self._collect({"model": "GLM-4.7-Flash-GGUF", "stream": True}, lines)
-        # Strictly interleaved: each upstream line is yielded before the next is pulled.
-        kinds = [kind for kind, _ in events]
-        self.assertEqual(kinds, ["up", "out", "up", "out", "up", "out", "up", "out"])
+        # The reader may read at most one line ahead, but the whole response is never
+        # buffered before the first output (that was the 2026-10-18 hang).
+        first_out = next(i for i, (kind, _) in enumerate(events) if kind == "out")
+        self.assertLessEqual(sum(1 for kind, _ in events[:first_out] if kind == "up"), 2)
+        last_up = max(i for i, (kind, _) in enumerate(events) if kind == "up")
+        self.assertGreater(last_up, first_out)
         # The shim appends a newline delimiter to each forwarded line.
         self.assertEqual([raw for kind, raw in events if kind == "out"],
                          [line + b"\n" for line in lines])
@@ -93,19 +117,47 @@ class StreamedResponseTests(unittest.TestCase):
         body = {"model": "GLM-4.7-Flash-GGUF", "stream": True,
                 "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}]}
         events = self._collect(body, lines)
-        # The reasoning is forwarded before the upstream content line is even pulled.
+        # The reasoning is forwarded before the upstream content line is replayed.
         pulled_before_live = None
         for index, (kind, raw) in enumerate(events):
             if kind == "out" and b"reasoning_content" in raw:
                 pulled_before_live = [r for k, r in events[:index] if k == "up"]
                 break
         self.assertIsNotNone(pulled_before_live, "live reasoning event was never yielded")
-        self.assertEqual(len(pulled_before_live), 1)  # only the reasoning line had been pulled
+        # One-line read-ahead is allowed; the full response must still be buffered.
+        self.assertLessEqual(len(pulled_before_live), 2)
 
         # And the buffered replay must not repeat the reasoning.
         after = [raw for kind, raw in events if kind == "out"]
         self.assertEqual(sum(b"reasoning_content" in raw for raw in after), 1)
         self.assertEqual(b"".join(after).count(b"answer"), 1)
+
+    def test_tools_forward_sse_comments_live(self):
+        lines = [b": ping", sse({"content": "answer"}),
+                 sse({}, finish="stop"), b"data: [DONE]"]
+        body = {"model": "GLM-4.7-Flash-GGUF", "stream": True,
+                "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}]}
+        events = self._collect(body, lines)
+        outputs = [raw for kind, raw in events if kind == "out"]
+        self.assertIn(b": ping\n", outputs)
+        # The ping must escape while content is still buffered for repair.
+        first_ping = outputs.index(b": ping\n")
+        self.assertNotIn(b"answer", b"".join(outputs[:first_ping]))
+        # It appears only live; comments are omitted from the buffered replay.
+        self.assertEqual(outputs.count(b": ping\n"), 1)
+
+    def test_keepalive_comment_while_upstream_is_silent(self):
+        gate = threading.Event()
+        upstream = _StallingUpstream(gate)
+        body = {"model": "GLM-4.7-Flash-GGUF", "stream": True}
+        threading.Timer(0.3, gate.set).start()
+        with patch.object(shim, "_UPSTREAM_IDLE_KEEPALIVE_SECONDS", 0.05):
+            events = self._collect(body, upstream=upstream)
+        outputs = [raw for kind, raw in events if kind == "out"]
+        self.assertIn(b": keepalive\n\n", outputs)
+        self.assertTrue(any(b"late" in raw for raw in outputs))
+        self.assertLess(outputs.index(b": keepalive\n\n"),
+                        next(i for i, raw in enumerate(outputs) if b"late" in raw))
 
 
 if __name__ == "__main__":

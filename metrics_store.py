@@ -174,7 +174,7 @@ def model_report(hours: float | None = 24, conn=None) -> list[dict]:
     where, params = _window_clause(hours)
     where += (" AND" if where else " WHERE") + " request_type IN ('chat_completion','completion')"
     rows = [dict(r) for r in conn.execute(f"""
-        SELECT COALESCE(NULLIF(model,''),'Unknown model') model,
+        SELECT COALESCE(NULLIF(model,''),'Unattributed requests') model,
                COALESCE(backend,'Unknown backend') backend, COUNT(*) requests,
                SUM(prompt_tokens) input_tokens, SUM(completion_tokens) output_tokens,
                COUNT(completion_tokens) token_samples,

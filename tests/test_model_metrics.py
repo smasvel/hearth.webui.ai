@@ -53,3 +53,10 @@ class ModelReportTests(unittest.TestCase):
         row = metrics_store.model_report(1)[0]
         self.assertIsNone(row["output_tokens"])
         self.assertIsNone(row["error_rate"])
+
+    def test_proxy_records_without_model_are_labeled_as_unattributed(self):
+        metrics_store.record(source="opencode", backend="lemonade",
+                             request_type="chat_completion", status=0)
+        row = metrics_store.model_report(1)[0]
+        self.assertEqual(row["model"], "Unattributed requests")
+        self.assertEqual(row["unknown_status"], 1)

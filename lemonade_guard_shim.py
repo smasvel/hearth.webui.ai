@@ -29,6 +29,7 @@ for the same reason (app.py's own load path already runs _free_npu_except() itse
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
 import time
@@ -336,7 +337,8 @@ def _record_chat_metric(*, started: float, source: str, model: str, is_npu: bool
         tps = round(completion / (duration_ms / 1000), 3)
     live_report.record_metric(
         source=source, backend="lemonade", model=model,
-        request_type="chat_completion", ask_category="chat",
+        request_type="chat_completion",
+        ask_category="code" if source in ("opencode", "vscode", "vscode_continue") else "chat",
         duration_ms=duration_ms, prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=completion, total_tokens=usage.get("total_tokens"),
         tokens_per_sec=tps, status=status, client_ip=client_ip, is_npu=is_npu,
@@ -473,6 +475,81 @@ def _unload_before_implicit_load(model_id: str) -> None:
         raise RuntimeError(f"Could not unload the active Lemonade model before loading '{model_id}': {exc}") from exc
 
 
+_UPSTREAM_IDLE_KEEPALIVE_SECONDS = 10.0
+_STREAM_END = object()
+
+
+class _KeepaliveLineReader:
+    """Iterate Lemonade's SSE body without leaving the client silent for minutes.
+
+    Real incident (2026-10-22): OpenCode aborted GLM-4.7-Flash turns at exactly 300s
+    (undici's default headers/body timeout) and immediately retried. Two shim behaviours
+    combined to cause it: while a tools request buffers content/tool-calls for repair, no
+    bytes are written until the whole response is assembled, and prompt ingestion of a
+    large OpenCode context can itself take minutes before Lemonade emits its first SSE
+    line. The client never saw a byte, so it retried; the retry queued behind the still-
+    generating first request (llama.cpp runs --parallel 1), which made the model look hung
+    and produced duplicate requests in Caddy/OpenCode logs.
+
+    A background thread drains the upstream response so the request thread can yield an
+    SSE comment (ignored by SSE parsers) every `_UPSTREAM_IDLE_KEEPALIVE_SECONDS`. It also
+    makes a disconnected client visible within ~10s instead of only when the buffered
+    response is finally written, so the upstream generation is closed promptly and stops
+    blocking the next retry. `maxsize=1` keeps at most one line of read-ahead.
+    """
+
+    def __init__(self, upstream):
+        self._upstream = upstream
+        self._lines: queue.Queue = queue.Queue(maxsize=1)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(
+            target=self._read, daemon=True, name="lemonade-sse-reader"
+        )
+        self._thread.start()
+
+    def _put(self, item) -> bool:
+        while not self._stopped.is_set():
+            try:
+                self._lines.put(item, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _read(self) -> None:
+        try:
+            for line in self._upstream.iter_lines(chunk_size=1024):
+                if not self._put(line):
+                    return
+        except BaseException as exc:  # re-raised on the request thread
+            self._put(exc)
+        finally:
+            self._put(_STREAM_END)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while not self._stopped.is_set():
+            try:
+                item = self._lines.get(timeout=_UPSTREAM_IDLE_KEEPALIVE_SECONDS)
+            except queue.Empty:
+                return None  # caller sends an SSE keepalive comment
+            if item is _STREAM_END:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        raise StopIteration
+
+    def close(self) -> None:
+        self._stopped.set()
+        try:
+            self._upstream.close()
+        except Exception:
+            pass
+
+
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
     started = time.monotonic()
@@ -503,7 +580,10 @@ def chat_completions():
             if npu_lock_held:
                 _NPU_REQUEST_LOCK.release()
                 npu_request_lock.release(cross_npu_lock)
-            return {"error": {"message": str(exc), "type": "model_unload_failed"}}, 503
+            _record_chat_metric(started=started, source=source, model=model, is_npu=is_npu,
+                                status=503, usage=None, client_ip=client_ip)
+            return {"error": {"message": str(exc), "type": "model_unload_failed"}}, 503, {
+                "X-Hearth-Metrics-Recorded": "1"}
     streamed = bool(body.get("stream"))
     # Reports this request into the metrics page's live-activity feed (see live_report.py's
     # docstring) - this shim is the only thing inline for real OpenCode/Continue Lemonade
@@ -517,7 +597,7 @@ def chat_completions():
         upstream, utf8_retries = _post_chat_with_utf8_recovery(
             body, _forward_headers(request.headers), streamed,
         )
-    except requests.RequestException:
+    except requests.RequestException as exc:
         # Without this, a dead/unreachable Lemonade would leave this request stuck showing
         # "streaming" in the live feed forever - finish() is only ever called below, which
         # never runs if this raises.
@@ -525,7 +605,11 @@ def chat_completions():
         if npu_lock_held:
             _NPU_REQUEST_LOCK.release()
             npu_request_lock.release(cross_npu_lock)
-        raise
+        status = 504 if isinstance(exc, requests.Timeout) else 502
+        _record_chat_metric(started=started, source=source, model=model, is_npu=is_npu,
+                            status=status, usage=None, client_ip=client_ip)
+        return {"error": {"message": "Lemonade upstream request failed.",
+                          "type": "upstream_error"}}, status, {"X-Hearth-Metrics-Recorded": "1"}
     if streamed:
         # Only a request that actually declares tools can produce tool calls, and only tool
         # calls need the whole-response repair + degeneracy guard below (they assemble across
@@ -545,14 +629,32 @@ def chat_completions():
             pending_chars = 0
             pending_content = []
             reported_finish = False
+            metric_recorded = False
+            failure_status = 502
+            reader = _KeepaliveLineReader(upstream)
             try:
-                for raw_line in upstream.iter_lines(chunk_size=1024):
+                for raw_line in reader:
                     if raw_line is None:
+                        # SSE comment: ignored by clients, but keeps OpenCode's undici
+                        # body/header timeout from firing while prompt ingestion or
+                        # buffered tool-output repair is still in progress.
+                        yield b": keepalive\n\n"
                         continue
                     if not raw_line.startswith(b"data: "):
                         out_line = raw_line + b"\n" if raw_line else b"\n"
                         if buffer_tool_output:
-                            outgoing.append(out_line)
+                            # Lemonade/llama.cpp emits an SSE comment (": ping") every
+                            # second while it ingests a prompt. Buffering those along with
+                            # tool output left OpenCode with zero bytes for minutes, so
+                            # undici aborted at 300s and retried (2026-10-22). Comments
+                            # carry no tool-call state: forward them live and omit them
+                            # from the buffered replay so they are not duplicated.
+                            if raw_line.startswith(b":"):
+                                yield out_line
+                            else:
+                                outgoing.append(out_line)
+                                if not raw_line:
+                                    yield out_line
                         else:
                             yield out_line
                         continue
@@ -622,6 +724,7 @@ def chat_completions():
                     started=started, source=source, model=model, is_npu=is_npu,
                     status=upstream.status_code, usage=usage, client_ip=client_ip,
                 )
+                metric_recorded = True
                 if buffer_tool_output:
                     repaired = granite_tool_compat.repair_sse(outgoing, body)
                     repaired = tool_argument_json.repair_sse(repaired)
@@ -630,20 +733,26 @@ def chat_completions():
                     repaired = exact_file_content.repair_sse(repaired, body)
                     yield from generation_guard.guard_sse_bytes(repaired)
                 reported_finish = True
+            except GeneratorExit:
+                failure_status = 499
+                raise
             finally:
+                # Stop the reader and close the upstream connection. On a client disconnect
+                # this now happens within one keepalive interval instead of only when the
+                # buffered response is finally written, so the next retry is not queued
+                # behind a generation nobody is listening to.
+                reader.close()
                 # Guarantees the live-feed entry never gets stuck showing "streaming" forever
                 # if the client disconnects mid-stream or Lemonade drops the connection - see
                 # flm_tool_shim.py's identical guard for the full reasoning. Idempotent, so
                 # this is a no-op in the normal-completion case.
                 if not reported_finish:
-                    # Closing the upstream response is also essential: otherwise a terminated
-                    # OpenCode client leaves FastFlowLM generating invisibly with the NPU lock
-                    # held, and the next coding turn appears to hang or terminate too.
-                    try:
-                        upstream.close()
-                    except Exception:
-                        pass
                     live_report.finish(live_id, status="error", total_tokens=usage.get("completion_tokens"))
+                if not metric_recorded:
+                    _record_chat_metric(
+                        started=started, source=source, model=model, is_npu=is_npu,
+                        status=failure_status, usage=usage, client_ip=client_ip,
+                    )
                 if npu_lock_held:
                     _NPU_REQUEST_LOCK.release()
                     npu_request_lock.release(cross_npu_lock)
