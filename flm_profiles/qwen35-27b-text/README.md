@@ -40,7 +40,7 @@ Do not change `validated` or `runtime.ready` merely to clear the UI gate.
 ## Commands
 
 ```bash
-cd /home/YOUR_USERNAME/ai_projects/ai-webui
+cd ~/projects/ai-webui
 python3 -m unittest discover -s tests -v
 tools/check_flm_backend.py /path/to/conversion --allow-incomplete
 ```
@@ -48,8 +48,8 @@ tools/check_flm_backend.py /path/to/conversion --allow-incomplete
 Converter regressions:
 
 ```bash
-cd /home/YOUR_USERNAME/ai_projects/FLM_Q4NX_Converter
-PYTHONPATH=/home/YOUR_USERNAME/ai_projects/llama.cpp/gguf-py:. \
+cd ~/projects/FLM_Q4NX_Converter
+PYTHONPATH=~/projects/llama.cpp/gguf-py:. \
   venv/bin/python -m unittest discover -s tests -v
 ```
 

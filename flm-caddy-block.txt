@@ -1,4 +1,5 @@
-
+# Example only: replace the documentation address and set HEARTH_BACKEND_TOKEN
+# to a private, randomly generated token in the Caddy service environment.
 192.0.2.10:8447, hearth-host:8447, localhost:8447, 127.0.0.1:8447 {
 	tls internal
 

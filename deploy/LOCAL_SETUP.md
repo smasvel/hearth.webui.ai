@@ -1,13 +1,13 @@
-# Hearth on example-host
+# Hearth on example host
 
-Configured initially on October 13, 2026.
+Example deployment configuration. Addresses and paths are placeholders.
 
 For a new machine, use [FIRST_TIME_INSTALL.md](FIRST_TIME_INSTALL.md). The commands
-and model inventory below describe the existing example-host host, not a generic installer.
+and model inventory below describe the existing example host, not a generic installer.
 
 Open https://machine.example.ts.net:8443 while connected to Tailscale.
 Tailscale Serve provides trusted HTTPS and proxies to Hearth's local TLS server
-on port 5443. The existing RF Signals route on port 443 is preserved.
+on port 5443. Other existing routes should be preserved.
 
 ## Basic models
 
@@ -54,7 +54,7 @@ at once. The final selected default is `lmstudio/qwen/qwen3.5-4b` with a
 
 FFmpeg, Chromium, Caddy, Lynis, Vulkan libraries, development tools and the
 FastFlowLM/XRT packages are installed. Browser and persistent Python MCP tools
-passed live calls. The narrow Lynis sudoers rule is configured for `HEARTH_USER`.
+passed live calls. The narrow Lynis sudoers rule is configured for the application account.
 
 Authenticated Caddy backend ports:
 

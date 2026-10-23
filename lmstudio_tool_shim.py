@@ -27,7 +27,7 @@ app = Flask(__name__)
 
 # Real failure observed live (2026-09-05): asked to write-then-read a file in the working
 # directory, this 1.2B model twice invented an unrelated absolute path instead of the one
-# implied by the conversation - once the sandbox root '/', once '/home/YOUR_USERNAME/python-repl-
+# implied by the conversation - once the sandbox root '/', once '/path/to/python-repl-
 # projects/', which only appears as an example path inside the python-repl MCP tool's own
 # description text, not anywhere in the actual request. The model is bleeding a path mentioned
 # in a tool's *description* into its *arguments* for a different tool. This reminder is

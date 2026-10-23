@@ -24,7 +24,7 @@ def flm_json(flm_bin, flm_dir, args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("conversion", type=Path)
-    parser.add_argument("--flm-dir", type=Path, default=Path("/home/YOUR_USERNAME/fastflowlm"))
+    parser.add_argument("--flm-dir", type=Path, default=Path.home() / "fastflowlm")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-incomplete", action="store_true")
     args = parser.parse_args()

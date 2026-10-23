@@ -29,3 +29,10 @@ backups/
 *-backups/
 *.bak
 *.backup
+
+# Private agent configuration and cloud credentials
+.agents/
+.codex/
+.aws/
+*.pem
+*.key

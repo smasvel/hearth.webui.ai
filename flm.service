@@ -1,3 +1,4 @@
+# Template: install with deploy/install-host-deps.sh to fill host-specific values.
 [Unit]
 Description=FastFlowLM NPU server (standalone, OpenAI-compatible)
 Documentation=https://github.com/FastFlowLM/FastFlowLM
@@ -9,10 +10,10 @@ User=HEARTH_USER
 SupplementaryGroups=render
 WorkingDirectory=/opt/fastflowlm
 Environment=LD_LIBRARY_PATH=/opt/fastflowlm/lib
-Environment=HOME=/home/HEARTH_USER
+Environment=HOME=HEARTH_HOME
 LimitMEMLOCK=infinity
 # MiniCPM uses its 256K maximum; models with a verified kernel limit retain 8K.
-ExecStart=/path/to/ai-webui/.venv/bin/python /path/to/ai-webui/flm_serve.py
+ExecStart=HEARTH_PROJECT_DIR/.venv/bin/python HEARTH_PROJECT_DIR/flm_serve.py
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=600

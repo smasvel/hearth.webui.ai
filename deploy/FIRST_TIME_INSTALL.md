@@ -12,7 +12,7 @@ sudo bash deploy/install-host-deps.sh --base-only
 
 This installs Python and venv support, Docker Engine, Docker Compose, ACL tools,
 FFmpeg and curl. It starts Docker and adds your account to the Docker group.
-The script's mode without `--base-only` is the original example-host host's full backend
+The script's mode without `--base-only` is the original example host's full backend
 configuration, with machine-specific paths; use `--base-only` on a new machine.
 
 Log out and back in so your processes inherit Docker group membership. Verify:
