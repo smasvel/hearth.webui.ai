@@ -49,12 +49,48 @@ _TOOL_HISTORY_HEAD_CHARS = 1500
 
 _TOOL_HISTORY_TAIL_CHARS = 3500
 
+import re
+
+
+_STOP_WITHOUT_TOOLS = re.compile(
+    r"\b(?:do not|don't|dont|without)\b.{0,100}\b(?:call|use|invoke|run)\b.{0,30}\b(?:more|any|another|further)?\s*(?:tools?|tool calls?)\b"
+    r"|\b(?:do not|don't|dont)\s+(?:call|use|invoke|run)\s+(?:any\s+)?(?:more\s+)?(?:tools?|tool calls?)\b"
+    r"|\b(?:do not|don't|dont)\s+ask\s+again\b.*$"
+    r"|\b(?:reply|respond|answer|say)\b.{0,100}\b(?:and|then)\s+(?:stop|end the turn)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_REQUESTED_ACTION = re.compile(
+    r"\b(?:read|inspect|find|search|edit|change|update|write|create|delete|remove|run|test|verify|check|install|build|implement|continue|next call|call)\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_text_only_turn(messages: list[dict]) -> bool:
+    """Recognize a narrow, explicit stop instruction on the latest user turn."""
+    latest_user = next((str(message.get("content") or "")
+                        for message in reversed(messages)
+                        if message.get("role") == "user"), "")
+    if not latest_user or not _STOP_WITHOUT_TOOLS.search(latest_user):
+        return False
+    # A direct answer may coexist with an older task. If this turn also asks for
+    # concrete work, preserve the tools needed to carry it out.
+    residual = _STOP_WITHOUT_TOOLS.sub("", latest_user)
+    # Ignore action words that are part of a prohibition or a quoted reply.
+    residual = re.sub(r"\b(?:do not|don't|dont|never)\b[^.!?]*(?:[.!?]|$)", "", residual, flags=re.IGNORECASE)
+    residual = re.sub(r"['\"][^'\"]*['\"]", "", residual)
+    return not _REQUESTED_ACTION.search(residual)
+
 def prepare(body: dict, *, compact_history=True, qwen_penalty=True) -> dict:
     """Harden tools-bearing Qwen requests against a client-ending narration-only turn."""
-    if not body.get("tools") or body.get("tool_choice") == "none":
+    if not body.get("tools"):
         return body
     prepared = dict(body)
     messages = [dict(message) for message in (body.get("messages") or [])]
+    if _explicit_text_only_turn(messages):
+        prepared["tool_choice"] = "none"
+        return prepared
+    if body.get("tool_choice") == "none":
+        return body
     # OpenCode resends the complete agent history on every turn. Raw HTML/command output can
     # be hundreds of KB; one real DuckDuckGo debugging session consequently spent >300s in
     # NPU prefill and the client disconnected before the first token. Preserve the useful

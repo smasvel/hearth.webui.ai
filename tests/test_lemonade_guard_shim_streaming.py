@@ -45,8 +45,10 @@ class _FakeUpstream:
     def __init__(self, lines, events):
         self._lines = lines
         self._events = events
+        self.chunk_size = None
 
     def iter_lines(self, chunk_size=None):
+        self.chunk_size = chunk_size
         for line in self._lines:
             self._events.append(("up", line))
             yield line
@@ -95,6 +97,8 @@ class StreamedResponseTests(unittest.TestCase):
             response = shim.app.test_client().post("/v1/chat/completions", json=body)
             for chunk in response.response:
                 events.append(("out", chunk if isinstance(chunk, bytes) else chunk.encode()))
+        if isinstance(upstream, _FakeUpstream):
+            self.assertEqual(upstream.chunk_size, 1)
         return events
 
     def test_no_tools_streams_lines_without_buffering_the_response(self):

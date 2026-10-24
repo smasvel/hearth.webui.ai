@@ -116,7 +116,7 @@ def chat_stream(
         ) as response:
             if response.status_code >= 400:
                 raise SGLangError(_http_error(response))
-            for line in response.iter_lines():
+            for line in response.iter_lines(chunk_size=1):
                 if line:
                     yield line.decode("utf-8", errors="replace")
     except requests.RequestException as exc:

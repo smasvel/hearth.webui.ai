@@ -33,7 +33,6 @@ class BackgroundChatTests(unittest.TestCase):
         self.stack.enter_context(patch.object(app, "_remember_exchange"))
         self.stack.enter_context(patch.object(app.web_search, "should_search_web", return_value=False))
         self.stack.enter_context(patch.object(app.metrics_store, "record"))
-        self.stack.enter_context(patch.object(app.generation_guard, "guard_sse_stream", side_effect=lambda lines: lines))
         self.gate = threading.Event()
         self.addCleanup(self.gate.set)
         self.closed = threading.Event()
@@ -42,6 +41,7 @@ class BackgroundChatTests(unittest.TestCase):
         def backend(*args, **kwargs):
             try:
                 self.started.set()
+                yield self.reasoning_chunk("Thinking live")
                 yield self.chunk("First ")
                 self.gate.wait(5)
                 yield self.chunk("finished response")
@@ -57,6 +57,10 @@ class BackgroundChatTests(unittest.TestCase):
     @staticmethod
     def chunk(text):
         return "data: " + json.dumps({"choices": [{"delta": {"content": text}}]})
+
+    @staticmethod
+    def reasoning_chunk(text):
+        return "data: " + json.dumps({"choices": [{"delta": {"reasoning_content": text}}]})
 
     @staticmethod
     def client_for(uid):
@@ -98,6 +102,7 @@ class BackgroundChatTests(unittest.TestCase):
         returning = self.client_for("owner")
         data = returning.get("/api/conversations/conversation").get_json()
         self.assertEqual(data["generation"]["content"], "First ")
+        self.assertEqual(data["generation"]["reasoning"], "Thinking live")
         self.assertEqual(data["generation"]["status"], "running")
         self.gate.set()
         self.wait_until(lambda: job.status != "running")

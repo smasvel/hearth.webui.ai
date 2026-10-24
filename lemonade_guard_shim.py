@@ -518,7 +518,9 @@ class _KeepaliveLineReader:
 
     def _read(self) -> None:
         try:
-            for line in self._upstream.iter_lines(chunk_size=1024):
+            # A 1024-byte buffer can hold back many tiny SSE token events. Read
+            # incrementally so thinking and answer deltas reach clients promptly.
+            for line in self._upstream.iter_lines(chunk_size=1):
                 if not self._put(line):
                     return
         except BaseException as exc:  # re-raised on the request thread

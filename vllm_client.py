@@ -688,7 +688,7 @@ def chat_stream(
                 # injected page text blows the window), so that one gets a plain-English
                 # rewrite pointing at the real fixes.
                 raise VLLMError(_explain_http_error(resp))
-            for line in resp.iter_lines():
+            for line in resp.iter_lines(chunk_size=1):
                 if line:
                     yield line.decode("utf-8", errors="replace")
     except requests.RequestException as exc:

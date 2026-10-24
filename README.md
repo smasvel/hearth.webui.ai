@@ -41,7 +41,7 @@ all documented in their own sections below.
 
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Browser chat, streamed responses, saved conversations, model switching, and supported reasoning displays |
+| Local AI chat | Live answer and reasoning updates during generation, saved conversations, model switching, and supported reasoning displays |
 | Model management | Search, download, load, unload, and delete models through supported backends |
 | LLM evaluation | Per-model tool-calling checks, typed argument validation, streamed and ordinary responses, and saved test reports |
 | Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
@@ -156,8 +156,13 @@ updating and reloading Caddy to take effect at the gateway.
 
 Hearth's compatibility layers handle supported tool-call formats and request
 policies. Generated coding-client configurations account for model context limits;
-Settings also exposes context and OpenCode compaction controls. Request attribution
-helps distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
+Settings also exposes context and OpenCode compaction controls. For compatible
+coding requests, Hearth preserves explicit reasoning preferences, applies its Qwen
+repetition control, and shortens oversized historical tool output while retaining
+its beginning and end. It honors a clear text-only completion instruction without
+disabling tools when the same turn requests concrete work. These policies help avoid
+unnecessary tool calls and repeated long prefill. Request attribution helps
+distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
 Continue can additionally use a configured embedding model for codebase indexing.
 
 See [codebase RAG](#codebase-retrieval-for-coding-clients),
@@ -226,7 +231,7 @@ configured separately. The first-time Hearth installer does not perform that set
 
 | Feature | What Hearth supports | Where to start |
 |---|---|---|
-| Local AI chat | Streamed replies, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
+| Local AI chat | Live answer and reasoning updates, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
 | Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation | Downloads |
 | Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
 | Model evaluation | Tool and coding-workflow checks, queued runs, saved results, JSON reports, and repair-profile reset | Models → Test tools |
@@ -380,6 +385,8 @@ request.
 Chat responses continue when you switch tabs, change conversations, navigate to another
 page, or close the browser. Returning to the chat restores its current progress or saved
 reply. The Stop button explicitly cancels a text response and keeps its partial answer.
+Answer text and supported separate reasoning content appear as the backend streams them;
+models that emit no separate reasoning events show the answer as it arrives.
 Active jobs run in the web service; completed replies remain in PostgreSQL chat history.
 Restarting the web service interrupts active jobs, so wait for responses to finish before
 restarting it.

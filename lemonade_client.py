@@ -1207,7 +1207,8 @@ def chat_stream(
             timeout=(10, 600),
         ) as resp:
             resp.raise_for_status()
-            for line in resp.iter_lines():
+            # Requests' 512-byte default buffers small token events during thinking.
+            for line in resp.iter_lines(chunk_size=1):
                 if line:
                     yield line.decode("utf-8", errors="replace")
     except requests.RequestException as exc:

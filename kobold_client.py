@@ -275,7 +275,7 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
                 except (ValueError, AttributeError):
                     detail = (resp.text or "").strip()
                 raise KoboldError(f"KoboldCPP error {resp.status_code}: {detail or 'request failed'}")
-            for line in resp.iter_lines():
+            for line in resp.iter_lines(chunk_size=1):
                 if line:
                     yield line.decode("utf-8", errors="replace")
     except requests.RequestException as exc:
