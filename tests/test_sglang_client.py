@@ -16,7 +16,8 @@ class _StreamingResponse:
     def __exit__(self, *_args):
         return False
 
-    def iter_lines(self):
+    def iter_lines(self, chunk_size=None):
+        self.chunk_size = chunk_size
         return iter(self._lines)
 
 
@@ -52,6 +53,7 @@ class SGLangClientTests(unittest.TestCase):
         self.assertEqual(payload["tools"], tools)
         self.assertEqual(payload["tool_choice"], "auto")
         self.assertEqual(lines[-1], "data: [DONE]")
+        self.assertEqual(post.return_value.chunk_size, 1)
 
     def test_ownership_requires_namespace(self):
         self.assertTrue(sglang.owns_model("sglang/zai-org/GLM-5.2"))

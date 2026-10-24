@@ -675,7 +675,7 @@
     sendBtn.disabled = stopping;
   }
 
-  function scheduleChatRefresh(id, version, delay = 750) {
+  function scheduleChatRefresh(id, version, delay = 250) {
     clearTimeout(generationPollTimer);
     generationPollTimer = setTimeout(() => {
       if (currentConversationId === id && conversationViewVersion === version && !document.hidden) {

@@ -20,31 +20,33 @@ def looks_like_repetition_collapse(text: str) -> bool:
 
 
 def guard_sse_stream(lines: Iterable[str]) -> Iterator[str]:
-    """Buffer one LM Studio response and replace a collapsed stream before display/save."""
-    buffered = []
+    """Forward events immediately, stopping a response if output collapses into a loop.
+
+    Buffering the whole response made chat appear frozen until generation completed.
+    The guard therefore observes the content as it streams and cuts off once the
+    repetition signal is strong enough. Earlier content cannot be retracted, but the
+    loop itself is bounded and the client receives the stop notice immediately.
+    """
     content = []
     for line in lines:
-        buffered.append(line)
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:"):].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            piece = json.loads(payload)["choices"][0]["delta"].get("content")
-        except (ValueError, KeyError, IndexError, TypeError):
-            piece = None
-        if piece:
-            content.append(piece)
-    if not looks_like_repetition_collapse("".join(content)):
-        yield from buffered
-        return
-    message = (
-        "⚠️ Generation stopped because the model entered a repetition loop. "
-        "Please retry, lower the temperature, or choose a larger model."
-    )
-    yield "data: " + json.dumps({"choices": [{"delta": {"content": message}, "finish_reason": "stop"}]})
-    yield "data: [DONE]"
+        if line.startswith("data:"):
+            payload = line[len("data:"):].strip()
+            if payload and payload != "[DONE]":
+                try:
+                    piece = json.loads(payload)["choices"][0]["delta"].get("content")
+                except (ValueError, KeyError, IndexError, TypeError):
+                    piece = None
+                if piece:
+                    content.append(piece)
+                    if looks_like_repetition_collapse("".join(content)):
+                        message = (
+                            "⚠️ Generation stopped because the model entered a repetition loop. "
+                            "Please retry, lower the temperature, or choose a larger model."
+                        )
+                        yield "data: " + json.dumps({"choices": [{"delta": {"content": message}, "finish_reason": "stop"}]})
+                        yield "data: [DONE]"
+                        return
+        yield line
 
 
 def guard_sse_bytes(chunks: list[bytes]) -> list[bytes]:

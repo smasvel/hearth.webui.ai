@@ -303,7 +303,9 @@ def chat_stream(
             timeout=(10, 600),
         ) as resp:
             resp.raise_for_status()
-            for line in resp.iter_lines():
+            # Requests defaults to 512-byte chunks. Tiny SSE token events then sit
+            # buffered until enough bytes accumulate, making Hearth look frozen.
+            for line in resp.iter_lines(chunk_size=1):
                 if line:
                     yield line.decode("utf-8", errors="replace")
     except requests.RequestException as exc:
