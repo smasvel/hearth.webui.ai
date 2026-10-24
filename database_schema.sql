@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
     created_at DOUBLE PRECISION NOT NULL,
-    caddy_token TEXT
+    caddy_token TEXT,
+    agentic_workflow_enabled BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 

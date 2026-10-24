@@ -210,6 +210,8 @@ def list_models() -> list[dict]:
             # real bytes on disk (None if the cache scan failed or the repo isn't
             # cached — the UI omits size then).
             "size_gb": sizes.get(model_id),
+            # The registry stores the largest context length configured for this model.
+            "configured_context_length": meta.get("max_model_len"),
             "loaded_context_length": meta.get("max_model_len") if model_id == served_id else None,
         })
     return models

@@ -91,7 +91,8 @@
     const externallyManaged = m.externally_managed === true;
     const isBusy = m.id === busyModelId;
     const size = fmtSize(m.size_gb);
-    const meta = [m.publisher, m.quantization, m.type, size].filter(Boolean).map(esc).join(" · ");
+    const metaParts = [m.publisher, m.quantization, m.type, size].filter(Boolean);
+    const meta = metaParts.map(esc).join(" · ");
     const c = document.createElement("div");
     c.className = "model-card2" + (loaded ? " loaded" : "") + (isBusy ? " busy" : "");
     c.dataset.name = (m.id || "").toLowerCase();
@@ -106,6 +107,27 @@
       </div>
       ${badge}
       <div class="model-card2-actions"></div>`;
+    const contextTokens = Number(m.context_window_tokens);
+    if (Number.isSafeInteger(contextTokens) && contextTokens > 0) {
+      const contextLabel = document.createElement("span");
+      contextLabel.className = "model-context-label";
+      const isModelMax = m.context_window_source === "model_max";
+      contextLabel.textContent = `${isModelMax ? "max " : "ctx "}${contextTokens.toLocaleString()} tokens`;
+      const loadedContext = Number(m.loaded_context_length);
+      const sourceText = {
+        model_max: "Maximum context reported by the model backend.",
+        loaded_runtime: "Current loaded runtime context; the model may support a larger window.",
+        configured: "Context length configured for this model or runtime.",
+        backend_default: "Hearth's default context for this backend; the model's actual maximum is not reported.",
+      }[m.context_window_source] || "Context length reported by the backend.";
+      contextLabel.title = isModelMax && Number.isSafeInteger(loadedContext) && loadedContext > 0 && loadedContext !== contextTokens
+        ? `${sourceText} Currently loaded at ${loadedContext.toLocaleString()} tokens.`
+        : sourceText;
+      const metaEl = c.querySelector(".model-card2-meta");
+      if (meta) metaEl.append(document.createTextNode(" · "));
+      else metaEl.innerHTML = "";
+      metaEl.appendChild(contextLabel);
+    }
     const actions = c.querySelector(".model-card2-actions");
     if (m.resource_warning) {
       // The warning sits inside the same actions row as the Load button — above it,

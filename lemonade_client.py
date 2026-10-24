@@ -288,6 +288,7 @@ def list_models() -> list[dict]:
                 "publisher": publisher,
                 "quantization": _device_label(loaded_entry, m.get("recipe") or ""),
                 "type": entry_type,
+                "max_context_length": m.get("max_context_window"),
                 # Real server context while loaded (see _loaded_context_length) — consumed by
                 # help_data's OpenCode config generation so it never advertises more context
                 # than Lemonade is actually serving.

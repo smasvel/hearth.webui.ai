@@ -14,7 +14,7 @@
       <header class="chat-header">
         <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
         <nav class="console-tabs">
-          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
           <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
           <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
@@ -37,7 +37,8 @@
           <h1>Users</h1>
           <p class="hint">
             Passwords are hashed (never stored or shown in plain text) — an admin can reset a
-            user's password to a new one, but can never retrieve their existing one.
+            user's password to a new one, but can never retrieve their existing one. Agentic
+            workflow access is controlled separately for each account.
           </p>
         </div>
 
@@ -50,6 +51,11 @@
               <select id="new-role" class="panel-input">
                 <option value="user">User (no model management)</option>
                 <option value="admin">Admin</option>
+              </select>
+              <label for="new-agentic-workflow" class="hint">Agentic workflow access</label>
+              <select id="new-agentic-workflow" class="panel-input">
+                <option value="false">Disabled</option>
+                <option value="true">Enabled</option>
               </select>
               <button id="add-user-btn" class="panel-btn" type="submit">Add user</button>
             </form>

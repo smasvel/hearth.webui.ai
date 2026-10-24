@@ -22,8 +22,10 @@ using local AI for everyday questions, research, voice conversations, and learni
 [Tailscale remote access](#tailscale-remote-access-for-chat-and-coding-models) ·
 [All features](#current-feature-directory)
 
-> Hearth uses PostgreSQL 18 through Docker Compose. See the
-> [installation guide](deploy/FIRST_TIME_INSTALL.md) to get started.
+> Hearth uses PostgreSQL 18 through Docker Compose. The first-time installer
+> starts a clean database, loads the application DDL, creates the initial admin,
+> and configures the app to start automatically after reboot. See the
+> [installation guide](deploy/FIRST_TIME_INSTALL.md) for setup details.
 
 A small Flask web UI for chatting with local models, with sidebar controls to load/unload
 models and switch which loaded model you're chatting with. Hearth started as an LM Studio
@@ -41,8 +43,8 @@ all documented in their own sections below.
 
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Live answer and reasoning updates during generation, saved conversations, model switching, and supported reasoning displays |
-| Model management | Search, download, load, unload, and delete models through supported backends |
+| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, response copy-to-clipboard, model switching, and supported reasoning displays |
+| Model management | Search, download, load, unload, and delete models through supported backends; see each model's supported context limit on the Models page |
 | LLM evaluation | Per-model tool-calling checks, typed argument validation, streamed and ordinary responses, and saved test reports |
 | Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
@@ -71,7 +73,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    or cancel a download. Progress detail depends on the runtime.
 4. Open **Models** to load, unload, or delete installed models. Select a loaded
    chat model in the conversation model picker.
-5. Run **Test tools** before using a model for coding or tool-driven workflows.
+5. Check the context limit shown on each model label in **Models** when choosing
+   how much chat history to send. The displayed limit is the model/backend
+   capability Hearth knows about; runtime settings can impose a lower active
+   context size.
+6. Run **Test tools** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
 |---|---|---|
@@ -85,6 +91,11 @@ A model appearing in search does not establish that it fits your hardware or
 supports every feature. Hearth includes resource checks and load feedback; runtime
 compatibility, available memory, context size, and model capabilities still apply.
 Embedding, speech, image, and video models have separate purposes from chat models.
+
+On **Models**, each model label includes its maximum supported context-token count
+when the backend reports or Hearth can determine it. This helps compare model
+limits before loading or chatting; the actual usable context may be lower when a
+runtime or backend setting applies a smaller value.
 
 ### Model picks for faster replies
 
@@ -128,6 +139,17 @@ The tests supply simulated tool results; real project execution takes place in
 **Agents** or your connected coding client. See
 [the evaluation overview](#local-llm-testing-and-tool-calling-evaluation) and
 [saved test evidence](reports/saved-failure-review-2026-10-19.md).
+
+## Streaming chat and copying responses
+
+Hearth streams generated response text into the conversation as the backend sends
+it, including supported reasoning/thinking updates. The assistant message grows
+during generation so you can see progress before the model finishes. Streaming
+depends on the selected backend and model exposing incremental output; some models
+may send reasoning separately or not expose it at all.
+
+Use the small **Copy** icon on an assistant response to copy its text to the
+clipboard. The control appears with the response after it is available.
 
 ## Secure model gateway for OpenCode, Continue, and VS Code
 
@@ -237,7 +259,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Model evaluation | Tool and coding-workflow checks, queued runs, saved results, JSON reports, and repair-profile reset | Models → Test tools |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Local project tasks, acceptance criteria, queued assignments, activity, questions, permission responses, steering, pause/resume/stop, and optional verification commands | Agents; OpenCode required |
+| Persistent coding agents | Admin-controlled per-user enable/disable access, private project workspaces, local project tasks, activity, permission responses, pause/resume/stop, and optional verification commands | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-and-browsing); Browse history |
@@ -246,11 +268,11 @@ configured separately. The first-time Hearth installer does not perform that set
 | Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
 | Study and practice | Built-in and user-created quiz decks, generated questions, and state DMV practice | Quizzes; DMV |
 | Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, and supported NPU statistics | Metrics; system statistics |
-| User administration | Accounts, roles, password resets, per-user data, and gateway-token controls | Users |
+| User administration | Accounts, roles, password resets, per-user agent workflow access, per-user data, and gateway-token controls | Users |
 | Runtime settings | Backend URLs and credentials, connection tests, context settings, and configured Tailscale controls | Settings |
 | Host security checks | Administrator-triggered security scans and reports using the configured host tools | [Security scanner](#metrics-and-diagnostics) |
 | FLM conversion tools | Conversion profile inspection and validation; job execution requires the matching converter and validated artifacts | FLM converter; experimental |
-| Self-hosted operation | PostgreSQL persistence, Docker Compose database, first-time installer, and a systemd user service | [Installation](deploy/FIRST_TIME_INSTALL.md) |
+| Self-hosted operation | Clean PostgreSQL provisioning, application DDL initialization, first admin setup, and systemd boot startup | [Installation](deploy/FIRST_TIME_INSTALL.md) |
 
 Feature availability follows the components you install and configure. Speech,
 translation, embeddings, ComfyUI media generation, coding agents, gateway access,
@@ -355,9 +377,13 @@ bash deploy/install-first-time.sh
 
 This single installer adds missing Ubuntu packages with sudo, prepares the Docker
 agent image and Python environment, installs requirements and Chromium, starts
-PostgreSQL in Docker Compose, generates private database/session credentials,
-prompts for the first admin password, and enables the Hearth user service. It keeps
-existing users and secrets on reruns. Model backends and weights are installed separately.
+PostgreSQL in Docker Compose, loads the application DDL, generates private
+database/session credentials, and creates the initial `admin` account after you
+choose and confirm its password. Use `--admin-username NAME` to choose another
+username. The installer enables the systemd user service and lingering, so Hearth
+starts after a reboot even before login. It keeps existing users and secrets on
+reruns. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for secure
+scripted admin setup. Model backends and weights are installed separately.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -470,8 +496,11 @@ supported study workflows are available from the app's navigation.
 ## Persistent project agents
 
 Open **Agents** and provide a goal, acceptance criteria, and configured OpenCode
-model. Agent project files are stored under `~/agents/project` on the server and
-the project path is managed by Hearth. Hearth bundles the OpenCode worker in its
+model. Administrators can grant or revoke Agent access separately for each user on
+the **Users** page; new regular users start with it disabled, while admins start
+with it enabled. Disabling access blocks the page and API and requests stops for
+that user's active assignments. Each account's project files live in a private
+server-side workspace managed by Hearth. Hearth bundles the OpenCode worker in its
 agent container. The selected local model requires at least 16K context; the model
 picker excludes configurations that cannot fit its tools and prompt.
 
@@ -489,7 +518,7 @@ package managers. Package installation and shell commands run inside that
 container. Docker applies memory, CPU, and process limits, drops unnecessary Linux
 capabilities, and disables privilege escalation. The container receives neither a
 host project bind mount nor the Docker socket. Hearth copies safe regular project
-files into and out of the container under `~/agents/project`; symlinks and common
+files into and out of the account's private agent workspace; symlinks and common
 generated dependency/cache directories are excluded from synchronization. Outbound
 networking supports package downloads and model calls, but Docker egress is not
 restricted to an allowlist.

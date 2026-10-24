@@ -2012,6 +2012,15 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
 .msg-action-btn:hover { color: var(--text); border-color: var(--accent-dim); background: var(--panel-2); }
+.msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 3px 5px;
+}
+.msg-copy-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.msg-copy-btn.copied { color: var(--accent); }
 .msg-action-btn.primary { background: var(--accent); color: #0d0e12; border-color: var(--accent); font-weight: 650; }
 .msg-action-btn.primary:hover { filter: brightness(1.1); background: var(--accent); }
 
@@ -2329,6 +2338,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .model-card2-main { grid-area: main; min-width: 0; }
 .model-card2-name { font-size: 13.5px; font-weight: 650; word-break: break-word; line-height: 1.3; }
 .model-card2-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+.model-context-label { color: var(--accent); white-space: nowrap; cursor: help; }
 .model-warning-filter { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 13px; }
 .model-warning-filter input { accent-color: var(--warn); }
 .model-resource-hint { margin: 0 0 18px; }

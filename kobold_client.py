@@ -197,6 +197,12 @@ def list_models() -> list[dict]:
             "type": "llm",
             "state": "loaded" if model_id == served_id else "not-loaded",
             "size_gb": meta.get("size_gb"),
+            "configured_context_length": (
+                _read_env_context()
+                if meta.get("path") and _read_env_path()
+                and os.path.realpath(meta["path"]) == os.path.realpath(_read_env_path())
+                else None
+            ),
             # Real --contextsize of the running unit, only for the served model (koboldcpp
             # serves one at a time) — see _read_env_context.
             "loaded_context_length": _read_env_context() if model_id == served_id else None,
