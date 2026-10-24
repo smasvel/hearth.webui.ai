@@ -6,6 +6,7 @@ never receives a host project bind mount, Docker socket, or app credentials.
 """
 import copy
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -103,6 +104,9 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             response = requests.request(self.command, proxy['base_url']+suffix,
                 params=None, headers=headers, data=body, stream=True,
                 timeout=(15, 3600), verify=proxy.get('verify_tls', True))
+            if response.status_code >= 500:
+                logging.warning('Agent model upstream returned HTTP %s for %s (%s bytes).',
+                                response.status_code, request_path, length)
             self.send_response(response.status_code)
             for name in ('Content-Type', 'Content-Length', 'Cache-Control', 'Retry-After'):
                 if response.headers.get(name): self.send_header(name, response.headers[name])
@@ -114,7 +118,10 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                     self.wfile.flush()
             response.close()
-        except (requests.RequestException, OSError, ValueError):
+        except (requests.RequestException, OSError, ValueError) as exc:
+            logging.warning('Agent model relay failed for %s (%s bytes): %s: %s',
+                            request_path, length if 'length' in locals() else 0,
+                            type(exc).__name__, str(exc)[:500])
             try: self.send_error(502)
             except OSError: pass
 
