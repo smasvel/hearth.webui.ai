@@ -180,6 +180,19 @@ class ContainerOpenCode(OpenCode):
                 logging.exception('Could not migrate legacy agent runtime metadata from %s', path)
         for path in self.runtime_directory.iterdir():
             if path.is_dir() and re.fullmatch(r'[0-9a-f]{32}', path.name):
+                # A task directory contains the model relay socket and identifies a
+                # live/recoverable container. Preserve it when PostgreSQL still has
+                # both the assignment and its runtime metadata; this is normal after
+                # a Hearth restart, when active tasks have just become interrupted.
+                # Only remove directories whose durable records are gone.
+                try:
+                    task = agent_store.get_task(path.name)
+                    runtime = agent_store.get_runtime(path.name)
+                except Exception:
+                    logging.exception('Could not verify agent runtime %s; leaving it untouched.', path.name)
+                    continue
+                if task and runtime:
+                    continue
                 name = self._container_name(path.name)
                 try: self._docker('rm', '--force', name, timeout=60)
                 except RuntimeError as exc:

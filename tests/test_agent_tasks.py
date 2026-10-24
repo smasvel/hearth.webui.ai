@@ -3,6 +3,7 @@ import io
 import tarfile
 import tempfile
 import time
+import uuid
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -26,13 +27,15 @@ class AgentTaskTests(unittest.TestCase):
         self.snap = {'active':False,'forms':[],'permissions':[],'inbox':[],'messages':[]}
         self.client.snapshot.side_effect = lambda _: copy.deepcopy(self.snap)
         self.manager = Manager(Path(self.tmp.name)/'tasks',self.client)
+        self.owner = app.users_store.create_user('agent-test-' + uuid.uuid4().hex, 'test-password', 'admin')['id']
+        self.addCleanup(app.users_store.delete_user, self.owner)
         self.stack=__import__('contextlib').ExitStack()
         self.stack.enter_context(patch('agent_tasks.Path.home', return_value=Path(self.tmp.name)))
         self.addCleanup(self.stack.close)
         self.values = {'title':'Build project','goal':'Build and verify the feature','model':MODEL}
 
     def create(self, **extra):
-        job = self.manager.create({**self.values, **extra}, 'admin')
+        job = self.manager.create({**self.values, **extra}, self.owner)
         self.manager.tick()
         return job['id']
 
@@ -72,7 +75,7 @@ class AgentTaskTests(unittest.TestCase):
         self.assertTrue(resumed['resume_session'])
 
     def test_interrupted_assignment_can_resume_without_existing_session(self):
-        job = self.manager.create(self.values, 'admin')
+        job = self.manager.create(self.values, self.owner)
         self.manager.jobs[job['id']].update(status='interrupted', session_id=None)
         resumed = self.manager.control(job['id'], 'resume')
         self.assertEqual(resumed['status'], 'queued')
@@ -82,13 +85,37 @@ class AgentTaskTests(unittest.TestCase):
 
     def test_pending_prompt_reuses_id_after_transport_failure(self):
         self.client.prompt.side_effect = [RuntimeError('temporary transport failure'),None]
-        job = self.manager.create(self.values,'admin');self.manager.tick()
+        job = self.manager.create(self.values,self.owner);self.manager.tick()
         first = self.client.prompt.call_args.args[2]
         restored=Manager(self.manager.directory,self.client)
         restored.control(job['id'], 'resume')
         restored.jobs[job['id']]['next_retry']=0;restored.tick()
         self.assertEqual(self.client.prompt.call_args.args[2],first)
         self.assertEqual(restored.get(job['id'])['cycles'],1)
+
+    def test_provider_connection_reset_retries_without_needs_review(self):
+        key=self.create()
+        self.client.snapshot.side_effect=RuntimeError(
+            "{'type': 'provider.transport', 'message': 'ECONNRESET: The socket connection was closed unexpectedly'}")
+        for _ in range(4):
+            self.manager.jobs[key]['next_retry']=0
+            self.manager.tick()
+        current=self.manager.get(key)
+        self.assertEqual(current['status'],'running')
+        self.assertEqual(current['errors'],0)
+        self.assertEqual(current['transport_retries'],4)
+        self.assertIn('ECONNRESET',current['error'])
+
+    def test_provider_error_result_is_retried_as_a_new_cycle(self):
+        key=self.create()
+        self.snap['messages']=[assistant('a_transport','',error={
+            'type':'provider.transport','message':'ECONNRESET: socket closed'})]
+        self.manager.tick();self.manager.tick()
+        current=self.manager.get(key)
+        self.assertEqual(current['status'],'running')
+        self.assertIsNotNone(current['pending_prompt'])
+        self.assertIn('retry the current assignment',current['pending_prompt']['text'].lower())
+        self.assertIn('retrying the assignment automatically',current['activity'][-1]['text'].lower())
 
     def test_questions_and_permissions_wait_for_real_answer(self):
         key=self.create();self.snap['active']=True
@@ -109,7 +136,7 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.manager.get(key)['status'],'running')
 
     def test_assignment_shell_mode_is_saved(self):
-        job=self.manager.create({**self.values,'shell_mode':'auto'},'admin')
+        job=self.manager.create({**self.values,'shell_mode':'auto'},self.owner)
         self.assertTrue(job['auto_commands'])
         self.assertEqual(job['shell_mode'],'auto')
 
@@ -156,10 +183,67 @@ class AgentTaskTests(unittest.TestCase):
         for i in range(3):self.finish_turn(assistant('a'+str(i),'No progress'))
         self.assertEqual(self.manager.get(key)['status'],'blocked')
 
+    def test_idle_wait_does_not_escalate_errors_or_change_selected_model(self):
+        key=self.create();job=self.manager.jobs[key]
+        job.update(awaiting_since=time.time()-200, errors=0)
+        self.manager.save(job)
+        self.manager.tick()
+        current=self.manager.get(key)
+        self.assertEqual(current['status'],'running')
+        self.assertEqual(current['model'],MODEL)
+        self.assertEqual(current['errors'],0)
+
+    def test_long_idle_becomes_review_state_without_worker_error_retries(self):
+        key=self.create();job=self.manager.jobs[key]
+        job.update(awaiting_since=time.time()-1801, errors=0)
+        self.manager.save(job)
+        self.manager.tick()
+        current=self.manager.get(key)
+        self.assertEqual(current['status'],'blocked')
+        self.assertIn('idle for 30 minutes',current['error'])
+        self.assertEqual(current['errors'],0)
+        self.assertEqual(current['model'],MODEL)
+
     def test_budget_blocks_and_resume_extends_it(self):
         key=self.create(max_cycles=1);self.finish_turn(assistant('a1','More work'))
         self.assertEqual(self.manager.get(key)['status'],'blocked')
         self.manager.control(key,'resume');self.assertEqual(self.manager.get(key)['max_cycles'],51)
+
+    def test_human_review_can_reset_cycles_before_resuming(self):
+        key=self.create(max_cycles=12)
+        job=self.manager.jobs[key]
+        job.update(status='blocked',cycles=12,errors=3,stalls=2,idle_polls=1,
+                   next_retry=time.time()+60,fingerprint='repeat',error='review this result',
+                   summary='Latest saved response')
+        self.manager.save(job)
+        reset=self.manager.control(key,'reset-cycles')
+        self.assertEqual(reset['status'],'blocked')
+        self.assertEqual(reset['cycles'],0)
+        self.assertEqual(reset['max_cycles'],12)
+        self.assertEqual(reset['errors'],0)
+        self.assertEqual(reset['stalls'],0)
+        self.assertEqual(reset['idle_polls'],0)
+        self.assertEqual(reset['next_retry'],0)
+        self.assertIsNone(reset['error'])
+        self.assertEqual(reset['summary'],'Latest saved response')
+        self.assertIn('reset after human review',reset['activity'][-1]['text'])
+        resumed=self.manager.control(key,'resume')
+        self.assertEqual(resumed['status'],'queued')
+        self.assertEqual(resumed['cycles'],0)
+
+    def test_cycle_reset_requires_reviewable_assignment(self):
+        key=self.create()
+        self.manager.jobs[key]['status']='queued'
+        self.manager.save(self.manager.jobs[key])
+        with self.assertRaisesRegex(ValueError,'while reviewing'):
+            self.manager.control(key,'reset-cycles')
+
+    def test_human_can_reset_cycles_while_assignment_is_running(self):
+        key=self.create(max_cycles=20)
+        reset=self.manager.control(key,'reset-cycles')
+        self.assertEqual(reset['status'],'running')
+        self.assertEqual(reset['cycles'],0)
+        self.assertTrue(reset['started'])
 
     def test_verification_restarts_by_observing_existing_command(self):
         key=self.create(verification_command='pytest')
@@ -180,7 +264,7 @@ class AgentTaskTests(unittest.TestCase):
 
     def test_resuming_older_assignment_does_not_preempt_running_assignment(self):
         first=self.create();self.manager.control(first,'pause')
-        second=self.manager.create({**self.values,'title':'Second'},'admin')['id']
+        second=self.manager.create({**self.values,'title':'Second'},self.owner)['id']
         self.manager.tick();self.snap['active']=True
         self.manager.control(first,'resume');self.manager.tick()
         self.assertEqual(self.manager.get(first)['status'],'queued')
@@ -196,19 +280,17 @@ class AgentTaskTests(unittest.TestCase):
         self.client.create.assert_called_once()
 
     def test_project_path_is_fixed_and_created_automatically(self):
-        target=Path(self.tmp.name)/'agents'/'project'
-        job=self.manager.create(self.values,'admin')
-        self.assertEqual(job['project'],str(target))
-        self.assertTrue(target.is_dir())
+        job=self.manager.create(self.values,self.owner)
+        self.assertEqual(job['project'],'PostgreSQL private workspace')
 
     def test_api_cannot_override_server_managed_project_path(self):
         for field in ('project','create_project'):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError,'managed by the server'):
-                self.manager.create({**self.values,field:'/tmp/elsewhere'},'admin')
+                self.manager.create({**self.values,field:'/tmp/elsewhere'},self.owner)
 
     def test_projects_and_models_are_validated(self):
         for extra in ({'project':'relative'}, {'model':{'providerID':'unknown','id':'x'}}, {'max_cycles':0}):
-            with self.assertRaises(ValueError):self.manager.create({**self.values,**extra},'admin')
+            with self.assertRaises(ValueError):self.manager.create({**self.values,**extra},self.owner)
         self.client.create.assert_not_called()
 
     def test_active_assignment_cannot_be_deleted_but_stopped_assignment_can(self):
@@ -222,13 +304,13 @@ class AgentTaskTests(unittest.TestCase):
 
     def test_completed_project_download_is_an_archive_of_project_files(self):
         key=self.create()
-        project=Path(self.manager.get(key)['project'])
-        (project/'result.txt').write_text('completed output')
+        import agent_store
+        agent_store.save_workspace_file(self.owner,'result.txt',b'completed output')
         self.manager.jobs[key]['status']='completed'
         stream,name=self.manager.download(key)
-        self.assertEqual(name,project.name)
+        self.assertEqual(name,'project')
         with tarfile.open(fileobj=io.BytesIO(stream.getvalue()),mode='r:gz') as archive:
-            member=archive.getmember(project.name+'/result.txt')
+            member=archive.getmember('project/result.txt')
             self.assertEqual(archive.extractfile(member).read(),b'completed output')
 
     def test_project_download_rejects_incomplete_assignment(self):
@@ -266,6 +348,45 @@ class AgentAPITests(unittest.TestCase):
             response=self.client.get('/api/agent-tasks/models')
         self.assertEqual(response.status_code,200)
         self.assertTrue(response.json['models'][0]['loaded'])
+
+    def test_agent_models_finds_loaded_coding_model_after_support_model(self):
+        self.login()
+        self.manager.client.models.return_value=[{**MODEL,'name':'Qwen'}]
+        inventory={'models':[
+            {'id':'text-embedding-nomic-embed-text-v1.5','backend':'lemonade','state':'loaded','type':'embeddings'},
+            {'id':MODEL['id'],'backend':MODEL['providerID'],'state':'loaded','type':'llm'},
+        ]}
+        with patch.object(app.api_list_models,'__wrapped__',return_value=Mock(get_json=lambda:inventory)):
+            response=self.client.get('/api/agent-tasks/models')
+        self.assertEqual(response.status_code,200)
+        self.assertTrue(response.json['models'][0]['loaded'])
+
+    def test_agent_models_recognizes_lmstudio_loaded_instances(self):
+        self.login()
+        self.manager.client.models.return_value=[{**MODEL,'name':'Qwen'}]
+        inventory={'models':[{'id':MODEL['id'],'backend':MODEL['providerID'],
+                              'loaded_instances':[{'config':{'context_length':32768}}]}]}
+        with patch.object(app.api_list_models,'__wrapped__',return_value=Mock(get_json=lambda:inventory)):
+            response=self.client.get('/api/agent-tasks/models')
+        self.assertEqual(response.status_code,200)
+        self.assertTrue(response.json['models'][0]['loaded'])
+
+    def test_live_agent_snapshot_includes_latest_result_and_completion(self):
+        self.login()
+        job = {
+            'id': 'task-result', 'owner': 'admin', 'shared_with': [],
+            'session_id': 'session-result', 'status': 'completed',
+            'summary': 'The requested work is finished.',
+            'completion': 'Verified by the assigned command.',
+            'verification': {'passed': True, 'output': 'all checks passed'},
+            'error': None, 'activity': [], 'messages': [],
+        }
+        self.manager.get.return_value = job
+        response = self.client.get('/api/agent-tasks/task-result/live-messages')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['summary'], job['summary'])
+        self.assertEqual(response.json['completion'], job['completion'])
+        self.assertEqual(response.json['verification'], job['verification'])
 
     def test_start_is_blocked_during_model_validation(self):
         self.login()

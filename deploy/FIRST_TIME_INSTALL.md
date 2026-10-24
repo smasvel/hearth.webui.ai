@@ -18,15 +18,16 @@ Java/Maven, Node.js/npm, and build tools, and then:
 
 - Generates a random PostgreSQL password in `.env.postgres` and a matching
   `DATABASE_URL` in `.env`, both with mode `600`.
-- Generates a stable Flask session-signing secret.
+- Setup generates or imports the session-signing key and stores it encrypted in
+  PostgreSQL before starting the app; direct app starts do the same on first launch.
 - Starts PostgreSQL 18 with Compose, waiting for its readiness check.
 - Loads the application DDL from `database_schema.sql` into the new PostgreSQL
-  database, then creates the initial administrator account. The DDL includes the
-  per-user agent workflow setting and the agent task, schedule, runtime metadata,
-  and private workspace tables; setup applies idempotent account and agent-store
-  migrations.
-- Prompts twice for the initial administrator password. Hearth stores only its
-  password hash; the plaintext password is not written to configuration.
+  database, leaving the users table empty on a new install. The DDL includes the
+  per-user agent workflow setting, application settings and encrypted-secret tables,
+  and agent task, schedule, runtime metadata, and private workspace tables. Setup
+  applies the account, settings, secret, and agent-store migrations before service start.
+- Displays a one-time administrator setup form on the first page visit. The
+  password is saved only as a salted, one-way hash in PostgreSQL.
 - Creates and enables `~/.config/systemd/user/ai-webui.service`, using this checkout's
   absolute path. Existing customized service files are preserved.
 - Enables systemd lingering for the installing account, so Hearth starts after a
@@ -36,45 +37,42 @@ Java/Maven, Node.js/npm, and build tools, and then:
 
 Existing credentials, users, and database contents are preserved on reruns. The
 installer does not configure model backends, Tailscale, Caddy, or LAN proxy services.
+Account profile fields (username, role, creation time, gateway token, and agent access)
+are stored in PostgreSQL. Passwords use salted, one-way Werkzeug hashes; Hearth never
+stores plaintext passwords or returns password hashes through user APIs. Hashing is
+intentional because passwords should be verified, not reversibly encrypted.
+The encrypted Flask session key is stored in PostgreSQL as well. Its encryption key is
+derived from the PostgreSQL connection password, so changing that database password
+rotates the session key and requires users to sign in again.
 
 Useful options:
 
 ```bash
-bash deploy/install-first-time.sh --admin-username yourname
 bash deploy/install-first-time.sh --skip-browser --no-service
 .venv/bin/python tools/first_time_setup.py --help
 ```
 
 ### Initial administrator account
 
-By default, the first-time installer creates an administrator named `admin` and
-prompts you to enter and confirm a password. Choose a unique, strong password and
-save it in your password manager. To choose a different account name, pass it to
-the installer:
+After installation, open Hearth in a browser. The first page visit asks you to choose
+the administrator username and enter and confirm a password. This creates the first
+account in PostgreSQL and signs you in. Setup is one-time: later visits show the normal
+sign-in page, and the database prevents multiple simultaneous first accounts. The
+username field starts with `admin`, and you can change it on that page. The installer
+does not collect or store profile details or the password in local configuration; the
+account and its salted, one-way password hash are stored in PostgreSQL. Backend
+endpoints and credentials edited in **Settings** are stored in PostgreSQL as well;
+API keys are encrypted with a key derived from the PostgreSQL connection password.
+Legacy backend URL and API key entries in `.env` are migrated during setup (or at app
+startup for manual upgrades) and removed from that file. Keep `.env` for the database connection URL and other
+deployment-only runtime values. On reruns,
+existing users and credentials are preserved, and legacy `ADMIN_USERNAME` and
+`ADMIN_PASSWORD_HASH` entries are removed from `.env`. If accounts already exist, the
+setup form is not shown.
 
-```bash
-bash deploy/install-first-time.sh --admin-username yourname
-```
-
-You can also set `ADMIN_USERNAME` in `.env` before setup. For scripted installs,
-pass the password through standard input; avoid putting it directly in a command
-argument, shell history, or a checked-in file:
-
-```bash
-printf '%s\n' "$HEARTH_ADMIN_PASSWORD" | bash deploy/install-first-time.sh \
-  --admin-username yourname --admin-password-stdin
-```
-
-Set `HEARTH_ADMIN_PASSWORD` through your deployment secret manager or another
-private mechanism before running that example. The installer hashes the supplied
-password and stores the hash in the private `.env`; it does not store the plaintext.
-On reruns, existing users and credentials are preserved. If accounts already
-exist, the installer will not create or reset an administrator password.
-
-For a manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists the
-same admin options. The setup command starts the Compose PostgreSQL service,
-applies `database_schema.sql`, then seeds the initial administrator if the users
-table is empty.
+For manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists setup
+options. The command starts PostgreSQL and applies `database_schema.sql`; the first
+browser visit creates the administrator.
 
 Agent assignments, activity, sharing, runtime metadata, and project workspace
 files are persisted in PostgreSQL. On upgrade, Hearth imports legacy agent task
@@ -88,11 +86,29 @@ optional. **My agents** shows task status. Open a task to follow its live **Acti
 feed, which streams task progress, the agent container's tool inputs and outputs,
 and user-facing model responses as they become available, with timestamps. The
 stream is scoped to tasks you own or that were explicitly shared with your account.
-The newest activity and conversation entries appear first. You can answer questions
+The result panel updates with the latest assistant response and final verification;
+if a task is interrupted, its latest response remains visible alongside the error.
+The activity feed and full activity history always put the newest timestamp at the top,
+even when live events arrive out of order. You can answer questions
 and pause or continue the work from that page. When an assignment is paused, blocked,
 or interrupted, its owner can change the model before continuing. This starts a fresh
 OpenCode session from the latest saved workspace checkpoint and carries forward the
-previous agent summary. Task data remains in PostgreSQL if you close the browser.
+previous agent summary. The model picker defaults to the currently loaded model when
+available, while still allowing another configured model to be selected. Task data
+remains in PostgreSQL if you close the browser.
+Loaded support models such as embeddings do not take precedence over a loaded coding
+model in that picker. LM Studio's loaded-instance data is included when detecting the
+loaded coding model.
+If OpenCode reports idle before its assistant result is available, Hearth continues
+polling for up to 30 minutes. A session that stays idle is then marked **Needs review**
+without repeated worker errors; resuming keeps the assignment's selected model.
+Provider transport resets such as `ECONNRESET` retry automatically in the same
+assignment session; a failed assistant response is retried as a new work cycle.
+After reviewing a running, waiting, paused, blocked, or interrupted task, its owner can reset the cycle
+counter to zero from the task page, then continue when ready. This keeps the saved
+workspace and selected model.
+Startup cleanup preserves containers with matching PostgreSQL task and runtime records.
+If a container is missing, continuing rebuilds it from the saved project files.
 
 Recurring schedules are optional and are not created by the installer. Open
 **Schedules → Create a schedule** to save a task goal, recurring agent comment, model,
@@ -137,7 +153,9 @@ journalctl --user -u ai-webui.service -f
 ```
 
 The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
-browser test scripts directly against application tables.
+browser test scripts directly against application tables. With `--browser`, it runs
+the unit tests and all Playwright suites concurrently, each against its own temporary
+schema.
 
 For an application update, install requirements again, rebuild the agent image
 when its recipe or OpenCode version changed, and restart the service:

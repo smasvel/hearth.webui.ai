@@ -49,9 +49,11 @@ def temporary_schema():
     """Isolate integration fixtures on the configured test PostgreSQL instance."""
     name = 'hearth_test_' + uuid.uuid4().hex
     previous = os.environ.get('HEARTH_DATABASE_SCHEMA')
+    previous_skip_migration = os.environ.get('HEARTH_SKIP_LEGACY_CONFIG_MIGRATION')
     with connect(autocommit=True) as conn:
         conn.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(name)))
     os.environ['HEARTH_DATABASE_SCHEMA'] = name
+    os.environ['HEARTH_SKIP_LEGACY_CONFIG_MIGRATION'] = '1'
     try:
         init_schema()
         yield name
@@ -60,5 +62,9 @@ def temporary_schema():
             os.environ.pop('HEARTH_DATABASE_SCHEMA', None)
         else:
             os.environ['HEARTH_DATABASE_SCHEMA'] = previous
+        if previous_skip_migration is None:
+            os.environ.pop('HEARTH_SKIP_LEGACY_CONFIG_MIGRATION', None)
+        else:
+            os.environ['HEARTH_SKIP_LEGACY_CONFIG_MIGRATION'] = previous_skip_migration
         with connect(autocommit=True) as conn:
             conn.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(name)))

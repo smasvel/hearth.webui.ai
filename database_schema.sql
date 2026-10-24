@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS users (
     caddy_token TEXT,
     agentic_workflow_enabled BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+CREATE TABLE IF NOT EXISTS app_secrets (
+    name TEXT PRIMARY KEY,
+    encrypted_value TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+COMMENT ON TABLE app_secrets IS
+    'Versioned authenticated ciphertext for application secrets such as the Flask session key.';
+
 CREATE INDEX IF NOT EXISTS idx_users_agent_share_search
     ON users (lower(username) text_pattern_ops)
     WHERE agentic_workflow_enabled = TRUE;
@@ -45,6 +54,8 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     payload TEXT NOT NULL,
     updated_at DOUBLE PRECISION NOT NULL
 );
+COMMENT ON COLUMN agent_tasks.payload IS
+    'Serialized task state including started marker, cycle counters, saved responses, and completion data.';
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id);
 CREATE TABLE IF NOT EXISTS agent_workspace_files (
     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -88,6 +99,8 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+COMMENT ON TABLE settings IS
+    'Admin-editable settings; provider API-key values are stored as versioned authenticated ciphertext.';
 
 
 CREATE TABLE IF NOT EXISTS browse_history (

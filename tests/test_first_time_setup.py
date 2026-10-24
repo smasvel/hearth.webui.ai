@@ -13,7 +13,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        (self.root / '.env.example').write_text('ADMIN_USERNAME=admin\nFLASK_SECRET_KEY=\nDATABASE_URL=\n')
+        (self.root / '.env.example').write_text('DATABASE_URL=\n')
         (self.root / 'agent_container').mkdir()
         (self.root / 'agent_container' / 'IMAGE_VERSION').write_text('2.1.2\n')
         patcher = patch.object(setup, 'ROOT', self.root)
@@ -28,7 +28,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         self.assertEqual(original, (self.root / '.env.postgres').read_bytes())
         self.assertIn(':55435/', first['DATABASE_URL'])
         self.assertEqual(first['DATABASE_URL'], dotenv_values(self.root / '.env.postgres')['DATABASE_URL'])
-        self.assertEqual(len(first['FLASK_SECRET_KEY']), 64)
+        self.assertNotIn('FLASK_SECRET_KEY', first)
         for name in ('.env', '.env.postgres'):
             self.assertEqual((self.root / name).stat().st_mode & 0o777, 0o600)
 
@@ -58,6 +58,35 @@ class FirstTimeSetupTests(unittest.TestCase):
         original = path.read_bytes()
         self.assertTrue(setup.has_sqlite_data())
         self.assertEqual(path.read_bytes(), original)
+
+    def test_setup_initializes_database_settings_and_encrypted_session_key(self):
+        from unittest.mock import patch
+        env_path = self.root / '.env'
+        env_path.write_text('DATABASE_URL=postgresql://test/db\nFLASK_SECRET_KEY=legacy-session-secret\n')
+        with patch.dict('os.environ', {'FLASK_SECRET_KEY': 'legacy-session-secret'}, clear=False), \
+             patch('database.init_schema') as init_schema, \
+             patch('users_store.init_db') as init_users, \
+             patch('users_store.count_users', return_value=2), \
+             patch('agent_store.init_db') as init_agents, \
+             patch('settings_store.init_db') as init_settings, \
+             patch('settings_store.migrate_legacy_environment') as migrate_settings, \
+             patch('secret_store.get_or_create_flask_key', return_value='stable-key') as save_secret:
+            self.assertEqual(setup.initialize_application_storage(), 2)
+            self.assertNotIn('FLASK_SECRET_KEY', __import__('os').environ)
+        init_schema.assert_called_once_with()
+        init_users.assert_called_once_with()
+        init_agents.assert_called_once_with()
+        init_settings.assert_called_once_with()
+        save_secret.assert_called_once_with('legacy-session-secret')
+        migrate_settings.assert_called_once_with()
+        self.assertNotIn('FLASK_SECRET_KEY', env_path.read_text())
+
+    def test_canonical_ddl_creates_runtime_settings_and_app_secrets(self):
+        schema = (Path(__file__).resolve().parents[1] / 'database_schema.sql').read_text()
+        self.assertIn('CREATE TABLE IF NOT EXISTS settings', schema)
+        self.assertIn('CREATE TABLE IF NOT EXISTS app_secrets', schema)
+        self.assertIn('CREATE TABLE IF NOT EXISTS agent_tasks', schema)
+        self.assertIn('CREATE TABLE IF NOT EXISTS agent_workspace_files', schema)
 
     def test_empty_sqlite_has_no_data(self):
         (self.root / 'chat_history.db').touch()

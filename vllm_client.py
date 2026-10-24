@@ -75,8 +75,7 @@ import settings_store
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)")
 
-_DEFAULT_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000").rstrip("/")
-_DEFAULT_API_KEY = os.environ.get("VLLM_API_KEY")
+_DEFAULT_BASE_URL = "http://localhost:8000"
 
 VENV_DIR = Path(os.environ.get("VLLM_VENV_DIR", str(Path.home() / ".local/share/hearth/vllm/.venv")))
 HF_CLI = VENV_DIR / "bin" / "hf"
@@ -90,14 +89,14 @@ _DEFAULT_DTYPE = "bfloat16"
 
 
 def base_url() -> str:
-    """Settings-panel override takes priority over .env, checked fresh on every call
+    """Read the Settings database value on every call
     (not cached at import time) so a change in the UI applies immediately, no restart —
     same pattern as lmstudio_client.base_url()/lemonade_client.base_url()."""
     return (settings_store.get("vllm_base_url") or _DEFAULT_BASE_URL).rstrip("/")
 
 
 def api_key() -> str | None:
-    return settings_store.get("vllm_api_key") or _DEFAULT_API_KEY
+    return settings_store.get("vllm_api_key")
 
 
 def _auth_headers() -> dict:

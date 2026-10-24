@@ -32,6 +32,15 @@ def fingerprint(message):
     return hashlib.sha256(json.dumps([text_of(message), parts], sort_keys=True).encode()).hexdigest()
 
 
+def is_provider_transport_error(error):
+    """Recognize transient provider socket failures from exceptions or OpenCode payloads."""
+    if isinstance(error, dict):
+        error = json.dumps(error, sort_keys=True)
+    message = str(error).lower()
+    return ('provider.transport' in message or 'econnreset' in message or
+            'socket connection was closed unexpectedly' in message)
+
+
 class Manager:
     def __init__(self, directory, client=None, prepare_model=None):
         self.directory = Path(directory)
@@ -207,7 +216,7 @@ class Manager:
                 raise ValueError('The agent queue already has 20 active assignments.')
             job = {'id': uuid.uuid4().hex, 'owner': owner, **assignment,
                 'project': 'PostgreSQL private workspace', 'auto_commands': assignment['shell_mode'] == 'auto',
-                'cycles': 0, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
+                'cycles': 0, 'started': False, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
             self.note(job, 'Assignment queued. Project files are stored in this account’s private PostgreSQL workspace.')
@@ -338,11 +347,19 @@ class Manager:
         agent_store.save_schedule(schedule)
 
     def control(self, key, action):
-        if action not in ('pause', 'resume', 'stop'):
+        if action not in ('pause', 'resume', 'stop', 'reset-cycles'):
             raise ValueError('Unknown agent control.')
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
+                if action == 'reset-cycles':
+                    if job['status'] not in ('running', 'waiting_input', 'paused', 'blocked', 'interrupted'):
+                        raise ValueError('Reset cycles while reviewing a running, waiting, paused, blocked, or interrupted assignment.')
+                    job.update(cycles=0, started=True, errors=0, stalls=0, idle_polls=0,
+                               next_retry=0, fingerprint=None, error=None)
+                    self.note(job, 'Work-cycle counter reset after human review. Continue when ready.')
+                    self.save(job)
+                    return copy.deepcopy(job)
                 if action == 'resume':
                     if job['status'] not in RESUMABLE:
                         raise ValueError('Only paused, blocked, or interrupted assignments can resume.')
@@ -446,7 +463,7 @@ class Manager:
             raise ValueError('Enter additional instructions up to 10,000 characters.')
         with self.lock:
             job = self.jobs[key]
-            if job['status'] != 'running' or not job['cycles']:
+            if job['status'] != 'running' or not job.get('started', bool(job['cycles'])):
                 raise ValueError('Resume the agent or answer its pending prompt before adding instructions.')
             pending = job.setdefault('steering', [])
             if len(pending) >= 20:
@@ -478,7 +495,8 @@ class Manager:
                 pending = copy.deepcopy(job['pending_prompt'])
             self.client.prompt(job['session_id'], pending['text'], pending['id'])
             with self.lock:
-                job.update(pending_prompt=None, status='running', errors=0, error=None, next_retry=0, idle_polls=0,
+                job.update(pending_prompt=None, started=True, status='running', errors=0, transport_retries=0,
+                           error=None, next_retry=0, idle_polls=0,
                            awaiting_since=time.time(), cycles=job['cycles']+1)
                 self.note(job, f'Agent work cycle {job["cycles"]} dispatched.')
                 self.save(job)
@@ -598,6 +616,8 @@ class Manager:
             with self.lock:
                 if job['status'] not in WORKING:
                     return
+                if is_provider_transport_error(job.get('error', '')):
+                    job.update(error=None, transport_retries=0)
                 # Bound the UI/persistence copy, while the complete history stays in OpenCode.
                 recent = []
                 for message in reversed(snap['messages'][:50]):
@@ -625,7 +645,7 @@ class Manager:
                     job.update(status='running', idle_polls=0)
                     self.save(job)
                     return
-                if job['cycles'] == 0:
+                if not job.get('started', bool(job['cycles'] or job.get('session_id') or job.get('handled_message'))):
                     self.save(job)
                     initial = True
                 else:
@@ -634,16 +654,33 @@ class Manager:
                     if not latest or latest['id'] == job.get('handled_message'):
                         if job['status'] == 'queued':
                             pass
-                        elif time.time()-job.get('awaiting_since', time.time()) < 180:
+                        # OpenCode may briefly report an idle session while a provider
+                        # finishes persisting the assistant turn. Keep observing the
+                        # durable session instead of converting an ordinary long wait
+                        # into a worker failure that eventually requires review.
+                        elif time.time()-job.get('awaiting_since', time.time()) < 1800:
                             return
                         else:
-                            raise RuntimeError('OpenCode became idle without a new assistant result.')
+                            job.update(status='blocked', error='OpenCode has been idle for 30 minutes without a new assistant result. Review the session and resume when ready.')
+                            self.note(job, 'OpenCode remained idle without a result; assignment needs review.')
+                            self.save(job)
+                            return
                     else:
                         job['idle_polls'] = job.get('idle_polls', 0)+1
                         if job['idle_polls'] < 2:
                             self.save(job)
                             return
                         if latest.get('error'):
+                            if is_provider_transport_error(latest['error']):
+                                job['handled_message'] = latest['id']
+                                job['pending_prompt'] = {
+                                    'id': 'msg_'+uuid.uuid4().hex,
+                                    'text': 'The previous model response failed because the provider connection closed unexpectedly. '
+                                    'Retry the current assignment from the existing workspace, preserve completed work, and continue the goal.'}
+                                job.update(awaiting_since=0, errors=0, error=None)
+                                self.note(job, 'Provider connection closed during the response; retrying the assignment automatically.')
+                                self.save(job)
+                                return
                             raise RuntimeError(str(latest['error']))
                         job['handled_message'] = latest['id']
                         fp = fingerprint(latest)
@@ -678,6 +715,20 @@ class Manager:
         except Exception as exc:
             with self.lock:
                 if job['status'] not in ACTIVE:
+                    return
+                if is_provider_transport_error(exc):
+                    # Socket resets can happen while a provider is responding or while
+                    # Hearth is polling OpenCode. Keep the same session and, when a
+                    # prompt is still pending, its idempotency key; do not turn a
+                    # transient network failure into a human-review state.
+                    job['errors'] = 0
+                    job['error'] = str(exc)[:1200]
+                    retries = job.get('transport_retries', 0) + 1
+                    job['transport_retries'] = retries
+                    job['next_retry'] = time.time()+min(60, 5*2**min(retries-1, 4))
+                    if retries == 1 or retries % 5 == 0:
+                        self.note(job, 'Provider connection closed; retrying automatically: '+job['error'])
+                    self.save(job)
                     return
                 job['errors'] += 1
                 job['error'] = str(exc)[:1200]

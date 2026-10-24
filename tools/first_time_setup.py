@@ -9,8 +9,7 @@ import shutil
 import subprocess
 import sys
 
-from dotenv import dotenv_values, set_key
-from werkzeug.security import generate_password_hash
+from dotenv import dotenv_values, set_key, unset_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,8 +59,12 @@ def prepare_environment(port):
         write_private(env_path, (ROOT / '.env.example').read_text())
     if not values.get('DATABASE_URL'):
         set_key(str(env_path), 'DATABASE_URL', postgres['DATABASE_URL'])
-    if not values.get('FLASK_SECRET_KEY'):
-        set_key(str(env_path), 'FLASK_SECRET_KEY', secrets.token_hex(32))
+    # Older installers placed account names/password hashes in .env. Remove those
+    # legacy account fields so PostgreSQL is the only source of user profile data.
+    stored_values = dotenv_values(env_path)
+    for key in ('ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH'):
+        if key in stored_values:
+            unset_key(str(env_path), key)
     for path in (env_path, postgres_path):
         os.chmod(path, 0o600)
     return dotenv_values(env_path)
@@ -80,6 +83,34 @@ def has_sqlite_data():
                 if conn.execute('SELECT 1 FROM ' + quoted + ' LIMIT 1').fetchone():
                     return True
     return False
+
+
+def initialize_application_storage():
+    """Apply the canonical DDL and migrate file-backed configuration before launch."""
+    import database
+    import agent_store
+    import secret_store
+    import settings_store
+    import users_store
+
+    database.init_schema()
+    users_store.init_db()
+    agent_store.init_db()
+    settings_store.init_db()
+
+    # Persist the Flask signing key before deleting any legacy file copy. New installs
+    # generate it here; direct app starts retain the same idempotent startup fallback.
+    env_path = ROOT / '.env'
+    legacy_session_key = os.environ.get('FLASK_SECRET_KEY')
+    secret_store.get_or_create_flask_key(legacy_session_key)
+    os.environ.pop('FLASK_SECRET_KEY', None)
+    if env_path.exists() and 'FLASK_SECRET_KEY' in dotenv_values(env_path):
+        unset_key(str(env_path), 'FLASK_SECRET_KEY')
+
+    # Move legacy backend endpoints and encrypted API keys before the systemd service
+    # is installed. This is idempotent and leaves an existing database value intact.
+    settings_store.migrate_legacy_environment()
+    return users_store.count_users()
 
 
 def service_text(root):
@@ -121,8 +152,6 @@ def install_service():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--no-service', action='store_true', help='Configure the app without installing or starting a user service')
-    parser.add_argument('--admin-username', help='Initial administrator name (default: ADMIN_USERNAME or admin)')
-    parser.add_argument('--admin-password-stdin', action='store_true', help='Read the initial admin password from standard input instead of prompting')
     parser.add_argument('--postgres-port', type=int, default=55432, help='Host database port for a new configuration')
     parser.add_argument('--project-name', help='Optional separate Compose project name')
     parser.add_argument('--rebuild-agent-image', action='store_true',
@@ -147,33 +176,16 @@ def main():
     if args.project_name:
         compose += ['--project-name', args.project_name]
     subprocess.run(compose + ['up', '-d', '--wait', 'postgres'], check=True, cwd=ROOT)
-    import database
-    import agent_store
-    import users_store
-    database.init_schema()
-    agent_store.init_db()
-    if users_store.count_users() == 0:
-        username = args.admin_username or values.get('ADMIN_USERNAME') or 'admin'
-        password_hash = values.get('ADMIN_PASSWORD_HASH')
-        if not password_hash:
-            if args.admin_password_stdin:
-                password = sys.stdin.readline().rstrip('\r\n')
-            else:
-                password = getpass.getpass(f'Password for {username}: ')
-                if password != getpass.getpass('Confirm password: '):
-                    raise ValueError('Passwords do not match; rerun setup to finish creating the admin account.')
-            if not password:
-                raise ValueError('Admin password must not be empty.')
-            password_hash = generate_password_hash(password)
-        users_store.seed_user_with_hash(username, password_hash, 'admin')
-        set_key(str(ROOT / '.env'), 'ADMIN_USERNAME', username)
-        set_key(str(ROOT / '.env'), 'ADMIN_PASSWORD_HASH', password_hash)
-        print(f'Created administrator {username}.')
+    user_count = initialize_application_storage()
+    if user_count == 0:
+        print('No users exist. The first page visit will prompt you to create the administrator account.')
     else:
         print('Existing user accounts preserved.')
     if not args.no_service:
         install_service()
-    print('Setup complete. Open https://localhost:5443' if not args.no_service else 'Database and administrator ready. Start Hearth with .venv/bin/python app.py')
+    print('Setup complete. Open https://localhost:5443 and create the administrator account.'
+          if not args.no_service else
+          'Database ready. Start Hearth with .venv/bin/python app.py, then open it to create the administrator account.')
 
 
 if __name__ == '__main__':

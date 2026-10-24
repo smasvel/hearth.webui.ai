@@ -19,8 +19,7 @@ class SGLangError(RuntimeError):
     pass
 
 
-_DEFAULT_BASE_URL = os.environ.get("SGLANG_BASE_URL", "http://127.0.0.1:30000")
-_DEFAULT_API_KEY = os.environ.get("SGLANG_API_KEY", "")
+_DEFAULT_BASE_URL = "http://127.0.0.1:30000"
 _PREFIX = "sglang/"
 
 
@@ -29,7 +28,7 @@ def base_url() -> str:
 
 
 def api_key() -> str:
-    return settings_store.get("sglang_api_key") or _DEFAULT_API_KEY
+    return settings_store.get("sglang_api_key") or ""
 
 
 def _headers() -> dict[str, str]:

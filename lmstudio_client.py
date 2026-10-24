@@ -21,21 +21,20 @@ import settings_store
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)")
 
-_DEFAULT_BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234").rstrip("/")
-_DEFAULT_API_KEY = os.environ.get("LMSTUDIO_API_KEY")
+_DEFAULT_BASE_URL = "http://localhost:1234"
 LMS_CLI = shutil.which("lms") or os.path.expanduser("~/.lmstudio/bin/lms")
 EMBEDDING_MODEL_ID = os.environ.get("LMSTUDIO_EMBEDDING_MODEL_ID", "text-embedding-nomic-embed-text-v1.5")
 LMSTUDIO_MODELS_DIR = os.path.realpath(os.path.expanduser("~/.lmstudio/models"))
 
 
 def base_url() -> str:
-    """Settings-panel override takes priority over .env, checked fresh on every call
+    """Read the database setting on every call
     (not cached at import time) so a change in the UI applies immediately, no restart."""
     return (settings_store.get("lmstudio_base_url") or _DEFAULT_BASE_URL).rstrip("/")
 
 
 def api_key() -> str | None:
-    return settings_store.get("lmstudio_api_key") or _DEFAULT_API_KEY
+    return settings_store.get("lmstudio_api_key")
 
 
 def _auth_headers() -> dict:
