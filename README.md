@@ -1,6 +1,6 @@
 # Hearth — Self-Hosted OpenAI-Compatible Web UI for Local AI and Agent Workflows
 
-*Local AI, kept at home, but can be accessed anywhere in the world.*
+*Local AI, kept at home, accessible anywhere in the world through a free Tailscale connection.*
 
 **Hearth is a free, self-hosted AI WebUI for personal AI chat, local LLM testing,
 and agentic coding workflows.** Use one browser interface to manage local models,
