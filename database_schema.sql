@@ -35,6 +35,41 @@ CREATE TABLE IF NOT EXISTS users (
     caddy_token TEXT,
     agentic_workflow_enabled BOOLEAN NOT NULL DEFAULT FALSE
 );
+CREATE INDEX IF NOT EXISTS idx_users_agent_share_search
+    ON users (lower(username) text_pattern_ops)
+    WHERE agentic_workflow_enabled = TRUE;
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id);
+CREATE TABLE IF NOT EXISTS agent_workspace_files (
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    content BYTEA NOT NULL DEFAULT ''::bytea,
+    is_dir BOOLEAN NOT NULL DEFAULT FALSE,
+    executable BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (owner_id, path)
+);
+CREATE TABLE IF NOT EXISTS agent_runtime_metadata (
+    task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
+    container_name TEXT UNIQUE,
+    payload TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_schedules (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    next_run_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_schedules_due ON agent_schedules(enabled, next_run_at);
 
 
 CREATE TABLE IF NOT EXISTS memory_chunks (

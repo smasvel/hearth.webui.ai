@@ -5,6 +5,7 @@ with the host. Project files are copied as safe regular files; the task containe
 never receives a host project bind mount, Docker socket, or app credentials.
 """
 import copy
+import io
 import json
 import logging
 import os
@@ -14,7 +15,6 @@ import secrets
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
@@ -24,6 +24,7 @@ from urllib.parse import unquote, urlsplit
 import requests
 
 from agent_opencode import AGENT, OpenCode, SYSTEM
+import agent_store
 
 IMAGE_VERSION = (Path(__file__).resolve().parent/'agent_container'/'IMAGE_VERSION').read_text().strip()
 IMAGE = 'hearth-agent-opencode:'+IMAGE_VERSION
@@ -47,24 +48,6 @@ def parse_jsonc(path):
     raw = re.sub(r'("(?:\\.|[^"\\])*")|,([\s]*[}\]])',
                  lambda match: match.group(1) or match.group(2), raw)
     return json.loads(raw)
-
-
-def _safe_member(name):
-    path = PurePosixPath(name)
-    return not path.is_absolute() and all(part not in ('', '.', '..') for part in path.parts)
-
-
-def _safe_target(root, target):
-    if target == root:
-        return True
-    if target.is_symlink() or not target.resolve().is_relative_to(root):
-        return False
-    parent = target.parent
-    while parent != root:
-        if parent.is_symlink():
-            return False
-        parent = parent.parent
-    return True
 
 
 class _ModelProxyHandler(BaseHTTPRequestHandler):
@@ -179,6 +162,31 @@ class ContainerOpenCode(OpenCode):
         self._lock = threading.RLock()
         self._proxies = {}
 
+    def migrate_legacy_runtime(self):
+        """Move old host JSON metadata into PostgreSQL and discard its container copy."""
+        for path in self.runtime_directory.glob('hearth-agent-*.json'):
+            try:
+                info = json.loads(path.read_text())
+                task_id = info['task_id']
+                if agent_store.get_task(task_id):
+                    agent_store.save_runtime(task_id, info)
+                try: self._docker('rm', '--force', info['container'], timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        logging.warning('Could not remove legacy agent container %s: %s', info.get('container'), exc)
+                path.unlink(missing_ok=True)
+                shutil.rmtree(self.runtime_directory/task_id, ignore_errors=True)
+            except (ValueError, KeyError, OSError):
+                logging.exception('Could not migrate legacy agent runtime metadata from %s', path)
+        for path in self.runtime_directory.iterdir():
+            if path.is_dir() and re.fullmatch(r'[0-9a-f]{32}', path.name):
+                name = self._container_name(path.name)
+                try: self._docker('rm', '--force', name, timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        logging.warning('Could not remove orphaned agent container %s: %s', name, exc)
+                shutil.rmtree(path, ignore_errors=True)
+
     def ensure_agent(self):
         # The isolated runtime receives a private agent definition in its generated config.
         # Image construction happens in the durable worker so the UI keeps showing progress.
@@ -216,28 +224,23 @@ class ContainerOpenCode(OpenCode):
             raise ValueError('Invalid agent assignment ID.')
         return 'hearth-agent-'+task_id[:24]
 
-    @staticmethod
-    def _project_path(value):
-        expected_root = Path.home().resolve()/'agents'
-        expected = expected_root/'project'
-        supplied = Path(value)
-        if expected_root.is_symlink() or expected.is_symlink() or supplied != expected:
-            raise ValueError('Agent projects must use the server-managed ~/agents/project directory.')
-        return expected
-
     def _runtime_path(self, name):
         return self.runtime_directory/(name+'.json')
 
     def _write_runtime(self, name, info):
-        path = self._runtime_path(name)
-        tmp = path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(info, indent=2))
-        tmp.chmod(0o600)
-        tmp.replace(path)
+        agent_store.save_runtime(info['task_id'], info)
 
     def _read_runtime(self, name):
-        path = self._runtime_path(name)
-        info = json.loads(path.read_text())
+        info = agent_store.get_runtime_by_container(name)
+        if not info:
+            # One-time import for installations upgrading from file-backed metadata.
+            path = self._runtime_path(name)
+            if not path.is_file():
+                raise RuntimeError('Agent container metadata is missing from PostgreSQL.')
+            info = json.loads(path.read_text())
+            if agent_store.get_task(info.get('task_id')):
+                agent_store.save_runtime(info['task_id'], info)
+            path.unlink(missing_ok=True)
         if not isinstance(info, dict) or info.get('container') != name:
             raise RuntimeError('Agent container metadata is invalid.')
         proxy = info.get('model_proxy')
@@ -319,16 +322,20 @@ class ContainerOpenCode(OpenCode):
             raise ValueError('HEARTH_AGENT_CPU_LIMIT must be between 0.5 and 64.')
         if not re.fullmatch(r'[1-9][0-9]{1,4}', pids) or not 64 <= int(pids) <= 4096:
             raise ValueError('HEARTH_AGENT_PID_LIMIT must be between 64 and 4096.')
+        startup = ('umask 0002; printf "%s" "$HEARTH_OPENCODE_CONFIG" > "$OPENCODE_CONFIG"; '
+                   'socat TCP-LISTEN:4097,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/relay/model.sock & '
+                   'exec opencode serve --hostname 0.0.0.0 --port 4096')
         self._docker('run', '--detach', '--name', name, '--label', 'hearth.agent-task='+info['task_id'],
             '--restart', 'unless-stopped', '--network', 'bridge',
             '--publish', '127.0.0.1::4096', '--memory', memory, '--cpus', str(cpu_value), '--pids-limit', pids,
             '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'FOWNER',
             '--cap-add', 'FSETID', '--cap-add', 'SETGID', '--cap-add', 'SETUID', '--cap-add', 'SYS_CHROOT',
             '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:rw,nosuid,nodev,size=2g',
-            '--env', 'OPENCODE_CONFIG=/relay/opencode.json',
+            '--env', 'OPENCODE_CONFIG=/tmp/opencode.json',
+            '--env', 'HEARTH_OPENCODE_CONFIG='+json.dumps(info['opencode_config'], separators=(',', ':')),
             '--env', 'OPENCODE_SERVER_USERNAME=opencode', '--env', 'OPENCODE_SERVER_PASSWORD='+password,
             '--mount', f'type=bind,src={task_dir},dst=/relay,readonly',
-            IMAGE, timeout=180)
+            '--entrypoint', '/bin/sh', IMAGE, '-lc', startup, timeout=180)
         port = ''
         deadline = time.time()+45
         while time.time() < deadline:
@@ -349,7 +356,8 @@ class ContainerOpenCode(OpenCode):
         try:
             return self._create_container_session(job)
         except Exception:
-            self.cleanup(job)
+            try: self.cleanup(job)
+            except Exception: logging.exception('Could not clean up failed agent container startup')
             raise
 
     def _create_container_session(self, job):
@@ -359,16 +367,13 @@ class ContainerOpenCode(OpenCode):
         task_dir = self.runtime_directory/task_id
         task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         task_dir.chmod(0o700)
-        config_path = task_dir/'opencode.json'
         proxy_path = task_dir/'model.sock'
         original, provider, proxy_info = self._host_provider(job['model']['providerID'], job['model']['id'], proxy_path)
         proxy = self._make_proxy(name, proxy_info)
         config = self._agent_config(original, job['model']['providerID'], job['model']['id'], provider)
-        config_path.write_text(json.dumps(config, indent=2)+'\n')
-        config_path.chmod(0o600)
-        project = self._project_path(job['project'])
         info = {'container': name, 'task_id': task_id, 'password': secrets.token_urlsafe(32),
-                'model_proxy': proxy.info, 'project': str(project),
+                'owner': job['owner'], 'model': job['model'], 'model_proxy': proxy.info,
+                'opencode_config': config,
                 'last_sync': 0, 'manifest': []}
         self._write_runtime(name, info)
         self._start_container(name, info, task_dir, job)
@@ -377,7 +382,7 @@ class ContainerOpenCode(OpenCode):
                 'model': job['model'], 'location': {'directory': '/workspace'},
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
-        self._sync_to_container(name, project)
+        self._sync_to_container(name, job['owner'])
         self._report(job, 'Project synced. The agent is ready to start its first work cycle.')
         return name+SESSION_SEPARATOR+result
 
@@ -393,8 +398,7 @@ class ContainerOpenCode(OpenCode):
             if 'container is missing' not in str(exc):
                 raise
         # A removed Docker container also removed its private OpenCode session DB.
-        # The host project is the durable checkpoint, so create a fresh session in
-        # the same per-assignment container and continue from those files.
+        # PostgreSQL workspace files are the durable checkpoint for a fresh session.
         self.cleanup(job)
         recreated = self.create(job)
         self._report(job, 'Previous container was unavailable; resumed from the latest synchronized project files.')
@@ -437,6 +441,9 @@ class ContainerOpenCode(OpenCode):
     def snapshot(self, session):
         if SESSION_SEPARATOR not in str(session): return super().snapshot(session)
         name, raw, info = self._split(session); return self._endpoint(name, info).snapshot(raw)
+    def live_messages(self, session):
+        if SESSION_SEPARATOR not in str(session): return super().live_messages(session)
+        name, raw, info = self._split(session); return self._endpoint(name, info).live_messages(raw)
     def interrupt(self, session):
         if SESSION_SEPARATOR not in str(session): return super().interrupt(session)
         name, raw, info = self._split(session); return self._endpoint(name, info).interrupt(raw)
@@ -457,22 +464,27 @@ class ContainerOpenCode(OpenCode):
         if SESSION_SEPARATOR not in str(session): return super().stop_verification(session, message_id)
         name, raw, info = self._split(session); return self._endpoint(name, info).stop_verification(raw, message_id)
 
-    def _sync_to_container(self, name, project):
-        root = self._project_path(project).resolve()
+    def _sync_to_container(self, name, owner):
         process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', '/workspace', '-xf', '-'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         total = 0
         try:
             with tarfile.open(fileobj=process.stdin, mode='w|') as tar:
-                for path in root.rglob('*'):
-                    rel = path.relative_to(root)
-                    if any(part in SKIP_PARTS for part in rel.parts) or path.is_symlink(): continue
-                    if path.is_dir():
-                        tar.add(path, arcname=rel.as_posix(), recursive=False)
-                    elif path.is_file():
-                        total += path.stat().st_size
-                        if total > MAX_PROJECT_BYTES: raise RuntimeError('Project import exceeded the 2 GiB safety limit.')
-                        tar.add(path, arcname=rel.as_posix(), recursive=False)
+                for item in agent_store.list_workspace_files(owner):
+                    rel = PurePosixPath(item['path'])
+                    if any(part in SKIP_PARTS for part in rel.parts): continue
+                    info = tarfile.TarInfo(rel.as_posix())
+                    if item['is_dir']:
+                        info.type = tarfile.DIRTYPE
+                        info.mode = 0o755
+                        tar.addfile(info)
+                    else:
+                        content = bytes(item['content'])
+                        total += len(content)
+                        if total > MAX_PROJECT_BYTES: raise RuntimeError('Project import exceeded the 2 GiB PostgreSQL workspace limit.')
+                        info.size = len(content)
+                        info.mode = 0o755 if item.get('executable') else 0o644
+                        tar.addfile(info, io.BytesIO(content))
             process.stdin.close()
             code = process.wait(timeout=300)
             error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
@@ -493,50 +505,16 @@ class ContainerOpenCode(OpenCode):
         tar_args.extend(['-cf', '-', '.'])
         process = subprocess.Popen(tar_args,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        manifest = set()
-        total = 0
-        root = self._project_path(job['project']).resolve()
-        try:
-            with tarfile.open(fileobj=process.stdout, mode='r|') as tar:
-                for member in tar:
-                    if not _safe_member(member.name): continue
-                    rel = Path(*PurePosixPath(member.name).parts)
-                    if any(part in SKIP_PARTS for part in rel.parts): continue
-                    target = root/rel
-                    if not _safe_target(root, target): continue
-                    if member.isdir():
-                        target.mkdir(parents=True, exist_ok=True)
-                        manifest.add(rel.as_posix()+'/')
-                    elif member.isfile():
-                        total += member.size
-                        if total > MAX_PROJECT_BYTES: raise RuntimeError('Agent project export exceeded the 2 GiB safety limit.')
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        source = tar.extractfile(member)
-                        if source is None: continue
-                        fd, temporary_name = tempfile.mkstemp(prefix='.hearth-sync-', dir=target.parent)
-                        temporary = Path(temporary_name)
-                        with os.fdopen(fd, 'wb') as output:
-                            shutil.copyfileobj(source, output, 1024*1024)
-                        temporary.chmod(0o755 if member.mode & 0o111 else 0o644)
-                        temporary.replace(target)
-                        manifest.add(rel.as_posix())
+        def finish_export():
             code = process.wait(timeout=300)
             error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
-            if code: raise RuntimeError('Could not synchronize the isolated project: '+error)
+            if code:
+                raise RuntimeError('Could not synchronize the isolated project: '+error)
+        try:
+            agent_store.replace_workspace_from_tar(job['owner'], process.stdout, finish_export)
         except Exception:
             process.kill(); process.wait(timeout=5)
             raise
-        old = set(info.get('manifest') or [])
-        for stale in sorted(old-manifest,
-                            key=lambda item: (item.rstrip('/').count('/'), item), reverse=True):
-            is_dir = stale.endswith('/')
-            path = root/Path(stale.rstrip('/'))
-            try:
-                if _safe_target(root, path):
-                    if is_dir: path.rmdir()
-                    elif path.is_file(): path.unlink()
-            except (OSError, RuntimeError): pass
-        info['manifest'] = sorted(manifest)
         info['last_sync'] = now
         self._write_runtime(name, info)
 
@@ -546,8 +524,16 @@ class ContainerOpenCode(OpenCode):
         name = self._container_name(task_id)
         with self._lock:
             proxy = self._proxies.pop(name, None)
-        if proxy: proxy.close()
-        try: self._docker('rm', '--force', name, timeout=60)
-        except Exception: pass
-        shutil.rmtree(self.runtime_directory/task_id, ignore_errors=True)
-        self._runtime_path(name).unlink(missing_ok=True)
+        try:
+            if proxy: proxy.close()
+            # Stop explicitly before removal so a stop/delete action cannot leave
+            # a task container running, including if OpenCode failed to interrupt.
+            for command in (('stop', '--time', '5', name), ('rm', '--force', name)):
+                try:
+                    self._docker(*command, timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        raise
+        finally:
+            shutil.rmtree(self.runtime_directory/task_id, ignore_errors=True)
+            agent_store.delete_runtime(task_id)

@@ -131,6 +131,11 @@ class OpenCode:
                 'inbox': self.call('GET', path+'/inbox')['data'],
                 'messages': self.call('GET', path+'/message', params={'limit': '50', 'order': 'desc'})['data']}
 
+    def live_messages(self, session):
+        """Return the newest OpenCode message snapshots, including an in-progress assistant turn."""
+        path = '/api/session/'+session
+        return self.call('GET', path+'/message', params={'limit': '50', 'order': 'desc'})['data']
+
     def interrupt(self, session):
         self.call('POST', f'/api/session/{session}/interrupt', params={'resume': 'false'})
 

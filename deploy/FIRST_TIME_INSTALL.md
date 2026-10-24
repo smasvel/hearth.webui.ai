@@ -22,14 +22,17 @@ Java/Maven, Node.js/npm, and build tools, and then:
 - Starts PostgreSQL 18 with Compose, waiting for its readiness check.
 - Loads the application DDL from `database_schema.sql` into the new PostgreSQL
   database, then creates the initial administrator account. The DDL includes the
-  per-user agent workflow setting; user-store initialization applies any remaining
-  idempotent account migrations.
+  per-user agent workflow setting and the agent task, schedule, runtime metadata,
+  and private workspace tables; setup applies idempotent account and agent-store
+  migrations.
 - Prompts twice for the initial administrator password. Hearth stores only its
   password hash; the plaintext password is not written to configuration.
 - Creates and enables `~/.config/systemd/user/ai-webui.service`, using this checkout's
   absolute path. Existing customized service files are preserved.
 - Enables systemd lingering for the installing account, so Hearth starts after a
   machine restart even before that account logs in.
+- Starts Hearth's persistent agent worker with the service. The worker checks
+  PostgreSQL for due schedules while Hearth is running.
 
 Existing credentials, users, and database contents are preserved on reruns. The
 installer does not configure model backends, Tailscale, Caddy, or LAN proxy services.
@@ -72,6 +75,34 @@ For a manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists th
 same admin options. The setup command starts the Compose PostgreSQL service,
 applies `database_schema.sql`, then seeds the initial administrator if the users
 table is empty.
+
+Agent assignments, activity, sharing, runtime metadata, and project workspace
+files are persisted in PostgreSQL. On upgrade, Hearth imports legacy agent task
+and project data from the old `data/agent-tasks` and `~/agents` locations, then
+removes the migrated host copies. Active container working copies are runtime
+scratch space; PostgreSQL is the durable source of truth.
+
+After signing in, open **Agents**. Use **New agent** to name a task and describe what
+you want in everyday language; advanced model and command approval settings are
+optional. **My agents** shows task status. Open a task to follow its live **Activity**
+feed, which streams task progress, the agent container's tool inputs and outputs,
+and user-facing model responses as they become available, with timestamps. The
+stream is scoped to tasks you own or that were explicitly shared with your account.
+The newest activity and conversation entries appear first. You can answer questions
+and pause or continue the work from that page. When an assignment is paused, blocked,
+or interrupted, its owner can change the model before continuing. This starts a fresh
+OpenCode session from the latest saved workspace checkpoint and carries forward the
+previous agent summary. Task data remains in PostgreSQL if you close the browser.
+
+Recurring schedules are optional and are not created by the installer. Open
+**Schedules → Create a schedule** to save a task goal, recurring agent comment, model,
+and interval. Daily or weekly schedules can specify a local run time; Hearth uses the
+browser timezone shown in the form and keeps that wall-clock time across
+daylight-saving changes. Without a selected time, the first run waits one full
+interval. Schedules remain in PostgreSQL across restarts; if Hearth was stopped when
+a run became due, the worker starts one catch-up run after startup and skips the
+missed intervals. The standard systemd service starts this worker after reboot.
+With `--no-service`, scheduled runs happen only while you manually run `.venv/bin/python app.py`.
 
 With `--no-service`, start the app manually using `.venv/bin/python app.py`.
 `--skip-browser` omits Chromium; web search can still fall back to snippets and

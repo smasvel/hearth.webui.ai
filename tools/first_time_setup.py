@@ -148,8 +148,10 @@ def main():
         compose += ['--project-name', args.project_name]
     subprocess.run(compose + ['up', '-d', '--wait', 'postgres'], check=True, cwd=ROOT)
     import database
+    import agent_store
     import users_store
     database.init_schema()
+    agent_store.init_db()
     if users_store.count_users() == 0:
         username = args.admin_username or values.get('ADMIN_USERNAME') or 'admin'
         password_hash = values.get('ADMIN_PASSWORD_HASH')
