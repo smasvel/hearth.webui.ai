@@ -53,15 +53,39 @@ class AgentTaskTests(unittest.TestCase):
     def test_restart_reconnects_active_session_without_duplicate_prompt(self):
         key = self.create();self.snap['active']=True
         restored = Manager(self.manager.directory,self.client)
+        self.assertEqual(restored.get(key)['status'], 'interrupted')
+        restored.control(key, 'resume')
         restored.tick()
         self.assertEqual(restored.get(key)['session_id'],'ses_fixture')
         self.client.create.assert_called_once();self.client.prompt.assert_called_once()
+
+    def test_restart_marks_assignment_interrupted_and_exposes_resume(self):
+        key = self.create()
+        self.manager.jobs[key]['status'] = 'running'
+        self.manager.save(self.manager.jobs[key])
+        restored = Manager(self.manager.directory, self.client)
+        interrupted = restored.get(key)
+        self.assertEqual(interrupted['status'], 'interrupted')
+        self.assertTrue(interrupted['resume_session'])
+        resumed = restored.control(key, 'resume')
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertTrue(resumed['resume_session'])
+
+    def test_interrupted_assignment_can_resume_without_existing_session(self):
+        job = self.manager.create(self.values, 'admin')
+        self.manager.jobs[job['id']].update(status='interrupted', session_id=None)
+        resumed = self.manager.control(job['id'], 'resume')
+        self.assertEqual(resumed['status'], 'queued')
+        self.manager.tick()
+        self.client.create.assert_called_once()
+        self.client.prompt.assert_called_once()
 
     def test_pending_prompt_reuses_id_after_transport_failure(self):
         self.client.prompt.side_effect = [RuntimeError('temporary transport failure'),None]
         job = self.manager.create(self.values,'admin');self.manager.tick()
         first = self.client.prompt.call_args.args[2]
         restored=Manager(self.manager.directory,self.client)
+        restored.control(job['id'], 'resume')
         restored.jobs[job['id']]['next_retry']=0;restored.tick()
         self.assertEqual(self.client.prompt.call_args.args[2],first)
         self.assertEqual(restored.get(job['id'])['cycles'],1)
@@ -142,6 +166,7 @@ class AgentTaskTests(unittest.TestCase):
         self.client.message.return_value={'status':'running'}
         self.finish_turn(assistant('a1',MARKER));self.client.verify.assert_called_once()
         restored=Manager(self.manager.directory,self.client)
+        restored.control(key, 'resume')
         self.client.message.return_value={'status':'exited','exit':0,'output':{'output':'passed'}}
         restored.tick();self.client.verify.assert_called_once()
         self.assertEqual(restored.get(key)['status'],'completed')
@@ -165,7 +190,7 @@ class AgentTaskTests(unittest.TestCase):
     def test_steering_is_durable_and_does_not_duplicate_session(self):
         key=self.create();self.snap['active']=True
         self.manager.steer(key,'Also add a CLI.')
-        restored=Manager(self.manager.directory,self.client);restored.tick()
+        restored=Manager(self.manager.directory,self.client);restored.control(key, 'resume');restored.tick()
         self.assertIn('Also add a CLI.',self.client.prompt.call_args.args[1])
         self.assertEqual(restored.get(key)['steering'],[])
         self.client.create.assert_called_once()

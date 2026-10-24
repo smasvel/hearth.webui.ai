@@ -28,6 +28,7 @@ import browse_history_store
 import chat_store
 import chat_jobs
 import agent_tasks
+import agent_container
 import model_tests
 import model_test_profiles
 import flm_context
@@ -1712,8 +1713,10 @@ def api_list_models():
 
 _model_test_context = threading.local()
 _model_test_registry = model_tests.Registry(database.DATA_DIR / 'model-test-runs')
-_agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks',
+_agent_container_client = agent_container.ContainerOpenCode(database.DATA_DIR / 'agent-runtime')
+_agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks', client=_agent_container_client,
     prepare_model=lambda job: _prepare_agent_model(job))
+_agent_container_client.progress = _agent_tasks.report_progress
 
 
 def _test_model_inventory():

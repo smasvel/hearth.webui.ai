@@ -16,7 +16,7 @@
     el('agent-goal').textContent = task.goal + (task.criteria ? '\nAcceptance criteria: '+task.criteria : '');
     el('agent-error').textContent = task.error || '';
     el('agent-pause').disabled = !active.has(task.status);
-    el('agent-resume').disabled = !['paused','blocked'].includes(task.status);
+    el('agent-resume').disabled = !['paused','blocked','interrupted'].includes(task.status);
     el('agent-send-instructions').disabled = task.status !== 'running';
     el('agent-stop').disabled = ['stopped','completed'].includes(task.status);
     el('agent-delete').disabled = active.has(task.status);

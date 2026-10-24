@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import Mock, patch
 import requests
 from agent_opencode import OpenCode
+from agent_container import ContainerOpenCode
+import tempfile
 
 
 class OpenCodeAdapterTests(unittest.TestCase):
@@ -54,3 +56,19 @@ class OpenCodeAdapterTests(unittest.TestCase):
         with patch.object(client,'call',return_value={'data':[{'providerID':'fastflowlm','id':'flm/qwen3.8-mtp:27b','name':'Qwen'}]}), patch('agent_opencode.flm_context.context_limit',return_value=8192):
             model=client.models()[0]
         self.assertFalse(model['usable']);self.assertEqual(model['context'],8192)
+
+
+class ContainerRecoveryTests(unittest.TestCase):
+    def test_missing_container_recreates_session_from_project_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            job = {'id':'a'*32,'session_id':'hearth-agent-'+'a'*24+'::old-session'}
+            with patch.object(client,'snapshot',side_effect=RuntimeError('The isolated agent container is missing.')) as snapshot, \
+                 patch.object(client,'cleanup') as cleanup, \
+                 patch.object(client,'create',return_value='hearth-agent-'+'a'*24+'::new-session') as create, \
+                 patch.object(client,'_report'):
+                result=client.resume(job)
+            snapshot.assert_called_once_with(job['session_id'])
+            cleanup.assert_called_once_with(job)
+            create.assert_called_once_with(job)
+            self.assertTrue(result.endswith('::new-session'))

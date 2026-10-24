@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Unprivileged app setup; install OS packages using install-host-deps.sh first.
+# Standard installation entry point. Host packages are installed only when missing.
 set -euo pipefail
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
-  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--admin-username NAME]'
+  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image] [--admin-username NAME]'
   echo 'Additional options are passed to tools/first_time_setup.py (--help lists them).'
   exit 0
 fi
@@ -20,8 +20,32 @@ for argument in "$@"; do
     setup_args+=("$argument")
   fi
 done
-command -v docker >/dev/null || { echo 'Install host dependencies first: sudo bash deploy/install-host-deps.sh --base-only' >&2; exit 1; }
+needs_host_dependencies=0
+command -v python3 >/dev/null || needs_host_dependencies=1
+command -v docker >/dev/null || needs_host_dependencies=1
+command -v ffmpeg >/dev/null || needs_host_dependencies=1
+command -v setfacl >/dev/null || needs_host_dependencies=1
+if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -qx 'install ok installed'; then
+  needs_host_dependencies=1
+fi
+if command -v docker >/dev/null && ! docker compose version >/dev/null 2>&1; then
+  needs_host_dependencies=1
+fi
+if command -v docker >/dev/null && ! docker info >/dev/null 2>&1; then
+  needs_host_dependencies=1
+fi
+if [[ $needs_host_dependencies -eq 1 ]]; then
+  command -v sudo >/dev/null || { echo 'sudo is required to install missing Ubuntu host packages.' >&2; exit 1; }
+  command -v apt-get >/dev/null || { echo 'Automatic host dependency setup currently requires Ubuntu or Debian.' >&2; exit 1; }
+  sudo -v
+  sudo apt-get update
+  sudo apt-get install -y python3 python3-venv docker.io docker-compose-v2 acl curl ffmpeg
+  sudo systemctl enable --now docker.service
+  sudo usermod -aG docker "$(id -un)"
+  sudo setfacl -m "u:$(id -un):rw" /var/run/docker.sock
+fi
 docker info >/dev/null
+docker compose version >/dev/null
 cd -- "$project_dir"
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt

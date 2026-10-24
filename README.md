@@ -345,20 +345,19 @@ Follow [the first-time installation guide](deploy/FIRST_TIME_INSTALL.md). On Ubu
 from the project directory:
 
 ```bash
-sudo bash deploy/install-host-deps.sh --base-only
-# Log out and back in to pick up Docker group membership, then:
 bash deploy/install-first-time.sh
 ```
 
-The installer creates the Python environment, installs requirements and Chromium,
-starts PostgreSQL in Docker Compose, generates private database/session credentials,
+This single installer adds missing Ubuntu packages with sudo, prepares the Docker
+agent image and Python environment, installs requirements and Chromium, starts
+PostgreSQL in Docker Compose, generates private database/session credentials,
 prompts for the first admin password, and enables the Hearth user service. It keeps
 existing users and secrets on reruns. Model backends and weights are installed separately.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
 HTTP when browser scraping is unavailable. Voice input uses the system FFmpeg binary,
-which the base dependency installer includes.
+which the installer adds when missing.
 
 ## Run
 
@@ -465,21 +464,37 @@ supported study workflows are available from the app's navigation.
 
 Open **Agents** and provide a goal, acceptance criteria, and configured OpenCode
 model. Agent project files are stored under `~/agents/project` on the server and
-the project path is managed by Hearth. OpenCode must be installed. The worker requires at least
-16K context; the model picker excludes configurations that cannot fit its tools
-and prompt.
+the project path is managed by Hearth. Hearth bundles the OpenCode worker in its
+agent container. The selected local model requires at least 16K context; the model
+picker excludes configurations that cannot fit its tools and prompt.
 
 Assignments queue and run one at a time. Follow activity, answer questions, approve
 or reject permission requests, add instructions, and pause, resume, or stop work.
 Tasks persist when you close the browser, and Hearth reconnects to existing sessions
-after restarting. Pause agents before starting model management or evaluation work
-that would compete for their model.
+after restarting. Assignments interrupted by a Hearth restart can be resumed from
+the Assignments panel. Pause agents before starting model management or evaluation
+work that would compete for their model.
 
-Agent file and shell tools run through the configured OpenCode service. At assignment
-time, choose to ask before each shell command or auto-accept shell commands. When a
-prompt appears, allow it once, always for the proposed command pattern, or reject it.
-Shell commands run as the OpenCode service account; the current agent workflow is
-not container-isolated. Completed projects can be downloaded as a `.tar.gz` archive.
+Each assignment runs its own Docker container with OpenCode, Python 3, Java (JDK and
+Maven), Node.js, npm, git, and common build tools. The agent can install additional
+OS and language packages inside the container with `apt`, `pip`, `npm`, and other
+package managers. Package installation and shell commands run inside that
+container. Docker applies memory, CPU, and process limits, drops unnecessary Linux
+capabilities, and disables privilege escalation. The container receives neither a
+host project bind mount nor the Docker socket. Hearth copies safe regular project
+files into and out of the container under `~/agents/project`; symlinks and common
+generated dependency/cache directories are excluded from synchronization. Outbound
+networking supports package downloads and model calls, but Docker egress is not
+restricted to an allowlist.
+
+The default container limit is 8 GiB RAM, 4 CPUs, and 512 processes. Administrators
+can tune these in `.env` with `HEARTH_AGENT_MEMORY_LIMIT` (512m–256g),
+`HEARTH_AGENT_CPU_LIMIT` (0.5–64), and `HEARTH_AGENT_PID_LIMIT` (64–4096) for
+larger builds.
+
+At assignment time, choose to ask before each shell command or auto-accept shell
+commands. When a prompt appears, allow it once, always for the proposed command
+pattern, or reject it. Completed projects can be downloaded as a `.tar.gz` archive.
 Stopped assignments can be deleted; active assignments must first be stopped or
 paused.
 
@@ -533,8 +548,14 @@ For updates, reinstall requirements and restart after active work has finished:
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
+bash deploy/install-first-time.sh --rebuild-agent-image
 systemctl --user restart ai-webui
 ```
+
+The first-time installer prepares the isolated agent image automatically. Rebuild
+it after updating the container recipe or OpenCode version. The image includes
+Python, Java/Maven, Node.js/npm, and build tools; task package installation stays
+inside each task container.
 
 Keep `.env`, `.env.postgres`, and TLS private keys private. Preserve the database
 volume across application updates; `docker compose down -v` deletes it.
