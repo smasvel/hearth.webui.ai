@@ -233,6 +233,15 @@ class ContainerOpenCode(OpenCode):
         info = json.loads(path.read_text())
         if not isinstance(info, dict) or info.get('container') != name:
             raise RuntimeError('Agent container metadata is invalid.')
+        proxy = info.get('model_proxy')
+        if isinstance(proxy, dict):
+            # Older assignments stored boolean True, which makes requests use
+            # certifi instead of the host trust store containing private model CAs.
+            # Migrate persisted metadata while keeping certificate checks enabled.
+            ca_bundle = _system_ca_bundle()
+            if proxy.get('verify_tls') != ca_bundle:
+                proxy['verify_tls'] = ca_bundle
+                self._write_runtime(name, info)
         return info
 
     def _host_provider(self, provider_id, model_id, socket_path):
