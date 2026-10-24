@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 import requests
 from agent_opencode import OpenCode
-from agent_container import ContainerOpenCode
+from agent_container import ContainerOpenCode, _system_ca_bundle
 import tempfile
 
 
@@ -59,6 +59,14 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
 
 class ContainerRecoveryTests(unittest.TestCase):
+    def test_legacy_model_relay_metadata_uses_host_ca_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            name = 'hearth-agent-'+'a'*24
+            client._write_runtime(name, {'container':name,'model_proxy':{'verify_tls':True}})
+            info = client._read_runtime(name)
+            self.assertEqual(info['model_proxy']['verify_tls'], _system_ca_bundle())
+
     def test_missing_container_recreates_session_from_project_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)
