@@ -130,10 +130,14 @@ class Manager:
             raise ValueError('The configured ~/agents directory cannot be a symlink.')
         agent_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         agent_root.chmod(0o700)
-        project = agent_root / 'project'
+        owner_key = hashlib.sha256(str(owner).encode()).hexdigest()[:24]
+        users_root = agent_root / 'users'
+        owner_root = users_root / owner_key
+        project = owner_root / 'project'
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
-        if project.is_symlink() or (project.exists() and not project.is_dir()):
+        if any(path.is_symlink() or (path.exists() and not path.is_dir())
+               for path in (users_root, owner_root, project)):
             raise ValueError('The configured agent project path must be a real directory, not a symlink.')
         model = values.get('model')
         if not isinstance(model, dict) or not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True)):
@@ -155,6 +159,8 @@ class Manager:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
                 raise ValueError('The agent queue already has 20 active assignments.')
             project.mkdir(mode=0o700, parents=True, exist_ok=True)
+            users_root.chmod(0o700)
+            owner_root.chmod(0o700)
             project.chmod(0o700)
             job = {'id': uuid.uuid4().hex, 'owner': owner, 'title': title, 'goal': goal,
                 'project': str(project.resolve()), 'assignee': assignee, 'model': model,
@@ -163,7 +169,7 @@ class Manager:
                 'cycles': 0, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
-            self.note(job, 'Assignment queued. Project files are managed under ~/agents/project.')
+            self.note(job, 'Assignment queued. Project files are managed in this account’s private agent workspace.')
             self.jobs[job['id']] = job
             self.save(job)
             return copy.deepcopy(job)

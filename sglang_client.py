@@ -69,6 +69,11 @@ def list_models() -> list[dict]:
             "quantization": "remote SGLang",
             "externally_managed": True,
             "deletable": False,
+            "max_context_length": item.get("max_context_length"),
+            "configured_context_length": next((
+                item.get(key) for key in ("max_model_len", "context_length")
+                if isinstance(item.get(key), int) and item.get(key) > 0
+            ), None),
         })
     return models
 

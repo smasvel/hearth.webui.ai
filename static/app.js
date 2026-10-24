@@ -718,7 +718,10 @@
     }
     // The persisted assistant wins as soon as it is saved; never append it twice.
     if (running && data.messages.length <= generation.base_message_count + 1) {
-      if (!activeReplyEl) activeReplyEl = addBubble("assistant", "");
+      if (!activeReplyEl) {
+        activeReplyEl = addBubble("assistant", "");
+        addAssistantControls(activeReplyEl._wrapEl);
+      }
       if (generation.content || generation.reasoning) {
         clearWaitingIndicator(activeReplyEl);
         activeReplyEl._answerEl.innerHTML = renderMarkdown(generation.content || "");
@@ -1387,6 +1390,7 @@
     msgWraps.push(userEl._wrapEl);
     addUserControls(userEl._wrapEl);
     activeReplyEl = addBubble("assistant", "");
+    addAssistantControls(activeReplyEl._wrapEl);
     renderedMessagesKey = null;
     setChatBusy(true);
     sendBtn.disabled = true;
@@ -1447,6 +1451,34 @@
     if (wrap.querySelector(".msg-actions")) return;
     const bar = document.createElement("div");
     bar.className = "msg-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-action-btn msg-copy-btn";
+    copyBtn.title = "Copy response";
+    copyBtn.setAttribute("aria-label", "Copy response");
+    copyBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="9" height="10" rx="1.5"></rect><path d="M11 13.5H3.5A1.5 1.5 0 0 1 2 12V4.5"></path></svg>';
+    copyBtn.addEventListener("click", () => {
+      const answerEl = wrap.querySelector(".answer-content");
+      if (!answerEl) return;
+      const copy = answerEl.cloneNode(true);
+      copy.querySelectorAll(".code-block-actions, .table-block-actions, .waiting-indicator")
+        .forEach((el) => el.remove());
+      const text = (copy.innerText || copy.textContent || "").trimEnd();
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.classList.add("copied");
+        copyBtn.title = "Copied";
+        copyBtn.setAttribute("aria-label", "Copied");
+        copyBtn.innerHTML = "✓";
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.title = "Copy response";
+          copyBtn.setAttribute("aria-label", "Copy response");
+          copyBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="9" height="10" rx="1.5"></rect><path d="M11 13.5H3.5A1.5 1.5 0 0 1 2 12V4.5"></path></svg>';
+        }, 1200);
+      }).catch(() => addSystemMessage("Could not copy to clipboard.", true));
+    });
+    bar.appendChild(copyBtn);
     bar.appendChild(makeActionBtn("Regenerate", "Discard this reply and generate a new one", () => {
       if (busy) return;
       const j = msgWraps.indexOf(wrap);

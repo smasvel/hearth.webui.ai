@@ -76,7 +76,19 @@ def list_models() -> list[dict]:
         raise LMStudioError(
             f"Could not reach LM Studio server at {base_url()}: {exc}"
         ) from exc
-    return resp.json().get("data", [])
+    models = resp.json().get("data", [])
+    for model in models:
+        instances = model.get("loaded_instances") or []
+        loaded_contexts = [
+            config.get("context_length")
+            for instance in instances
+            if isinstance((config := instance.get("config")), dict)
+            and isinstance(config.get("context_length"), int)
+            and config["context_length"] > 0
+        ]
+        if loaded_contexts:
+            model["loaded_context_length"] = max(loaded_contexts)
+    return models
 
 
 def owns_model(model_id: str) -> bool:

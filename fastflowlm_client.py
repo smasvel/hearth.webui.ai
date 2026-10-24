@@ -193,6 +193,7 @@ def list_models() -> list[dict]:
             "quantization": quantization,
             "type": "llm",
             "state": "loaded" if tag == active else "not-loaded",
+            "configured_context_length": flm_context.context_limit(f"{_ID_PREFIX}{tag}"),
             "size_gb": round(float(fp), 2) if isinstance(fp, (int, float)) else None,
         })
     installed_tags = _installed_tags(installed)

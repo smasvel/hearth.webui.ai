@@ -314,7 +314,12 @@ def _asset_helper():
         except OSError:
             v = 0
         return f"{url_for('static', filename=filename)}?v={v}"
-    return {"asset": asset, "csrf_token": _login_csrf_token()}
+    return {
+        "asset": asset,
+        "csrf_token": _login_csrf_token(),
+        "is_admin": session.get("role") == "admin",
+        "agentic_workflow_enabled": session.get("agentic_workflow_enabled", False),
+    }
 
 
 @app.after_request
@@ -1004,6 +1009,9 @@ def login_required(view):
             session["username"] = user["username"]
         if session.get("role") != user["role"]:
             session["role"] = user["role"]
+        agent_enabled = user.get("agentic_workflow_enabled", user.get("role") == "admin")
+        if session.get("agentic_workflow_enabled") != agent_enabled:
+            session["agentic_workflow_enabled"] = agent_enabled
         return view(*args, **kwargs)
 
     return wrapped
@@ -1017,6 +1025,19 @@ def admin_required(view):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "admin access required"}), 403
             return "Forbidden: admin access required", 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def agent_workflow_required(view):
+    @functools.wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if not session.get("agentic_workflow_enabled", session.get("role") == "admin"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "agentic workflow is disabled for this account"}), 403
+            return "Agentic workflow is disabled for this account.", 403
         return view(*args, **kwargs)
 
     return wrapped
@@ -1055,6 +1076,9 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["role"] = user["role"]
+            session["agentic_workflow_enabled"] = user.get(
+                "agentic_workflow_enabled", user["role"] == "admin"
+            )
             session["login_csrf_token"] = secrets.token_urlsafe(32)
             session["last_activity"] = time.time()
             # No Expires/Max-Age: closing the browser discards the cookie and a new
@@ -1692,6 +1716,36 @@ def api_list_models():
         m["backend"] = "fastflowlm"
     models += flm_models
     models.append(comfyui.video_model_info())
+    def positive_context(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    for model in models:
+        if model.get("type") in ("image", "video", "transcription", "tts"):
+            continue
+        model_max = positive_context(model.get("max_context_length"))
+        loaded_context = positive_context(model.get("loaded_context_length"))
+        configured_context = positive_context(model.get("configured_context_length"))
+        if model_max:
+            model["context_window_tokens"] = model_max
+            model["context_window_source"] = "model_max"
+        elif loaded_context:
+            model["context_window_tokens"] = loaded_context
+            model["context_window_source"] = "loaded_runtime"
+        elif configured_context:
+            model["context_window_tokens"] = configured_context
+            model["context_window_source"] = "configured"
+        elif model.get("backend") == "fastflowlm":
+            model["context_window_tokens"] = flm_context.context_limit(model.get("id"))
+            model["context_window_source"] = "configured"
+        else:
+            model["context_window_tokens"] = help_data._CTX.get(model.get("backend"), 8192)
+            model["context_window_source"] = "backend_default"
     if session.get("role") != "admin":
         # Not a chat target — picking any of these from the dropdown would just produce
         # broken responses (embedding/transcription/TTS models don't serve chat
@@ -1800,13 +1854,19 @@ def _prepare_agent_model(job):
 
 
 @app.get('/agents')
-@admin_required
+@agent_workflow_required
 def agents_page():
     return render_template('agents.html', username=session.get('username'))
 
 
+def _agent_task_visible_to_current_user(job):
+    return bool(job) and (
+        session.get('role') == 'admin' or job.get('owner') == session.get('user_id')
+    )
+
+
 @app.get('/api/agent-tasks/models')
-@admin_required
+@agent_workflow_required
 def api_agent_models():
     try:
         configured = _agent_tasks.client.models()
@@ -1824,11 +1884,13 @@ def api_agent_models():
 
 
 @app.get('/api/agent-tasks')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_list():
     fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error')
     tasks = []
     for job in _agent_tasks.list():
+        if not _agent_task_visible_to_current_user(job):
+            continue
         task = {key: job.get(key) for key in fields}
         activity = job.get('activity') or []
         task['latest_activity'] = str(activity[-1].get('text', ''))[:180] if activity else ''
@@ -1837,7 +1899,7 @@ def api_agent_tasks_list():
 
 
 @app.post('/api/agent-tasks')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_create():
     if any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
         return jsonify({'error': 'Wait for model validation to finish before assigning an agent.'}), 409
@@ -1853,17 +1915,19 @@ def api_agent_tasks_create():
 
 
 @app.get('/api/agent-tasks/<task_id>')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_get(task_id):
     job = _agent_tasks.get(task_id)
-    if job is None:
+    if not _agent_task_visible_to_current_user(job):
         return jsonify({'error': 'Assignment not found.'}), 404
     return jsonify(job)
 
 
 @app.delete('/api/agent-tasks/<task_id>')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_delete(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
     try:
         _agent_tasks.delete(task_id)
         return jsonify({'deleted': True})
@@ -1874,8 +1938,10 @@ def api_agent_tasks_delete(task_id):
 
 
 @app.get('/api/agent-tasks/<task_id>/download')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_download(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
     try:
         stream, name = _agent_tasks.download(task_id)
         filename = secure_filename(name) or 'completed-project'
@@ -1888,8 +1954,10 @@ def api_agent_tasks_download(task_id):
 
 
 @app.post('/api/agent-tasks/<task_id>/control')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_control(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
         return jsonify({'error': 'A control object is required.'}), 400
@@ -1904,8 +1972,10 @@ def api_agent_tasks_control(task_id):
 
 
 @app.post('/api/agent-tasks/<task_id>/steer')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_steer(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     try:
         return jsonify(_agent_tasks.steer(task_id, body.get('text') if isinstance(body, dict) else None))
@@ -1916,8 +1986,10 @@ def api_agent_tasks_steer(task_id):
 
 
 @app.post('/api/agent-tasks/<task_id>/reply')
-@admin_required
+@agent_workflow_required
 def api_agent_tasks_reply(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
         return jsonify({'error': 'A reply object is required.'}), 400
@@ -2695,7 +2767,7 @@ def api_cancel_download():
         "vllm": ("hf", "download"),
         "fastflowlm": ("flm", "pull"),
     }
-    stopped = 0
+    stop_requested = 0
     signature = signatures.get(backend)
     terminated: list[psutil.Process] = []
     if signature:
@@ -3244,14 +3316,45 @@ def api_create_user():
         return jsonify({"error": "password must be at least 8 characters"}), 400
     if role not in users_store.VALID_ROLES:
         return jsonify({"error": f"role must be one of {sorted(users_store.VALID_ROLES)}"}), 400
+    agent_access = body.get("agentic_workflow_enabled")
+    if "agentic_workflow_enabled" in body and type(agent_access) is not bool:
+        return jsonify({"error": "agentic_workflow_enabled must be a boolean"}), 400
     if users_store.username_exists(username):
         return jsonify({"error": f"username '{username}' is already taken"}), 409
 
-    user = users_store.create_user(username, password, role)
+    user = users_store.create_user(username, password, role, agent_access)
     # caddy_snippet shown once here (and re-fetchable later via GET .../caddy-token) since this
     # app can't add it to the Caddyfile itself - see _caddy_user_snippet's docstring.
     snippet = _caddy_user_snippet(username, user["id"], user["caddy_token"])
     return jsonify({"user": user, "caddy_snippet": snippet}), 201
+
+
+def _request_stop_for_user_agents(user_id):
+    requested = 0
+    for job in _agent_tasks.list():
+        if job.get("owner") != user_id or job.get("status") not in agent_tasks.ACTIVE:
+            continue
+        try:
+            _agent_tasks.control(job["id"], "stop")
+            requested += 1
+        except (KeyError, ValueError):
+            pass  # It may have completed between the snapshot and stop request.
+    return requested
+
+
+@app.patch("/api/users/<user_id>/agentic-workflow")
+@admin_required
+def api_set_user_agentic_workflow(user_id):
+    body = request.get_json(force=True, silent=True) or {}
+    enabled = body.get("enabled")
+    if type(enabled) is not bool:
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    if users_store.get_user_by_id(user_id) is None:
+        return jsonify({"error": "not found"}), 404
+    if not users_store.set_agentic_workflow_enabled(user_id, enabled):
+        return jsonify({"error": "not found"}), 404
+    stop_requested = _request_stop_for_user_agents(user_id) if not enabled else 0
+    return jsonify({"enabled": enabled, "stop_requested_assignments": stop_requested})
 
 
 @app.delete("/api/users/<user_id>")
@@ -3264,6 +3367,7 @@ def api_delete_user(user_id):
         return jsonify({"error": "not found"}), 404
     if target["role"] == "admin" and users_store.count_admins() <= 1:
         return jsonify({"error": "can't delete the last remaining admin account"}), 400
+    _request_stop_for_user_agents(user_id)
     for conv in chat_store.list_conversations(user_id):
         _delete_generated_images(conv["id"], user_id)
     users_store.delete_user(user_id)

@@ -113,6 +113,9 @@ def install_service():
         path.write_text(service_text(ROOT))
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', '--user', 'enable', '--now', 'ai-webui.service'], check=True)
+    # Keep the user systemd manager active at boot before an interactive login,
+    # so the app's enabled user service starts after a machine restart.
+    subprocess.run(['loginctl', 'enable-linger', getpass.getuser()], check=True)
 
 
 def main():

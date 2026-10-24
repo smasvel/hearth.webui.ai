@@ -14,7 +14,7 @@
       <header class="chat-header">
         <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
         <nav class="console-tabs">
-          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
+          {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
           <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
           <a class="console-tab active" href="{{ url_for('downloads_page') }}">Downloads</a>
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>

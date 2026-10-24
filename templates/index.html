@@ -51,8 +51,10 @@
         </div>
         {% endif %}
         <div class="chat-header-actions">
-          {% if is_admin %}
+          {% if agentic_workflow_enabled %}
           <a href="{{ url_for('agents_page') }}" class="icon-btn text-icon-btn" title="Assign persistent project work">Agents</a>
+          {% endif %}
+          {% if is_admin %}
           <a href="{{ url_for('models_page') }}" class="icon-btn text-icon-btn" title="Manage models">Models</a>
           <a href="{{ url_for('downloads_page') }}" class="icon-btn text-icon-btn" title="Download models">Downloads</a>
           <a href="{{ url_for('browse_history_page') }}" class="icon-btn text-icon-btn" title="AI browser history">History</a>
@@ -97,7 +99,7 @@
             1,024 output tokens for tool requests: reasoning and function arguments share
             the same output budget. The proxy preserves your requested token cap.
           </p>
-          <p class="hint"><strong>Persistent agents:</strong> open <a href="{{ url_for('agents_page') }}">Agents</a>, assign a goal, acceptance criteria and model, then start. Projects are stored under <code>~/agents/project</code>. Work continues after closing the browser and reconnects after Hearth restarts. Answer questions and permissions on the Agents page; pause or stop at any time. Supply a verification command for independently checked completion. Without one, completion is agent-reported. Cycle limits and repeated blockers require review and Resume.</p>
+          {% if agentic_workflow_enabled %}<p class="hint"><strong>Persistent agents:</strong> open <a href="{{ url_for('agents_page') }}">Agents</a>, assign a goal, acceptance criteria and model, then start. Each account has a private project workspace. Work continues after closing the browser and reconnects after Hearth restarts. Answer questions and permissions on the Agents page; pause or stop at any time. Supply a verification command for independently checked completion. Without one, completion is agent-reported. Cycle limits and repeated blockers require review and Resume.</p>{% endif %}
           <p id="help-flm-status" class="hint">{{ help.flm_status }}</p>
           <p class="hint">
             <strong>Test and repair models:</strong> open

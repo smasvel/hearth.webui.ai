@@ -6,6 +6,7 @@
   const newUsernameEl = document.getElementById("new-username");
   const newPasswordEl = document.getElementById("new-password");
   const newRoleEl = document.getElementById("new-role");
+  const newAgentWorkflowEl = document.getElementById("new-agentic-workflow");
   const addUserBtn = document.getElementById("add-user-btn");
   const caddySnippetCard = document.getElementById("caddy-snippet-card");
   const caddySnippetUsername = document.getElementById("caddy-snippet-username");
@@ -104,6 +105,7 @@
           <div>
             <div class="model-name">${escapeHtml(u.username)}</div>
             <div class="model-meta">Added ${new Date(u.created_at * 1000).toLocaleDateString()}</div>
+            <div class="model-meta">Agentic workflow: ${u.agentic_workflow_enabled ? "Enabled" : "Disabled"}</div>
           </div>
           <span class="badge ${u.role === "admin" ? "loaded" : "not-loaded"}">${escapeHtml(u.role)}</span>
         </div>
@@ -128,6 +130,14 @@
       regenBtn.onclick = () => regenerateCaddyToken(u.id, u.username);
       actions.appendChild(regenBtn);
 
+      const agentBtn = document.createElement("button");
+      agentBtn.textContent = u.agentic_workflow_enabled ? "Disable agent workflow" : "Enable agent workflow";
+      agentBtn.title = u.agentic_workflow_enabled
+        ? "Revoke this user's Agents access and stop active assignments"
+        : "Allow this user to create and manage private agent assignments";
+      agentBtn.onclick = () => setAgentWorkflow(u.id, u.username, !u.agentic_workflow_enabled);
+      actions.appendChild(agentBtn);
+
       const delBtn = document.createElement("button");
       delBtn.textContent = "Delete";
       delBtn.className = "danger";
@@ -135,6 +145,28 @@
       actions.appendChild(delBtn);
 
       usersListEl.appendChild(card);
+    }
+  }
+
+  async function setAgentWorkflow(userId, username, enabled) {
+    if (!enabled && !window.confirm(
+      `Disable agentic workflow for "${username}"? This blocks access and requests stops for their active assignments.`
+    )) return;
+    try {
+      const res = await fetch(`/api/users/${userId}/agentic-workflow`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "failed to update agent access");
+      const stopRequested = data.stop_requested_assignments || 0;
+      addSystemMessage(enabled
+        ? `Enabled agentic workflow for ${username}`
+        : `Disabled agentic workflow for ${username}${stopRequested ? `; requested stop for ${stopRequested} active assignment${stopRequested === 1 ? "" : "s"}` : ""}`);
+      await fetchUsers(currentPage);
+    } catch (err) {
+      addSystemMessage(`Could not update agent access for ${username}: ${err.message}`, true);
     }
   }
 
@@ -203,6 +235,10 @@
 
   refreshUsersBtn.addEventListener("click", () => fetchUsers(currentPage));
 
+  newRoleEl.addEventListener("change", () => {
+    newAgentWorkflowEl.value = newRoleEl.value === "admin" ? "true" : "false";
+  });
+
   addUserForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const username = newUsernameEl.value.trim();
@@ -215,7 +251,8 @@
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, role }),
+        body: JSON.stringify({ username, password, role,
+          agentic_workflow_enabled: newAgentWorkflowEl.value === "true" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "failed to create user");
@@ -224,6 +261,7 @@
       newUsernameEl.value = "";
       newPasswordEl.value = "";
       newRoleEl.value = "user";
+      newAgentWorkflowEl.value = "false";
       await fetchUsers(1);
     } catch (err) {
       addSystemMessage(`Failed to add user: ${err.message}`, true);

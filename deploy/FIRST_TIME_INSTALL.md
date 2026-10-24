@@ -20,10 +20,16 @@ Java/Maven, Node.js/npm, and build tools, and then:
   `DATABASE_URL` in `.env`, both with mode `600`.
 - Generates a stable Flask session-signing secret.
 - Starts PostgreSQL 18 with Compose, waiting for its readiness check.
-- Creates the schema and prompts twice for the initial administrator password.
-  Passwords are hashed; the plaintext password is not written to configuration.
+- Loads the application DDL from `database_schema.sql` into the new PostgreSQL
+  database, then creates the initial administrator account. The DDL includes the
+  per-user agent workflow setting; user-store initialization applies any remaining
+  idempotent account migrations.
+- Prompts twice for the initial administrator password. Hearth stores only its
+  password hash; the plaintext password is not written to configuration.
 - Creates and enables `~/.config/systemd/user/ai-webui.service`, using this checkout's
   absolute path. Existing customized service files are preserved.
+- Enables systemd lingering for the installing account, so Hearth starts after a
+  machine restart even before that account logs in.
 
 Existing credentials, users, and database contents are preserved on reruns. The
 installer does not configure model backends, Tailscale, Caddy, or LAN proxy services.
@@ -36,6 +42,37 @@ bash deploy/install-first-time.sh --skip-browser --no-service
 .venv/bin/python tools/first_time_setup.py --help
 ```
 
+### Initial administrator account
+
+By default, the first-time installer creates an administrator named `admin` and
+prompts you to enter and confirm a password. Choose a unique, strong password and
+save it in your password manager. To choose a different account name, pass it to
+the installer:
+
+```bash
+bash deploy/install-first-time.sh --admin-username yourname
+```
+
+You can also set `ADMIN_USERNAME` in `.env` before setup. For scripted installs,
+pass the password through standard input; avoid putting it directly in a command
+argument, shell history, or a checked-in file:
+
+```bash
+printf '%s\n' "$HEARTH_ADMIN_PASSWORD" | bash deploy/install-first-time.sh \
+  --admin-username yourname --admin-password-stdin
+```
+
+Set `HEARTH_ADMIN_PASSWORD` through your deployment secret manager or another
+private mechanism before running that example. The installer hashes the supplied
+password and stores the hash in the private `.env`; it does not store the plaintext.
+On reruns, existing users and credentials are preserved. If accounts already
+exist, the installer will not create or reset an administrator password.
+
+For a manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists the
+same admin options. The setup command starts the Compose PostgreSQL service,
+applies `database_schema.sql`, then seeds the initial administrator if the users
+table is empty.
+
 With `--no-service`, start the app manually using `.venv/bin/python app.py`.
 `--skip-browser` omits Chromium; web search can still fall back to snippets and
 ordinary HTTP requests. If Chromium needs OS libraries after installation, run:
@@ -44,11 +81,9 @@ ordinary HTTP requests. If Chromium needs OS libraries after installation, run:
 sudo .venv/bin/python -m playwright install-deps chromium
 ```
 
-To run the user service without an active login session:
-
-```bash
-sudo loginctl enable-linger "$(id -un)"
-```
+The installer enables lingering as part of service setup. `--no-service` skips
+the systemd service and boot-time startup configuration; run the app manually in
+that mode.
 
 ## Open the application and configure a model backend
 
