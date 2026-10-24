@@ -35,8 +35,22 @@
       <div class="console-body">
         <div class="console-head">
           <h1>Download Models</h1>
-            <label><input id="tools-only" type="checkbox" /> Tool calling only (all searches)</label>
-            <p class="hint">Shows declared tool calling support. Models with unknown support are excluded. Backend configuration may also be required.</p>
+            <div class="download-tool-filters" aria-label="Filter search results by tool calling support">
+              <strong>Tool calling filters:</strong>
+              <label><input data-tools-backend="lemonade" type="checkbox" /> Lemonade</label>
+              <label><input data-tools-backend="vllm" type="checkbox" /> vLLM</label>
+              <label><input data-tools-backend="lmstudio" type="checkbox" /> LM Studio</label>
+              <label><input data-tools-backend="kobold" type="checkbox" /> KoboldCPP</label>
+              <label><input data-tools-backend="fastflowlm" type="checkbox" /> FastFlowLM</label>
+            </div>
+            <p class="hint">Each filter applies to that backend in all search results. Only declared support is shown; unknown support is excluded. Backend configuration may also be required.</p>
+            <div class="download-size-filters" aria-label="Filter models by parameter count">
+              <strong>Model size:</strong>
+              <label><input data-parameter-band="small" type="checkbox" /> Small (up to 4B)</label>
+              <label><input data-parameter-band="medium" type="checkbox" /> Medium (over 4B to 13B)</label>
+              <label><input data-parameter-band="large" type="checkbox" /> Large (over 13B)</label>
+            </div>
+            <p class="hint">Size filters use reported parameter counts or a size stated in the model name. Models without a recognizable parameter count are hidden while a size filter is active.</p>
 
           <p class="hint">
             Search Ryzen AI (Lemonade)'s catalog or Hugging Face and download directly, or
@@ -106,17 +120,18 @@
             <p class="hint">
               Search once to compare every supported backend. Each result identifies its
               backend, model format, execution compatibility, download size and status, and
-              links to the verified model source used for downloading.
+              links to the verified model source used for downloading. Leave the search empty
+              to browse each backend's available catalog and popular models.
             </p>
             <form id="all-search-form" class="download-form">
               <div class="download-row">
                 <input id="all-search-input" class="panel-input" type="text"
-                       placeholder="e.g. qwen coder, llama 3, phi" autocomplete="off" />
+                       placeholder="e.g. qwen coder, llama 3, phi — or leave empty to browse" autocomplete="off" />
                 <button class="panel-btn" type="submit">Search all</button>
               </div>
             </form>
             <div id="all-results" class="result-grid">
-              <p class="hint">Search every backend from one place.</p>
+              <p class="hint">Search every backend, or submit an empty search to browse available models.</p>
             </div>
           </div>
 

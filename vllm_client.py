@@ -603,18 +603,18 @@ def search_huggingface(query: str, limit: int = 12) -> list[dict]:
     incident this session (a 71.9GB model downloaded and only then found to be
     too large to load) — seeing the size up front, before committing to a download,
     is the whole point."""
-    if not query.strip():
-        return []
     try:
+        params = {
+            "filter": "text-generation",
+            "limit": limit,
+            "sort": "downloads",
+            "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
+        }
+        if query.strip():
+            params["search"] = query
         resp = requests.get(
             "https://huggingface.co/api/models",
-            params={
-                "search": query,
-                "filter": "text-generation",
-                "limit": limit,
-                "sort": "downloads",
-                "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
-            },
+            params=params,
             timeout=10,
         )
         resp.raise_for_status()
