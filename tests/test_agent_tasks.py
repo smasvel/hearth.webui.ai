@@ -1,4 +1,6 @@
 import copy
+import io
+import tarfile
 import tempfile
 import time
 import unittest
@@ -24,7 +26,10 @@ class AgentTaskTests(unittest.TestCase):
         self.snap = {'active':False,'forms':[],'permissions':[],'inbox':[],'messages':[]}
         self.client.snapshot.side_effect = lambda _: copy.deepcopy(self.snap)
         self.manager = Manager(Path(self.tmp.name)/'tasks',self.client)
-        self.values = {'title':'Build project','goal':'Build and verify the feature','project':self.tmp.name,'model':MODEL}
+        self.stack=__import__('contextlib').ExitStack()
+        self.stack.enter_context(patch('agent_tasks.Path.home', return_value=Path(self.tmp.name)))
+        self.addCleanup(self.stack.close)
+        self.values = {'title':'Build project','goal':'Build and verify the feature','model':MODEL}
 
     def create(self, **extra):
         job = self.manager.create({**self.values, **extra}, 'admin')
@@ -71,6 +76,18 @@ class AgentTaskTests(unittest.TestCase):
         self.client.reply.assert_called_once_with('ses_fixture','form','f1',{'choice':'API'})
         self.assertEqual(self.manager.get(key)['status'],'running')
         with self.assertRaises(ValueError):self.manager.reply(key,'permission','unowned','once')
+
+    def test_permission_can_be_allowed_for_one_call_or_always(self):
+        key=self.create();job=self.manager.jobs[key]
+        job.update(status='waiting_input',permissions=[{'id':'p1'}])
+        self.manager.reply(key,'permission','p1','always')
+        self.client.reply.assert_called_with('ses_fixture','permission','p1','always')
+        self.assertEqual(self.manager.get(key)['status'],'running')
+
+    def test_assignment_shell_mode_is_saved(self):
+        job=self.manager.create({**self.values,'shell_mode':'auto'},'admin')
+        self.assertTrue(job['auto_commands'])
+        self.assertEqual(job['shell_mode'],'auto')
 
     def test_completion_requires_successful_independent_verification(self):
         key=self.create(verification_command='python -m unittest')
@@ -153,17 +170,46 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(restored.get(key)['steering'],[])
         self.client.create.assert_called_once()
 
-    def test_new_project_requires_explicit_creation_choice(self):
-        target=Path(self.tmp.name)/'new-project'
-        with self.assertRaises(ValueError):self.manager.create({**self.values,'project':str(target)},'admin')
-        self.assertFalse(target.exists())
-        self.manager.create({**self.values,'project':str(target),'create_project':True},'admin')
+    def test_project_path_is_fixed_and_created_automatically(self):
+        target=Path(self.tmp.name)/'agents'/'project'
+        job=self.manager.create(self.values,'admin')
+        self.assertEqual(job['project'],str(target))
         self.assertTrue(target.is_dir())
+
+    def test_api_cannot_override_server_managed_project_path(self):
+        for field in ('project','create_project'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError,'managed by the server'):
+                self.manager.create({**self.values,field:'/tmp/elsewhere'},'admin')
 
     def test_projects_and_models_are_validated(self):
         for extra in ({'project':'relative'}, {'model':{'providerID':'unknown','id':'x'}}, {'max_cycles':0}):
             with self.assertRaises(ValueError):self.manager.create({**self.values,**extra},'admin')
         self.client.create.assert_not_called()
+
+    def test_active_assignment_cannot_be_deleted_but_stopped_assignment_can(self):
+        key=self.create()
+        with self.assertRaisesRegex(ValueError,'Stop or pause'):
+            self.manager.delete(key)
+        self.assertIsNotNone(self.manager.get(key))
+        self.manager.control(key,'stop')
+        self.manager.delete(key)
+        self.assertIsNone(self.manager.get(key))
+
+    def test_completed_project_download_is_an_archive_of_project_files(self):
+        key=self.create()
+        project=Path(self.manager.get(key)['project'])
+        (project/'result.txt').write_text('completed output')
+        self.manager.jobs[key]['status']='completed'
+        stream,name=self.manager.download(key)
+        self.assertEqual(name,project.name)
+        with tarfile.open(fileobj=io.BytesIO(stream.getvalue()),mode='r:gz') as archive:
+            member=archive.getmember(project.name+'/result.txt')
+            self.assertEqual(archive.extractfile(member).read(),b'completed output')
+
+    def test_project_download_rejects_incomplete_assignment(self):
+        key=self.create()
+        with self.assertRaisesRegex(ValueError,'after the assignment completes'):
+            self.manager.download(key)
 
 
 class AgentAPITests(unittest.TestCase):
@@ -186,6 +232,15 @@ class AgentAPITests(unittest.TestCase):
         self.manager.create.assert_not_called()
         with patch.object(app.users_store,'get_user_by_id',return_value={'id':'admin','username':'admin','role':'user'}):
             self.assertEqual(self.client.get('/api/agent-tasks').status_code,403)
+
+    def test_agent_models_marks_currently_loaded_model(self):
+        self.login()
+        self.manager.client.models.return_value=[{**MODEL,'name':'Qwen'}]
+        inventory={'models':[{'id':MODEL['id'],'backend':MODEL['providerID'],'state':'loaded'}]}
+        with patch.object(app.api_list_models,'__wrapped__',return_value=Mock(get_json=lambda:inventory)):
+            response=self.client.get('/api/agent-tasks/models')
+        self.assertEqual(response.status_code,200)
+        self.assertTrue(response.json['models'][0]['loaded'])
 
     def test_start_is_blocked_during_model_validation(self):
         self.login()

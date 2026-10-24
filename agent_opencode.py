@@ -101,10 +101,10 @@ class OpenCode:
         for action in ('read', 'glob', 'grep', 'edit', 'write', 'patch', 'todowrite', 'question'):
             permissions.append({'action': action, 'resource': '*', 'effect': 'allow'})
         permissions += [
-            {'action': 'bash', 'resource': '*', 'effect': 'allow' if job['auto_commands'] else 'ask'},
+            {'action': 'shell', 'resource': '*', 'effect': 'allow' if job.get('auto_commands') else 'ask'},
             {'action': 'external_directory', 'resource': '*', 'effect': 'ask'},
             {'action': 'doom_loop', 'resource': '*', 'effect': 'ask'},
-            {'action': 'task', 'resource': '*', 'effect': 'deny'}]
+            {'action': 'subagent', 'resource': '*', 'effect': 'deny'}]
         return self.call('POST', '/api/session', {'title': 'Hearth: '+job['title'], 'agent': AGENT,
             'model': job['model'], 'location': {'directory': job['project']}, 'permissions': permissions})['data']['id']
 

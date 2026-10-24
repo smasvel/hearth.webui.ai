@@ -459,8 +459,9 @@ supported study workflows are available from the app's navigation.
 
 ## Persistent project agents
 
-Open **Agents** and provide a local project folder, goal, acceptance criteria, and
-configured OpenCode model. OpenCode must be installed. The worker requires at least
+Open **Agents** and provide a goal, acceptance criteria, and configured OpenCode
+model. Agent project files are stored under `~/agents/project` on the server and
+the project path is managed by Hearth. OpenCode must be installed. The worker requires at least
 16K context; the model picker excludes configurations that cannot fit its tools
 and prompt.
 
@@ -470,9 +471,13 @@ Tasks persist when you close the browser, and Hearth reconnects to existing sess
 after restarting. Pause agents before starting model management or evaluation work
 that would compete for their model.
 
-Agents edit real files and execute as Hearth's local OS account. Shell commands
-request permission unless the assignment enables automatic commands. Choose a
-project folder and permissions appropriate for the task.
+Agent file and shell tools run through the configured OpenCode service. At assignment
+time, choose to ask before each shell command or auto-accept shell commands. When a
+prompt appears, allow it once, always for the proposed command pattern, or reject it.
+Shell commands run as the OpenCode service account; the current agent workflow is
+not container-isolated. Completed projects can be downloaded as a `.tar.gz` archive.
+Stopped assignments can be deleted; active assignments must first be stopped or
+paused.
 
 Provide a verification command when you want independently checked completion.
 Hearth runs it and requires a successful exit before marking the assignment complete.

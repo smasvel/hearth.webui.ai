@@ -5,6 +5,22 @@ from agent_opencode import OpenCode
 
 
 class OpenCodeAdapterTests(unittest.TestCase):
+    def test_session_uses_opencode_v2_shell_and_subagent_permissions(self):
+        client=OpenCode();job={'title':'Test','model':{'providerID':'lmstudio','id':'model'},'project':'/tmp/project','auto_commands':False}
+        with patch.object(client,'call',return_value={'data':{'id':'session'}}) as call:
+            client.create(job)
+        payload=call.call_args.args[2]
+        rules=payload['permissions']
+        self.assertIn({'action':'shell','resource':'*','effect':'ask'},rules)
+        self.assertIn({'action':'subagent','resource':'*','effect':'deny'},rules)
+        self.assertFalse(any(rule['action'] in ('bash','task') for rule in rules))
+
+    def test_auto_command_mode_allows_v2_shell_action(self):
+        client=OpenCode();job={'title':'Test','model':{'providerID':'lmstudio','id':'model'},'project':'/tmp/project','auto_commands':True}
+        with patch.object(client,'call',return_value={'data':{'id':'session'}}) as call:
+            client.create(job)
+        self.assertIn({'action':'shell','resource':'*','effect':'allow'},call.call_args.args[2]['permissions'])
+
     def test_verification_observes_process_after_http_waiter_disconnects(self):
         client=OpenCode();calls=[]
         def call(method,path,data=None,params=None,**kwargs):
