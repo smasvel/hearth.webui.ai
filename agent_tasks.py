@@ -15,6 +15,7 @@ from agent_opencode import OpenCode, SYSTEM
 
 WORKING = {'queued', 'running', 'waiting_input', 'verifying'}
 ACTIVE = WORKING | {'pausing', 'stopping'}
+RESUMABLE = {'paused', 'blocked', 'interrupted'}
 MARKER = '[HEARTH_TASK_COMPLETE]'
 
 
@@ -45,6 +46,15 @@ class Manager:
                 self.jobs[job['id']] = job
             except (ValueError, KeyError, OSError):
                 pass
+        # The supervisor is single-process. Any persisted active state belongs to a
+        # worker that was interrupted by a Hearth restart or an unclean shutdown.
+        with self.lock:
+            for job in self.jobs.values():
+                if job.get('status') in ACTIVE:
+                    job.update(status='interrupted', resume_session=bool(job.get('session_id')),
+                               error='Hearth restarted while this assignment was active. Resume to continue.')
+                    self.note(job, 'Assignment interrupted by Hearth restart; it can be resumed.')
+                    self.save(job)
 
     def save(self, job):
         job['updated_at'] = time.time()
@@ -56,6 +66,13 @@ class Manager:
 
     def note(self, job, text):
         job['activity'] = (job.get('activity', [])+[{'time': time.time(), 'text': text}])[-200:]
+
+    def report_progress(self, job, text):
+        with self.lock:
+            current = self.jobs.get(job.get('id'))
+            if current:
+                self.note(current, text)
+                self.save(current)
 
     def list(self):
         with self.lock:
@@ -79,6 +96,10 @@ class Manager:
             with self.lock:
                 del self.jobs[key]
                 (self.directory/(key+'.json')).unlink(missing_ok=True)
+            cleanup = getattr(type(self.client), 'cleanup', None)
+            if cleanup:
+                try: cleanup(self.client, snapshot)
+                except Exception: logging.exception('Could not clean up deleted agent container')
         return snapshot
 
     def download(self, key):
@@ -104,11 +125,16 @@ class Manager:
         title, goal = str(values.get('title', '')).strip(), str(values.get('goal', '')).strip()
         if 'project' in values or 'create_project' in values:
             raise ValueError('Project path is managed by the server and cannot be supplied.')
-        project = Path.home() / 'agents' / 'project'
+        agent_root = Path.home().resolve() / 'agents'
+        if agent_root.is_symlink():
+            raise ValueError('The configured ~/agents directory cannot be a symlink.')
+        agent_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        agent_root.chmod(0o700)
+        project = agent_root / 'project'
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
-        if project.exists() and not project.is_dir():
-            raise ValueError('The configured agent project path exists and is not a directory.')
+        if project.is_symlink() or (project.exists() and not project.is_dir()):
+            raise ValueError('The configured agent project path must be a real directory, not a symlink.')
         model = values.get('model')
         if not isinstance(model, dict) or not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True)):
             raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
@@ -128,7 +154,8 @@ class Manager:
         with self.lock:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
                 raise ValueError('The agent queue already has 20 active assignments.')
-            project.mkdir(parents=True, exist_ok=True)
+            project.mkdir(mode=0o700, parents=True, exist_ok=True)
+            project.chmod(0o700)
             job = {'id': uuid.uuid4().hex, 'owner': owner, 'title': title, 'goal': goal,
                 'project': str(project.resolve()), 'assignee': assignee, 'model': model,
                 'criteria': criteria, 'verification_command': command, 'verification_timeout': timeout,
@@ -136,7 +163,7 @@ class Manager:
                 'cycles': 0, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
-            self.note(job, 'Assignment queued. Files may be edited in the selected project.')
+            self.note(job, 'Assignment queued. Project files are managed under ~/agents/project.')
             self.jobs[job['id']] = job
             self.save(job)
             return copy.deepcopy(job)
@@ -148,12 +175,14 @@ class Manager:
             with self.lock:
                 job = self.jobs[key]
                 if action == 'resume':
-                    if job['status'] not in ('paused', 'blocked'):
-                        raise ValueError('Only paused or blocked assignments can resume.')
+                    if job['status'] not in RESUMABLE:
+                        raise ValueError('Only paused, blocked, or interrupted assignments can resume.')
                     if job['cycles'] >= job['max_cycles']:
                         job['max_cycles'] += 50
                     job.update(status='queued', errors=0, stalls=0, error=None, next_retry=0,
                                awaiting_since=0, idle_polls=0, model_prepared=False)
+                    if job.get('session_id'):
+                        job['resume_session'] = True
                 elif job['status'] == 'completed':
                     raise ValueError('This assignment is already completed.')
                 else:
@@ -170,7 +199,13 @@ class Manager:
                         self.note(job, 'Interruption is pending: '+str(exc)[:400])
                         job['error'] = 'Waiting for OpenCode to acknowledge interruption; execution may still be active.'
                         self.save(job)
-            return self.get(key)
+            result = self.get(key)
+            if action == 'stop' and result and result['status'] == 'stopped':
+                cleanup = getattr(type(self.client), 'cleanup', None)
+                if cleanup:
+                    try: cleanup(self.client, result)
+                    except Exception: logging.exception('Could not clean up stopped agent container')
+            return result
 
     def _interrupt(self, job):
         self.client.interrupt(job['session_id'])
@@ -179,7 +214,8 @@ class Manager:
         with self.lock:
             if job['status'] in ('pausing', 'stopping'):
                 target = job.pop('after_interrupt', 'paused' if job['status'] == 'pausing' else 'stopped')
-                job.update(status=target, error=job.get('error') if target == 'blocked' else None)
+                job.update(status=target, error=job.get('error') if target in ('blocked', 'interrupted') else None,
+                           resume_session=target == 'interrupted' and bool(job.get('session_id')))
                 self.save(job)
 
     def reply(self, key, kind, item, value):
@@ -300,14 +336,43 @@ class Manager:
                 with self.dispatch_lock:
                     if job['status'] not in WORKING:
                         return
+                    self.note(job, 'Preparing the selected model for the isolated agent.')
+                    self.save(job)
                     self.prepare_model(job)
                     with self.lock:
                         job['model_prepared'] = True
+                        self.save(job)
+            if job.get('resume_session'):
+                resume = getattr(type(self.client), 'resume', None)
+                if resume:
+                    with self.dispatch_lock:
+                        if job['status'] not in WORKING:
+                            return
+                        self.note(job, 'Reconnecting to the isolated assignment session.')
+                        self.save(job)
+                        sid = resume(self.client, job)
+                        with self.lock:
+                            replaced = sid != job.get('session_id')
+                            job.update(session_id=sid, resume_session=False)
+                            if replaced:
+                                job.update(verification_id=None, verification_admitted=False)
+                                checkpoint = job.get('summary', '')
+                                job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex,
+                                    'text': 'This assignment resumed in a fresh container because its previous container was unavailable. '
+                                    'Continue the existing goal from the current project files in /workspace. Preserve completed work, inspect '
+                                    'the current project state, and continue any unfinished work. Previous agent summary:\n'+checkpoint}
+                                self.note(job, 'A new container session was created from the latest synchronized project checkpoint.')
+                            self.save(job)
+                else:
+                    with self.lock:
+                        job['resume_session'] = False
                         self.save(job)
             if not job['session_id']:
                 with self.dispatch_lock:
                     if job['status'] not in WORKING:
                         return
+                    self.note(job, 'Building and starting the isolated Docker agent environment.')
+                    self.save(job)
                     sid = self.client.create(job)
                     with self.lock:
                         job['session_id'] = sid
@@ -396,7 +461,9 @@ class Manager:
             if job['status'] == 'verifying':
                 self._verify(job)
             elif initial:
-                self._send(job, SYSTEM+'\n\nAssigned agent: '+job['assignee']+'\nProject directory: '+job['project']+'\nVerification command: '+(job['verification_command'] or 'Choose appropriate verification and report evidence.'))
+                workspace_directory = getattr(type(self.client), 'workspace_directory', None)
+                project_directory = workspace_directory(self.client, job) if workspace_directory else job['project']
+                self._send(job, SYSTEM+'\n\nAssigned agent: '+job['assignee']+'\nProject directory: '+project_directory+'\nVerification command: '+(job['verification_command'] or 'Choose appropriate verification and report evidence.'))
             else:
                 self._send(job, 'Continue the assigned goal. Inspect the current state and remaining todos, implement the next step, and verify. '
                     'Do not repeat completed work or answered questions. If a concrete blocker needs user input, ask through the question tool. '
@@ -421,6 +488,21 @@ class Manager:
                     self._interrupt(job)
                 except Exception:
                     pass
+        finally:
+            if job is not None:
+                try:
+                    sync = getattr(type(self.client), 'sync', None)
+                    if sync:
+                        sync(self.client, job)
+                except Exception as exc:
+                    with self.lock:
+                        self.note(job, 'Project synchronization issue: '+str(exc)[:400])
+                        self.save(job)
+                if job['status'] in ('completed', 'stopped'):
+                    cleanup = getattr(type(self.client), 'cleanup', None)
+                    if cleanup:
+                        try: cleanup(self.client, job)
+                        except Exception: logging.exception('Could not clean up completed agent container')
 
     def start_worker(self, available=lambda: True):
         if self.thread and self.thread.is_alive():

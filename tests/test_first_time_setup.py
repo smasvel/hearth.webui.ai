@@ -14,6 +14,8 @@ class FirstTimeSetupTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / '.env.example').write_text('ADMIN_USERNAME=admin\nFLASK_SECRET_KEY=\nDATABASE_URL=\n')
+        (self.root / 'agent_container').mkdir()
+        (self.root / 'agent_container' / 'IMAGE_VERSION').write_text('2.1.2\n')
         patcher = patch.object(setup, 'ROOT', self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -66,3 +68,22 @@ class FirstTimeSetupTests(unittest.TestCase):
         self.assertIn('WorkingDirectory=/home/user/AI Projects/100%% hearth', content)
         self.assertIn('"/home/user/AI Projects/100%% hearth/.venv/bin/python"', content)
         self.assertNotIn('/home/YOUR_USERNAME/', content)
+
+    def test_agent_runtime_is_built_when_missing(self):
+        with patch.object(setup.subprocess, 'run', side_effect=[
+                setup.subprocess.CompletedProcess([], 1),
+                setup.subprocess.CompletedProcess([], 0),
+                setup.subprocess.CompletedProcess([], 0)]) as run:
+            setup.install_agent_runtime()
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[1].args[0][:5],
+                         ['docker', 'build', '--pull', '--tag', 'hearth-agent-opencode:2.1.2'])
+
+    def test_agent_runtime_rebuild_option_refreshes_existing_image(self):
+        with patch.object(setup.subprocess, 'run', side_effect=[
+                setup.subprocess.CompletedProcess([], 0),
+                setup.subprocess.CompletedProcess([], 0),
+                setup.subprocess.CompletedProcess([], 0)]) as run:
+            setup.install_agent_runtime(rebuild=True)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[1].args[0][1], 'build')

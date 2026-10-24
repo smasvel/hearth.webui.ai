@@ -3,6 +3,7 @@ import argparse
 import getpass
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -12,6 +13,26 @@ from dotenv import dotenv_values, set_key
 from werkzeug.security import generate_password_hash
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def install_agent_runtime(rebuild=False):
+    version_path = ROOT / 'agent_container' / 'IMAGE_VERSION'
+    if not version_path.is_file():
+        raise RuntimeError('Agent runtime image version is missing.')
+    version = version_path.read_text().strip()
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+        raise RuntimeError('Agent runtime image version is invalid.')
+    image = 'hearth-agent-opencode:' + version
+    inspect = subprocess.run(['docker', 'image', 'inspect', image],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if inspect.returncode == 0 and not rebuild:
+        print(f'Agent runtime image is already installed: {image}')
+        return
+    subprocess.run(['docker', 'build', '--pull', '--tag', image,
+                    '--build-arg', 'OPENCODE_VERSION=' + version,
+                    str(ROOT / 'agent_container')], check=True, cwd=ROOT)
+    subprocess.run(['docker', 'image', 'inspect', image], check=True, stdout=subprocess.DEVNULL)
+    print(f'Installed isolated agent runtime: {image}')
 sys.path.insert(0, str(ROOT))
 
 
@@ -101,14 +122,17 @@ def main():
     parser.add_argument('--admin-password-stdin', action='store_true', help='Read the initial admin password from standard input instead of prompting')
     parser.add_argument('--postgres-port', type=int, default=55432, help='Host database port for a new configuration')
     parser.add_argument('--project-name', help='Optional separate Compose project name')
+    parser.add_argument('--rebuild-agent-image', action='store_true',
+                        help='Rebuild the isolated agent image even if it is already installed')
     args = parser.parse_args()
     if not 1 <= args.postgres_port <= 65535:
         parser.error('--postgres-port must be between 1 and 65535')
     if os.geteuid() == 0:
         parser.error('Run as your regular user, not sudo; use the host dependency installer for privileged packages.')
     if not shutil.which('docker'):
-        raise RuntimeError('Install Docker Engine and Compose with deploy/install-host-deps.sh --base-only first.')
+        raise RuntimeError('Run deploy/install-first-time.sh to install missing host dependencies first.')
     subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL)
+    install_agent_runtime(args.rebuild_agent_image)
     existing = dotenv_values(ROOT / '.env')
     if not existing.get('DATABASE_URL') and has_sqlite_data():
         raise RuntimeError('Existing local database files contain data. Configure DATABASE_URL for your installation before running setup.')

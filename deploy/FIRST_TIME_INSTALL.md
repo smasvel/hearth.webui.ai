@@ -1,43 +1,20 @@
 # First-time installation (Ubuntu)
 
-Run these commands from the Hearth project directory. This installs the web app
-and PostgreSQL; model runtimes and model downloads are configured separately.
+Run these commands from the Hearth project directory. This installs the web app,
+PostgreSQL, and isolated agent build image; model runtimes and model downloads are
+configured separately.
 Use an ordinary account with sudo access and a graphical or terminal login session.
 
-## 1. Install system dependencies
-
-```bash
-sudo bash deploy/install-host-deps.sh --base-only
-```
-
-This installs Python and venv support, Docker Engine, Docker Compose, ACL tools,
-FFmpeg and curl. It starts Docker and adds your account to the Docker group.
-The script's mode without `--base-only` is the original example host's full backend
-configuration, with machine-specific paths; use `--base-only` on a new machine.
-
-Log out and back in so your processes inherit Docker group membership. Verify:
-
-```bash
-docker info
-docker compose version
-```
-
-To grant the current session access without logging out, use:
-
-```bash
-sudo setfacl -m "u:$(id -un):rw" /var/run/docker.sock
-```
-
-The ACL applies to the current socket; Docker group membership handles future
-logins. This host does not provide `sg` or `newgrp`.
-
-## 2. Install and initialize Hearth
+## Install and initialize Hearth
 
 ```bash
 bash deploy/install-first-time.sh
 ```
 
-The installer creates `.venv`, installs Python requirements and Chromium, and then:
+The installer uses `sudo` to install missing Ubuntu host dependencies, starts
+Docker, and grants the current user access. It creates `.venv`, installs Python
+requirements and Chromium, builds the isolated agent image with Python,
+Java/Maven, Node.js/npm, and build tools, and then:
 
 - Generates a random PostgreSQL password in `.env.postgres` and a matching
   `DATABASE_URL` in `.env`, both with mode `600`.
@@ -73,7 +50,7 @@ To run the user service without an active login session:
 sudo loginctl enable-linger "$(id -un)"
 ```
 
-## 3. Open the application and configure a model backend
+## Open the application and configure a model backend
 
 Open **https://localhost:5443**. On first startup Hearth generates a self-signed
 certificate, so accept the local browser certificate warning. Sign in with the
@@ -96,12 +73,18 @@ journalctl --user -u ai-webui.service -f
 The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
 browser test scripts directly against application tables.
 
-For an application update, install requirements again and restart the service:
+For an application update, install requirements again, rebuild the agent image
+when its recipe or OpenCode version changed, and restart the service:
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
+bash deploy/install-first-time.sh --rebuild-agent-image
 systemctl --user restart ai-webui.service
 ```
+
+The agent image is built by the installer as the regular Hearth user, using the
+existing Docker permission. Its apt and language package managers run inside
+each isolated task container; host packages are not installed for agent tasks.
 
 Keep `.env` and `.env.postgres` private. PostgreSQL lives in the
 Compose named volume; changing `POSTGRES_PASSWORD` in a file does not rotate the
