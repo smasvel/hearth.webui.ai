@@ -19,6 +19,8 @@
     el('agent-resume').disabled = !['paused','blocked'].includes(task.status);
     el('agent-send-instructions').disabled = task.status !== 'running';
     el('agent-stop').disabled = ['stopped','completed'].includes(task.status);
+    el('agent-delete').disabled = active.has(task.status);
+    el('agent-download').hidden = task.status !== 'completed';
     el('agent-result').textContent = (task.completion || task.summary || 'Work is in progress.') +
       (task.verification ? '\n\n'+JSON.stringify(task.verification,null,2) : '');
     el('agent-activity').textContent = task.activity.map(a => `${new Date(a.time*1000).toLocaleTimeString()} ${a.text}`).join('\n');
@@ -43,6 +45,7 @@
       const card = node('div',undefined,container); card.className='console-card';
       node('h3','Permission required',card); node('pre',`${permission.action}\n${permission.resources.join('\n')}\n${permission.message || ''}`,card);
       button('Allow once',card,()=>reply('permission',permission.id,'once'));
+      button('Allow always',card,()=>reply('permission',permission.id,'always'));
       button('Reject',card,()=>reply('permission',permission.id,'reject'));
     }
     for (const prompt of task.forms) {
@@ -105,17 +108,22 @@
     try {
       const {tasks}=await api('/api/agent-tasks');
       const list=el('agent-list');list.replaceChildren();
-      for(const t of tasks) button(`${t.title} · ${t.status}`,list,async()=>{selected=t.id;await refresh();});
+      for(const t of tasks) {
+        const cycleText=`${t.cycles || 0}/${t.max_cycles || 0} cycles`;
+        const latest=t.latest_activity ? ` · ${t.latest_activity}` : '';
+        button(`${t.title} · ${t.status} · ${cycleText}${latest}`,list,async()=>{selected=t.id;await refresh();});
+      }
       if(!tasks.length) node('p','No assignments yet.',list);
       if(!selected && tasks.length) selected=tasks[0].id;
-      if(selected) show(await api('/api/agent-tasks/'+selected));
+      if(selected && tasks.some(t=>t.id===selected)) show(await api('/api/agent-tasks/'+selected));
+      else if(selected) { selected=null;task=null;el('agent-detail').hidden=true; }
       if(el('agent-network').textContent.endsWith('— reconnecting…')) el('agent-network').textContent='';
     } catch(e) { el('agent-network').textContent=e.message+' — reconnecting…'; }
     timer=setTimeout(refresh,2500);
   }
   el('agent-create').addEventListener('submit',async e=>{
     e.preventDefault();const form=e.currentTarget;const values=Object.fromEntries(new FormData(form));
-    values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.verification_timeout=Number(values.verification_timeout);values.auto_commands=form.elements.auto_commands.checked;values.create_project=form.elements.create_project.checked;
+    values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.verification_timeout=Number(values.verification_timeout);values.shell_mode=form.elements.shell_mode.value;
     el('agent-assign').disabled=true;
     try { const created=await api('/api/agent-tasks',values);selected=created.id;show(created);el('agent-create-status').textContent='Agent assigned. Work continues when this page is closed.';await refresh(); }
     catch(error){el('agent-create-status').textContent=error.message;}
@@ -130,10 +138,18 @@
     try { show(await api(`/api/agent-tasks/${task.id}/control`,{action})); }
     catch(e){el('agent-network').textContent=e.message;}
   });
+  el('agent-delete').addEventListener('click',async()=>{
+    if(!task || !window.confirm(`Delete “${task.title}” and its assignment history?`)) return;
+    try { await fetch(`/api/agent-tasks/${task.id}`,{method:'DELETE',headers:{'X-CSRF-Token':document.querySelector('meta[name="csrf-token"]').content}}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||'Delete failed');return d;});selected=null;task=null;el('agent-detail').hidden=true;await refresh(); }
+    catch(e){el('agent-network').textContent=e.message;}
+  });
+  el('agent-download').addEventListener('click',()=>{if(task) window.location.assign(`/api/agent-tasks/${task.id}/download`);});
   api('/api/agent-tasks/models').then(({models})=>{
     for(const m of models) { const option=node('option',m.name+(m.usable === false ? ' — needs larger context' : ''),el('agent-model'));option.value=JSON.stringify({providerID:m.providerID,id:m.id});option.disabled=m.usable === false;option.title=m.reason || ''; }
     const available=[...el('agent-model').options].filter(o=>!o.disabled);
-    const preferred=available.find(o=>JSON.parse(o.value).id==='flm/qwen3-it:4b') || available[0];if(preferred) preferred.selected=true;
+    const loaded=models.find(m=>m.loaded && m.usable !== false);
+    const preferred=loaded ? available.find(o=>{const value=JSON.parse(o.value);return value.id===loaded.id && value.providerID===loaded.providerID;}) : null;
+    (preferred || available[0] || {}).selected=true;
     if(!models.some(m=>m.usable !== false)) throw new Error('Configure a local model in OpenCode first.');
   }).catch(e=>{el('agent-create-status').textContent=e.message;el('agent-assign').disabled=true;});
   refresh();

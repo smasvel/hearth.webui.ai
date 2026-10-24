@@ -2,9 +2,11 @@
 import copy
 import fcntl
 import hashlib
+import io
 import json
 import logging
 from pathlib import Path
+import tarfile
 import threading
 import time
 import uuid
@@ -67,15 +69,46 @@ class Manager:
         with self.lock:
             return any(j['status'] in ACTIVE for j in self.jobs.values())
 
+    def delete(self, key):
+        with self.dispatch_lock:
+            with self.lock:
+                job = self.jobs[key]
+                if job['status'] in ACTIVE:
+                    raise ValueError('Stop or pause the assignment before deleting it.')
+                snapshot = copy.deepcopy(job)
+            with self.lock:
+                del self.jobs[key]
+                (self.directory/(key+'.json')).unlink(missing_ok=True)
+        return snapshot
+
+    def download(self, key):
+        job = self.get(key)
+        if not job:
+            raise KeyError(key)
+        if job['status'] != 'completed':
+            raise ValueError('Project download is available after the assignment completes.')
+        project = Path(job['project']).resolve()
+        if not project.is_dir():
+            raise ValueError('The completed project folder is no longer available.')
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz') as archive:
+            for path in project.rglob('*'):
+                if any(part in ('.git', 'node_modules', '.venv', 'venv', '__pycache__') for part in path.parts):
+                    continue
+                if path.is_file() and not path.is_symlink():
+                    archive.add(path, arcname=str(Path(project.name)/path.relative_to(project)), recursive=False)
+        output.seek(0)
+        return output, project.name
+
     def create(self, values, owner):
         title, goal = str(values.get('title', '')).strip(), str(values.get('goal', '')).strip()
-        project = Path(str(values.get('project', ''))).expanduser()
+        if 'project' in values or 'create_project' in values:
+            raise ValueError('Project path is managed by the server and cannot be supplied.')
+        project = Path.home() / 'agents' / 'project'
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
-        if not project.is_absolute() or (project.exists() and not project.is_dir()):
-            raise ValueError('Choose an absolute project directory on this machine.')
-        if not project.exists() and values.get('create_project') is not True:
-            raise ValueError('Project folder does not exist. Enable create folder or choose an existing directory.')
+        if project.exists() and not project.is_dir():
+            raise ValueError('The configured agent project path exists and is not a directory.')
         model = values.get('model')
         if not isinstance(model, dict) or not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True)):
             raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
@@ -88,16 +121,18 @@ class Manager:
         assignee = str(values.get('assignee', 'Project agent')).strip()
         if len(criteria) > 10000 or len(command) > 4000 or not assignee or len(assignee) > 120:
             raise ValueError('Acceptance criteria, verification command or agent name is too long.')
+        shell_mode = values.get('shell_mode', 'auto' if values.get('auto_commands') is True else 'ask')
+        if shell_mode not in ('ask', 'auto'):
+            raise ValueError('Choose whether shell commands should ask or run automatically.')
         self.client.ensure_agent()
         with self.lock:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
                 raise ValueError('The agent queue already has 20 active assignments.')
-            if not project.exists():
-                project.mkdir(parents=True)
+            project.mkdir(parents=True, exist_ok=True)
             job = {'id': uuid.uuid4().hex, 'owner': owner, 'title': title, 'goal': goal,
                 'project': str(project.resolve()), 'assignee': assignee, 'model': model,
                 'criteria': criteria, 'verification_command': command, 'verification_timeout': timeout,
-                'auto_commands': values.get('auto_commands') is True, 'max_cycles': cycles,
+                'auto_commands': shell_mode == 'auto', 'shell_mode': shell_mode, 'max_cycles': cycles,
                 'cycles': 0, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
@@ -158,8 +193,8 @@ class Manager:
                 pending = job['permissions'] if kind == 'permission' else job['forms']
                 if not any(x['id'] == item for x in pending):
                     raise ValueError('This prompt no longer belongs to the assignment.')
-                if kind == 'permission' and value not in ('once', 'reject'):
-                    raise ValueError('Choose allow once or reject.')
+                if kind == 'permission' and value not in ('once', 'always', 'reject'):
+                    raise ValueError('Choose allow once, allow always, or reject.')
                 if kind == 'form' and not isinstance(value, dict):
                     raise ValueError('Form answers must be a field/value object.')
                 sid = job['session_id']

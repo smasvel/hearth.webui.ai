@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 import psutil
 import requests
 from dotenv import load_dotenv
-from flask import Flask, Response, copy_current_request_context, jsonify, redirect, render_template, request, send_from_directory, session, stream_with_context, url_for
+from flask import Flask, Response, copy_current_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
@@ -1805,7 +1806,16 @@ def agents_page():
 @admin_required
 def api_agent_models():
     try:
-        return jsonify({'models': _agent_tasks.client.models()})
+        configured = _agent_tasks.client.models()
+        inventory = api_list_models.__wrapped__().get_json()['models']
+        loaded = next((m for m in inventory if m.get('state') == 'loaded'), None)
+        if loaded:
+            loaded_id = loaded.get('id')
+            loaded_backend = loaded.get('backend')
+            for model in configured:
+                if model.get('id') == loaded_id and (not loaded_backend or model.get('providerID') == loaded_backend):
+                    model['loaded'] = True
+        return jsonify({'models': configured})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 503
 
@@ -1814,7 +1824,13 @@ def api_agent_models():
 @admin_required
 def api_agent_tasks_list():
     fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error')
-    return jsonify({'tasks': [{k: j.get(k) for k in fields} for j in _agent_tasks.list()]})
+    tasks = []
+    for job in _agent_tasks.list():
+        task = {key: job.get(key) for key in fields}
+        activity = job.get('activity') or []
+        task['latest_activity'] = str(activity[-1].get('text', ''))[:180] if activity else ''
+        tasks.append(task)
+    return jsonify({'tasks': tasks})
 
 
 @app.post('/api/agent-tasks')
@@ -1840,6 +1856,32 @@ def api_agent_tasks_get(task_id):
     if job is None:
         return jsonify({'error': 'Assignment not found.'}), 404
     return jsonify(job)
+
+
+@app.delete('/api/agent-tasks/<task_id>')
+@admin_required
+def api_agent_tasks_delete(task_id):
+    try:
+        _agent_tasks.delete(task_id)
+        return jsonify({'deleted': True})
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+
+
+@app.get('/api/agent-tasks/<task_id>/download')
+@admin_required
+def api_agent_tasks_download(task_id):
+    try:
+        stream, name = _agent_tasks.download(task_id)
+        filename = secure_filename(name) or 'completed-project'
+        return send_file(stream, mimetype='application/gzip', as_attachment=True,
+                         download_name=filename+'.tar.gz', max_age=0)
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
 
 
 @app.post('/api/agent-tasks/<task_id>/control')

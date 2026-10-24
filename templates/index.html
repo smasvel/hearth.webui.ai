@@ -97,7 +97,7 @@
             1,024 output tokens for tool requests: reasoning and function arguments share
             the same output budget. The proxy preserves your requested token cap.
           </p>
-          <p class="hint"><strong>Persistent agents:</strong> open <a href="{{ url_for('agents_page') }}">Agents</a>, assign a project folder, goal, acceptance criteria and model, then start. Work continues after closing the browser and reconnects after Hearth restarts. Answer questions and permissions on the Agents page; pause or stop at any time. Supply a verification command for independently checked completion. Without one, completion is agent-reported. Cycle limits and repeated blockers require review and Resume.</p>
+          <p class="hint"><strong>Persistent agents:</strong> open <a href="{{ url_for('agents_page') }}">Agents</a>, assign a goal, acceptance criteria and model, then start. Projects are stored under <code>~/agents/project</code>. Work continues after closing the browser and reconnects after Hearth restarts. Answer questions and permissions on the Agents page; pause or stop at any time. Supply a verification command for independently checked completion. Without one, completion is agent-reported. Cycle limits and repeated blockers require review and Resume.</p>
           <p id="help-flm-status" class="hint">{{ help.flm_status }}</p>
           <p class="hint">
             <strong>Test and repair models:</strong> open
