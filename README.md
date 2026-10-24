@@ -61,8 +61,12 @@ administrator to find models, then use **Models** to load and evaluate them.
 1. Use **Search all backends** to search LM Studio, Lemonade, vLLM, KoboldCPP,
    and FastFlowLM together, or search a single backend.
 2. Compare result cards by backend, model format, execution compatibility, size,
-   task type, update date, popularity, download status, and source link. The
-   tool-calling filter shows models explicitly marked as supporting tools.
+   task type, update date, popularity, download status, and source link. Enable
+   **Tool calling only (all searches)** to restrict results across backend searches
+   to models whose catalog metadata explicitly declares tool-calling support.
+   Results with unknown support are excluded; this filter does not guarantee that
+   a model will work with every tool or runtime, so use **Test tools** before relying
+   on it.
 3. Download a compatible model. Follow progress and logs, inspect active downloads,
    or cancel a download. Progress detail depends on the runtime.
 4. Open **Models** to load, unload, or delete installed models. Select a loaded
