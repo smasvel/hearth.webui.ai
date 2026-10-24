@@ -121,6 +121,10 @@ For quick everyday chat on a supported Ryzen AI NPU, start with FastFlowLM's
 second** in a live chat request. Its small size helps response speed, while larger
 models are generally a better fit for complex reasoning and coding tasks.
 
+For a compact model that can also handle tool calling, **Qwen3.8-2B-Distill** is
+another fast option. It has worked for tool-driven tasks on this setup and is a good
+pick when a larger coding model feels slow.
+
 For coding on that host, the measured KoboldCPP setup with Qwen3 8B and Qwen3
 0.6B speculative decoding produced about **5.1 tokens per second**, compared with
 **4.3 tokens per second** without speculative decoding. Long coding histories can
