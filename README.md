@@ -650,6 +650,26 @@ inside each task container.
 Keep `.env`, `.env.postgres`, and TLS private keys private. Preserve the database
 volume across application updates; `docker compose down -v` deletes it.
 
+## Disclaimer
+
+Use Hearth at your own discretion and risk. AI models can produce inaccurate,
+misleading, offensive, insecure, or otherwise harmful output. Model responses are
+not professional advice and should not be treated as verified facts. Check important
+claims and review generated code before relying on, running, or sharing it.
+
+Agent features can read, create, modify, or delete files and may run shell commands
+or install packages according to the permissions and settings you choose. Agents can
+make mistakes, misunderstand instructions, or cause unintended changes. Review
+proposed commands and file changes, restrict access to sensitive data, and keep
+independent backups. You are responsible for actions you approve or configure agents
+to run automatically.
+
+You are also responsible for model downloads, model licenses, third-party services,
+and any costs, security, privacy, or legal requirements associated with their use.
+The authors and maintainers provide this software without guarantees and are not
+responsible for damages, data loss, security incidents, or other consequences arising
+from its use, to the extent permitted by applicable law.
+
 ## Development and troubleshooting
 
 Run the application checks through the isolated PostgreSQL test runner:
