@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import psutil
 import requests
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv, unset_key
 from flask import Flask, Response, copy_current_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
@@ -55,6 +55,7 @@ import resource_guard
 import model_resource_warnings
 import security_scan
 import settings_store
+import secret_store
 import users_store
 import web_search_client as web_search
 import generation_guard
@@ -67,20 +68,10 @@ memory_store.init_db()
 users_store.init_db()
 agent_store.init_db()
 settings_store.init_db()
+settings_store.migrate_legacy_environment()
 quiz_store.init_db()
 metrics_store.init_db()
 caddy_metrics.start_tailer()  # ingest LAN (OpenCode/VSCode) hits from Caddy's access log
-
-if users_store.count_users() == 0:
-    # First run after adding multi-user support: bootstrap the original single
-    # admin account from the .env credentials so the existing login keeps working,
-    # then hand any pre-existing (pre-multi-user) conversations to that account.
-    _seed_username = os.environ.get("ADMIN_USERNAME", "admin")
-    _seed_hash = os.environ.get("ADMIN_PASSWORD_HASH", "")
-    if _seed_hash:
-        _admin = users_store.seed_user_with_hash(_seed_username, _seed_hash, "admin")
-        moved = chat_store.assign_orphaned_conversations(_admin["id"])
-        print(f"Bootstrapped admin user '{_seed_username}' ({moved} existing conversation(s) migrated to them)")
 
 BASE_DIR = Path(__file__).resolve().parent
 CERT_DIR = BASE_DIR / "certs"
@@ -95,7 +86,12 @@ VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 APP_PORT = int(os.environ.get("PORT", "5443"))
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
+_legacy_session_key = os.environ.get("FLASK_SECRET_KEY")
+app.secret_key = secret_store.get_or_create_flask_key(_legacy_session_key)
+os.environ.pop("FLASK_SECRET_KEY", None)
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.is_file() and "FLASK_SECRET_KEY" in dotenv_values(_env_path):
+    unset_key(str(_env_path), "FLASK_SECRET_KEY")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -1048,9 +1044,8 @@ def agent_workflow_required(view):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
+    setup_mode = users_store.count_users() == 0
     if request.method == "POST":
-        username = request.form.get("username", "")
-        password = request.form.get("password", "")
         supplied_csrf = request.form.get("csrf_token", "")
         expected_csrf = session.get("login_csrf_token", "")
         if not (
@@ -1060,6 +1055,37 @@ def login():
             and secrets.compare_digest(supplied_csrf, expected_csrf)
         ):
             return "Invalid or expired sign-in form", 400
+        if setup_mode:
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
+            confirm = request.form.get("password_confirm", "")
+            if not username or len(username) > 128 or "\x00" in username:
+                error = "Enter a username of 1–128 characters."
+            elif len(password) < 8 or len(password) > 1024:
+                error = "Choose a password between 8 and 1024 characters."
+            elif password != confirm:
+                error = "The passwords do not match."
+            else:
+                user = users_store.create_first_admin(username, password)
+                if user is None:
+                    setup_mode = False
+                    error = "Initial setup has already been completed. Sign in with your account."
+                else:
+                    chat_store.assign_orphaned_conversations(user["id"])
+                    session.clear()
+                    session["logged_in"] = True
+                    session["user_id"] = user["id"]
+                    session["username"] = user["username"]
+                    session["role"] = "admin"
+                    session["agentic_workflow_enabled"] = True
+                    session["login_csrf_token"] = secrets.token_urlsafe(32)
+                    session["last_activity"] = time.time()
+                    session.permanent = False
+                    return redirect(url_for("index"))
+            return render_template("login.html", error=error, csrf_token=_login_csrf_token(),
+                                   setup_mode=setup_mode), 400
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
         if len(username) > 128 or len(password) > 1024 or "\x00" in username:
             time.sleep(1)
             error = "Invalid username or password"
@@ -1090,7 +1116,9 @@ def login():
         _login_rate_limited(keys, record=True)
         time.sleep(1)  # slow down brute-force attempts
         error = "Invalid username or password"
-    return render_template("login.html", error=error, csrf_token=_login_csrf_token())
+    setup_mode = users_store.count_users() == 0
+    return render_template("login.html", error=error, csrf_token=_login_csrf_token(),
+                           setup_mode=setup_mode)
 
 
 @app.post("/logout")
@@ -1898,13 +1926,16 @@ def api_agent_models():
     try:
         configured = _agent_tasks.client.models()
         inventory = api_list_models.__wrapped__().get_json()['models']
-        loaded = next((m for m in inventory if m.get('state') == 'loaded'), None)
-        if loaded:
-            loaded_id = loaded.get('id')
-            loaded_backend = loaded.get('backend')
-            for model in configured:
-                if model.get('id') == loaded_id and (not loaded_backend or model.get('providerID') == loaded_backend):
-                    model['loaded'] = True
+        # The inventory also contains support models (embeddings, speech, etc.),
+        # and their ordering is backend-dependent. Mark every configured model that
+        # is actually loaded so the picker can choose the loaded coding model rather
+        # than stopping at the first unrelated loaded model.
+        loaded = [m for m in inventory if m.get('state') == 'loaded' or m.get('loaded_instances')]
+        for model in configured:
+            if any(model.get('id') == entry.get('id') and
+                   (not entry.get('backend') or model.get('providerID') == entry.get('backend'))
+                   for entry in loaded):
+                model['loaded'] = True
         return jsonify({'models': configured})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 503
@@ -2010,8 +2041,16 @@ def _agent_live_payload(job):
             messages = job.get('messages', [])
             source = 'saved'
     activity = job.get('activity') or []
-    return {'id': job['id'], 'messages': messages, 'streaming': job.get('status') in agent_tasks.ACTIVE,
-            'status': job.get('status'), 'activity': activity[-50:], 'source': source}
+    return {
+        'id': job['id'], 'messages': messages,
+        'streaming': job.get('status') in agent_tasks.ACTIVE,
+        'status': job.get('status'), 'activity': activity[-50:], 'source': source,
+        # These fields change after the page first loads. Include them in each SSE
+        # snapshot so the result pane receives the final response and verification,
+        # instead of keeping the initial (often empty) task detail forever.
+        'summary': job.get('summary'), 'completion': job.get('completion'),
+        'verification': job.get('verification'), 'error': job.get('error'),
+    }
 
 
 @app.get('/api/agent-tasks/<task_id>/events')
@@ -3421,7 +3460,7 @@ def api_update_settings():
     body = request.get_json(force=True, silent=True) or {}
 
     # Only keys the panel actually sends are written; a missing key leaves that setting
-    # untouched, an empty string clears it (falls back to .env/default on the next call).
+    # untouched, an empty string clears it and restores the built-in backend default.
     for key in (
         "lmstudio_base_url", "lmstudio_api_key",
         "lemonade_base_url", "lemonade_api_key",

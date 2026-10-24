@@ -23,6 +23,12 @@
     const date=agentDate(value);
     return date && Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,options) : '';
   }
+  function newestFirst(events) {
+    return [...(events || [])].sort((a,b)=>{
+      const at=agentDate(a.time)?.getTime() || 0, bt=agentDate(b.time)?.getTime() || 0;
+      return bt-at;
+    });
+  }
   function button(label, parent, action) { const n = node('button', label, parent); n.className = 'panel-btn'; n.type = 'button'; n.addEventListener('click', action); return n; }
   function show(taskData) {
     if (!el('agent-detail')) return;
@@ -37,10 +43,12 @@
     if (el('agent-sharing')) el('agent-sharing').hidden = !owner;
     if(el('agent-model-change'))el('agent-model-change').hidden=!owner || !['pausing','paused','blocked','interrupted'].includes(task.status);
     for (const id of ['agent-pause','agent-resume','agent-stop','agent-delete','agent-send-instructions']) if(el(id))el(id).hidden = !owner;
+    if(el('agent-reset-cycles'))el('agent-reset-cycles').hidden=!owner || !['running','waiting_input','paused','blocked','interrupted'].includes(task.status);
     if(el('agent-prompts'))el('agent-prompts').hidden = !owner;
     if(el('agent-title'))el('agent-title').textContent = task.title;
     if(el('agent-status'))el('agent-status').textContent = `${task.status}${task.shared ? ' · shared read-only' : ''} · ${task.assignee} · ${task.cycles}/${task.max_cycles} cycles`;
-    const latestActivity=task.activity?.length ? task.activity[task.activity.length-1] : null;
+    const recentActivity=newestFirst(task.activity);
+    const latestActivity=recentActivity[0] || null;
     const latestTime=el('agent-latest-time');
     if(latestTime)latestTime.textContent=displayTime(latestActivity?.time,{dateStyle:'medium',timeStyle:'short'}) || 'No updates yet';
     const liveIndicator=el('agent-live-indicator');
@@ -69,17 +77,25 @@
     if(el('agent-stop'))el('agent-stop').disabled = ['stopped','completed'].includes(task.status);
     if(el('agent-delete'))el('agent-delete').disabled = active.has(task.status);
     if(el('agent-download'))el('agent-download').hidden = task.status !== 'completed';
-    if(el('agent-result'))el('agent-result').textContent = (task.completion || task.summary || 'Work is in progress.') +
-      (task.verification ? '\n\n'+JSON.stringify(task.verification,null,2) : '');
-    if(el('agent-activity'))el('agent-activity').textContent = task.activity.map(a => `${new Date(a.time*1000).toLocaleTimeString()} ${a.text}`).join('\n');
+    const resultHeading=el('agent-result-heading');
+    if(resultHeading)resultHeading.textContent=task.completion?'Completed result':task.summary?'Latest agent response':task.error?'No result returned':'Agent response';
+    if(el('agent-result')) {
+      const resultParts=[];
+      if(task.summary)resultParts.push(task.summary);
+      if(task.completion && task.completion!==task.summary)resultParts.push(task.completion);
+      if(!resultParts.length)resultParts.push(task.error || 'Work is in progress.');
+      if(task.verification)resultParts.push(JSON.stringify(task.verification,null,2));
+      el('agent-result').textContent=resultParts.join('\n\n');
+    }
+    if(el('agent-activity'))el('agent-activity').textContent = recentActivity.map(a => `${displayTime(a.time)} ${a.text}`).join('\n');
     const activityFeed=el('agent-activity-feed');
     if(activityFeed) {
-      const events=task.activity || [];
+      const events=recentActivity;
       const eventSignature=JSON.stringify(events.map(a=>[a.time,a.text]));
       if(activityFeed.dataset.signature!==eventSignature) {
         activityFeed.dataset.signature=eventSignature;
         activityFeed.replaceChildren();
-        if(events.length)for(const item of events.slice(-40).reverse()) {
+        if(events.length)for(const item of events.slice(0,40)) {
           const row=node('div',undefined,activityFeed);row.className='agent-activity-item';
           node('time',displayTime(item.time) || '—',row);
           node('span',item.text,row);
@@ -307,7 +323,8 @@
     try { show(await api(`/api/agent-tasks/${task.id}/steer`,{text:el('agent-steering').value}));el('agent-steering').value=''; }
     catch(error) { el('agent-network').textContent=error.message; }
   });
-  for(const action of ['pause','resume','stop']) el('agent-'+action)?.addEventListener('click',async()=>{
+  for(const action of ['pause','resume','stop','reset-cycles']) el('agent-'+action)?.addEventListener('click',async()=>{
+    if(action==='reset-cycles' && !window.confirm('Reset this assignment’s work-cycle count to zero? Review the latest response before continuing.'))return;
     try { show(await api(`/api/agent-tasks/${task.id}/control`,{action})); }
     catch(e){el('agent-network').textContent=e.message;}
   });
@@ -332,14 +349,15 @@
         option.value=value; option.disabled=m.usable === false; option.title=m.reason || '';
       }
     }
-    const available=el('agent-model') ? [...el('agent-model').options].filter(o=>!o.disabled) : [...el('agent-schedule-model').options].filter(o=>!o.disabled);
+    const availableSelect=el('agent-model') || el('agent-schedule-model') || el('agent-resume-model');
+    const available=availableSelect ? [...availableSelect.options].filter(o=>!o.disabled) : [];
     const loaded=models.find(m=>m.loaded && m.usable !== false);
     const preferred=loaded ? available.find(o=>{const value=JSON.parse(o.value);return value.id===loaded.id && value.providerID===loaded.providerID;}) : null;
     if(el('agent-model'))(preferred || available[0] || {}).selected=true;
     if(el('agent-schedule-model'))el('agent-schedule-model').value=(preferred || available[0] || {}).value || '';
     if(el('agent-resume-model')) {
       const current=JSON.stringify(task?.model || {});
-      el('agent-resume-model').value=[...el('agent-resume-model').options].some(o=>o.value===current) ? current : (preferred || available[0] || {}).value || '';
+      el('agent-resume-model').value=(preferred || ([...el('agent-resume-model').options].find(o=>o.value===current && !o.disabled)) || available[0] || {}).value || '';
     }
     if(!models.some(m=>m.usable !== false)) throw new Error('Configure a local model in OpenCode first.');
   }).catch(e=>{if(el('agent-create-status'))el('agent-create-status').textContent=e.message;if(el('agent-assign'))el('agent-assign').disabled=true;if(el('agent-schedule-create'))el('agent-schedule-create').disabled=true;});

@@ -3,7 +3,7 @@
 set -euo pipefail
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
-  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image] [--admin-username NAME]'
+  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image]'
   echo 'Additional options are passed to tools/first_time_setup.py (--help lists them).'
   exit 0
 fi
@@ -52,4 +52,6 @@ python3 -m venv .venv
 if [[ $install_browser -eq 1 ]]; then
   .venv/bin/python -m playwright install chromium
 fi
+# The Python setup step applies the canonical SQL schema, migrates any legacy backend
+# settings, and persists the encrypted application session key before enabling service.
 .venv/bin/python tools/first_time_setup.py "${setup_args[@]}"

@@ -37,19 +37,18 @@ import model_test_profiles
 import settings_store
 import lemonade_templates
 
-_DEFAULT_BASE_URL = os.environ.get("LEMONADE_BASE_URL", "http://localhost:13305").rstrip("/")
-_DEFAULT_API_KEY = os.environ.get("LEMONADE_API_KEY")
+_DEFAULT_BASE_URL = "http://localhost:13305"
 EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-text-v1-GGUF")
 
 
 def base_url() -> str:
-    """Settings-panel override takes priority over .env, checked fresh on every call
+    """Read the database setting on every call
     (not cached at import time) so a change in the UI applies immediately, no restart."""
     return (settings_store.get("lemonade_base_url") or _DEFAULT_BASE_URL).rstrip("/")
 
 
 def api_key() -> str | None:
-    return settings_store.get("lemonade_api_key") or _DEFAULT_API_KEY
+    return settings_store.get("lemonade_api_key")
 
 
 def _auth_headers() -> dict:

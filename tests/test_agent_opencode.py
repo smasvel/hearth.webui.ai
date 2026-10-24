@@ -59,11 +59,42 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
 
 class ContainerRecoveryTests(unittest.TestCase):
+    def test_runtime_migration_preserves_container_for_persisted_assignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            task_id = 'a' * 32
+            task_dir = client.runtime_directory / task_id
+            task_dir.mkdir()
+            with patch('agent_container.agent_store.get_task', return_value={'id': task_id, 'status': 'interrupted'}), \
+                 patch('agent_container.agent_store.get_runtime', return_value={'container': 'hearth-agent-' + task_id[:24]}), \
+                 patch.object(client, '_docker') as docker:
+                client.migrate_legacy_runtime()
+            self.assertTrue(task_dir.exists())
+            docker.assert_not_called()
+
+    def test_runtime_migration_removes_directory_without_durable_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            task_id = 'b' * 32
+            task_dir = client.runtime_directory / task_id
+            task_dir.mkdir()
+            with patch('agent_container.agent_store.get_task', return_value=None), \
+                 patch('agent_container.agent_store.get_runtime', return_value=None), \
+                 patch.object(client, '_docker') as docker:
+                client.migrate_legacy_runtime()
+            self.assertFalse(task_dir.exists())
+            docker.assert_called_once_with('rm', '--force', 'hearth-agent-' + task_id[:24], timeout=60)
+
     def test_legacy_model_relay_metadata_uses_host_ca_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)
             name = 'hearth-agent-'+'a'*24
-            client._write_runtime(name, {'container':name,'model_proxy':{'verify_tls':True}})
+            task_id = 'a'*32
+            import agent_store
+            user = __import__('users_store').create_user('runtime-test-' + task_id, 'test-password', 'admin')
+            self.addCleanup(__import__('users_store').delete_user, user['id'])
+            agent_store.save_task({'id':task_id,'owner':user['id'],'updated_at':0})
+            client._write_runtime(name, {'task_id':task_id,'container':name,'model_proxy':{'verify_tls':True}})
             info = client._read_runtime(name)
             self.assertEqual(info['model_proxy']['verify_tls'], _system_ca_bundle())
 

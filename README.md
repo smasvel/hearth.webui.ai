@@ -1,4 +1,4 @@
-# Hearth — Free Local AI WebUI for Agentic Workflows and Model Testing with Tailscale connection
+# Hearth — Self-Hosted OpenAI-Compatible Web UI for Local AI and Agent Workflows
 
 *Local AI, kept at home, but can be accessed anywhere in the world.*
 
@@ -7,6 +7,13 @@ and agentic coding workflows.** Use one browser interface to manage local models
 evaluate tool calling, supervise OpenCode agents, and keep a searchable conversation
 history with cross-chat memory. Run your own AI assistant on your hardware, with
 CPU, GPU, or AMD Ryzen AI NPU inference through supported model backends.
+
+Looking for the **best OpenAI-compatible web UI** or a self-hosted ChatGPT-style
+interface for local models? Hearth combines browser chat for local inference with
+an **OpenAI-compatible API gateway** for coding clients, plus model management,
+web research, persistent coding agents, and PostgreSQL-backed chat history. It is
+designed for people who want an OpenAI-style workflow while choosing their own
+supported local inference backends and hardware.
 
 Hearth brings together a **local AI chat interface**, **LLM tool-calling test suite**,
 **agent task dashboard**, and **personal AI workspace**. It is useful for trying a
@@ -341,8 +348,8 @@ local LLMs without moving between separate chat interfaces.
 
 Local inference keeps model generation on the configured hardware. Web search,
 model downloads, and any external services you configure can use the network.
-Chat history and application state use PostgreSQL; local model runtimes provide
-inference separately from the Flask application.
+Chat history, application state, and Settings values use PostgreSQL; local model
+runtimes provide inference separately from the Flask application.
 
 ## Frequently asked questions
 
@@ -391,15 +398,15 @@ bash deploy/install-first-time.sh
 This single installer adds missing Ubuntu packages with sudo, prepares the Docker
 agent image and Python environment, installs requirements and Chromium, starts
 PostgreSQL in Docker Compose, loads the application DDL (including agent schedule
-tables), generates private database/session credentials, and creates the initial
-`admin` account after you choose and confirm its password. Use
-`--admin-username NAME` to choose another username. The installer enables the
-systemd user service and lingering, so Hearth and its recurring schedule worker
+tables), and generates private database credentials. On the first page
+visit, Hearth asks you to choose the administrator username and password, then
+stores the account in PostgreSQL. The username can be changed on the setup form.
+The installer enables the systemd user service and lingering, so Hearth and its recurring schedule worker
 start after a reboot, even before login. Schedules are saved in PostgreSQL and resume on service startup;
 if a run became due while Hearth was stopped, it runs once after startup and skips
 missed intervals. With `--no-service`, scheduled runs start only while you run
 Hearth manually. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for
-secure scripted admin setup. Model backends and weights are installed separately.
+first-run account setup. Model backends and weights are installed separately.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -433,43 +440,44 @@ Active jobs run in the web service; completed replies remain in PostgreSQL chat 
 Restarting the web service interrupts active jobs, so wait for responses to finish before
 restarting it.
 
-User accounts share the PostgreSQL database with chat history. The installer creates
-the initial **admin** account. For manual setup, an account can also be bootstrapped
-from `.env` when the users table is empty:
+User accounts share the PostgreSQL database with chat history. After a fresh install,
+the first visit to Hearth displays a one-time administrator setup form. Choose the
+username and enter and confirm a password; the first account is created as an admin
+and you are signed in. The database serializes this operation, so only one first account
+can be created even if multiple browsers open setup at once. Later visits show the
+normal sign-in form. Existing users are preserved on installer reruns.
 
-```bash
-python3 - <<'EOF'
-from werkzeug.security import generate_password_hash
-print(generate_password_hash("your-password-here"))
-EOF
-```
-
-Put the output in `.env`:
-
-```
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD_HASH=<hash from above>
-FLASK_SECRET_KEY=<random hex, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`>
-```
-
-`.env` is only consulted once, to seed that first account — after that, all users (including
-`admin`) live in the database and are managed from the app itself (see below), not `.env`.
+Account profile fields—username, role, creation time, gateway token, and agent access
+setting—and salted, one-way Werkzeug password hashes are stored only in the PostgreSQL
+`users` table. Plaintext passwords are not stored or returned by user APIs. Hashing is
+intentional: passwords should be verified, not reversibly encrypted. The installer
+removes legacy `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` entries from `.env` on reruns.
 
 Environment variables:
 
 - `DATABASE_URL` — required PostgreSQL connection URL, generated during setup
 - `.env.postgres` — Compose database credentials and host port (default `55432`)
-- `LMSTUDIO_BASE_URL` — LM Studio server URL (default `http://localhost:1234`)
-- `LMSTUDIO_API_KEY` — Bearer token, if your LM Studio server requires one
-- `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` — bootstraps the first admin account on first run only
-- `FLASK_SECRET_KEY` — session signing key; keep this stable so logins survive restarts
 - `HOST` — bind address (default `0.0.0.0`)
 - `PORT` — port (default `5443`)
+
+Backend URLs, API keys, model defaults, and other **Settings** values are stored in
+PostgreSQL and managed from the admin Settings page. On upgrade, legacy backend URL
+and API-key variables are imported once and removed from `.env`; API keys are encrypted
+at rest. Keep `.env` for the database connection and deployment-level runtime values.
+
+Setup generates or imports Hearth's Flask session-signing key and stores it encrypted
+in PostgreSQL before service start; direct app starts do this on first launch.
+Encryption derives from the PostgreSQL connection password;
+the app migrates an older `.env` session key into the database and removes it from the
+file. Changing the database password makes Hearth rotate the session key, so users
+will need to sign in again.
 
 ## Users and settings
 
 Administrators manage accounts and roles in **Users**, and backend URLs, credentials,
-connection tests, and context controls in **Settings**. Regular users can chat and
+connection tests, and context controls in **Settings**. Backend URLs and API keys are
+stored in PostgreSQL; API keys are encrypted at rest. Legacy backend entries in `.env`
+are migrated at startup and removed from that file. Regular users can chat and
 select already-loaded models. Model management, downloads, evaluation, metrics,
 and agent supervision require an administrator.
 
@@ -526,6 +534,9 @@ workspaces are imported into the database on upgrade and their migrated host
 copies are removed. A running isolated container has a temporary working copy so
 OpenCode can use normal project tools; Hearth synchronizes that copy to PostgreSQL,
 which remains the durable workspace source.
+The live task stream includes each latest agent response, completion note, and
+verification result, so the result panel updates when the task finishes. Interrupted
+tasks keep their latest response visible alongside the error and can be resumed.
 
 Agent assignments and project files are private to their owner by default,
 including from other administrators. An owner can explicitly share assignment
@@ -546,12 +557,28 @@ traces are not displayed. The stream is limited to tasks the signed-in user owns
 has been explicitly allowed to view; the global chat metrics stream is not used for
 agent content. Answer questions, approve or reject permission
 requests, add instructions, and pause, continue, or stop work from the same page. Detailed activity
-history shows the newest activity and conversation entries first. When an assignment is
+The activity feed and full activity history always put the newest timestamp at the top,
+including when live events arrive out of order. When an assignment is
 paused, blocked, or interrupted, its owner can choose another configured model before
-continuing. A model change continues in a fresh OpenCode session from the latest saved
+continuing. The model picker defaults to the currently loaded model when it is available;
+the owner can still select another configured model. Loaded support models such as
+embeddings do not hide the loaded coding model from that default, including LM Studio
+models reported through their loaded-instance list. A model change continues in a fresh OpenCode session from the latest saved
 workspace checkpoint and carries forward the previous agent summary. Tasks persist when you close the browser, and Hearth
 reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
 restart can be resumed from the task page.
+After reviewing a running, waiting, paused, blocked, or interrupted assignment, its owner can use
+**Reset cycles** to set the work-cycle count back to zero without changing the saved
+workspace or model, then choose **Continue** when ready.
+Startup cleanup preserves containers with matching PostgreSQL task and runtime records;
+if a container is missing, resuming rebuilds it from the saved project files.
+
+If OpenCode reports an idle session before a new assistant result is available, Hearth
+keeps polling for up to 30 minutes. A session that remains idle after that is marked
+**Needs review** once, rather than accumulating repeated worker errors; the selected
+model remains attached to the assignment when it is resumed.
+Provider transport resets such as `ECONNRESET` are retried automatically in the same
+assignment session; a failed assistant response is retried as a new work cycle.
 
 Use **Recurring agent schedules** to save a task goal, reusable agent comment,
 model, and repeat interval from 5 minutes up to 365 days. Daily or weekly schedules
@@ -677,6 +704,10 @@ Run the application checks through the isolated PostgreSQL test runner:
 ```bash
 .venv/bin/python tools/run_tests.py --browser
 ```
+
+With `--browser`, the unit suite and all six Playwright suites run concurrently. Each
+browser suite receives its own temporary PostgreSQL schema, and all schemas are removed
+when the run finishes.
 
 For installation details, see [the setup guide](deploy/FIRST_TIME_INSTALL.md).
 For model-specific test evidence, see [saved failure reviews](reports/saved-failure-review-2026-10-19.md).

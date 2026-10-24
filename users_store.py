@@ -176,6 +176,28 @@ def create_user(username: str, password: str, role: str = "user",
                         agentic_workflow_enabled)
 
 
+def create_first_admin(username: str, password: str) -> dict | None:
+    """Atomically create the initial web-admin account, only while users is empty."""
+    password_hash = generate_password_hash(password)
+    user_id = new_id()
+    created_at = time.time()
+    caddy_token = _new_caddy_token()
+    with _connect() as conn:
+        # Serialize simultaneous first visits so only one browser can claim setup.
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (74192610, 2))
+        if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            return None
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at, caddy_token, "
+            "agentic_workflow_enabled) VALUES (%s, %s, %s, 'admin', %s, %s, TRUE)",
+            (user_id, username, password_hash, created_at, caddy_token),
+        )
+    return {
+        "id": user_id, "username": username, "role": "admin", "created_at": created_at,
+        "caddy_token": caddy_token, "agentic_workflow_enabled": True,
+    }
+
+
 def seed_user_with_hash(username: str, password_hash: str, role: str, created_at: float | None = None,
                         agentic_workflow_enabled: bool | None = None) -> dict:
     """Bootstrap a user from an already-hashed password (used to migrate the .env admin)."""

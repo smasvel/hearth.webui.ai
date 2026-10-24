@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import app
@@ -22,24 +23,29 @@ with contextlib.ExitStack() as stack:
  manager=Manager(Path(directory)/'tasks',fake)
  stack.enter_context(patch.object(app,'_agent_tasks',manager))
  stack.enter_context(patch.object(app._model_test_registry,'list',return_value=[]))
- stack.enter_context(patch.object(app.users_store,'get_user_by_id',return_value={'id':'browser','username':'browser','role':'admin'}))
+ stack.enter_context(patch.object(app.api_list_models,'__wrapped__',return_value=Mock(get_json=lambda:{'models':[{'id':model['id'],'backend':model['providerID'],'state':'loaded'}]})))
+ owner=app.users_store.create_user('browser-agent-'+uuid.uuid4().hex,'agent-password-1','admin')['id']
+ stack.callback(app.users_store.delete_user,owner)
  stack.enter_context(patch.dict(app.app.config,{'SESSION_COOKIE_SECURE':False}))
  server=make_server('127.0.0.1',0,app.app,threaded=True)
  threading.Thread(target=server.serve_forever,daemon=True).start();stack.callback(server.shutdown)
  client=app.app.test_client()
  with client.session_transaction() as session:
-  session.update(logged_in=True,user_id='browser',username='browser',role='admin',last_activity=time.time(),login_csrf_token='csrf-browser')
+  session.update(logged_in=True,user_id=owner,username='browser-agent',role='admin',last_activity=time.time(),login_csrf_token='csrf-browser')
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True,args=['--no-sandbox']);context=browser.new_context(viewport={'width':1280,'height':1000})
   context.add_cookies([{'name':'session','value':client.get_cookie('session').value,'domain':'127.0.0.1','path':'/'}])
   page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-  page.goto(f'http://127.0.0.1:{server.server_port}/agents')
+  page.on('dialog',lambda dialog:dialog.accept())
+  # The model picker lives on the New agent page, not the assignment list.
+  page.goto(f'http://127.0.0.1:{server.server_port}/agents/new')
   expect(page.locator('#agent-model option')).to_have_count(1)
   page.locator('[name=title]').fill('Build <img src=x onerror=alert(1)> project')
-  page.locator('[name=project]').fill(directory)
   page.locator('[name=goal]').fill('Build the feature and verify the result.')
+  page.locator('details.agent-more-options summary').click()
   page.locator('[name=verification_command]').fill('pytest -q')
-  page.locator('#agent-assign').click();expect(page.locator('#agent-status')).to_contain_text('queued')
+  page.locator('#agent-assign').click()
+  expect(page.locator('#agent-status')).to_contain_text('queued',timeout=7000)
   job=manager.list()[0];key=job['id'];manager.tick()
   # Snapshot active is initially true, so no prompt has been sent yet. Turn the
   # empty new session idle to dispatch its first goal.
@@ -66,15 +72,32 @@ with contextlib.ExitStack() as stack:
   page.locator('#agent-send-instructions').click()
   expect(page.locator('#agent-steering')).to_have_value('')
   manager.tick();assert 'Also add focused tests.' in fake.prompt.call_args.args[1]
+  expect(page.locator('#agent-reset-cycles')).to_be_visible()
   page.locator('#agent-pause').click();expect(page.locator('#agent-status')).to_contain_text('paused')
-  page.reload();expect(page.locator('#agent-status')).to_contain_text('paused')
+  expect(page.locator('#agent-reset-cycles')).to_be_visible()
+  page.locator('#agent-reset-cycles').click()
+  expect(page.locator('#agent-status')).to_contain_text('0/50 cycles')
+  page.close();page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+  page.goto(f'http://127.0.0.1:{server.server_port}/agents/{key}',wait_until='domcontentloaded')
+  expect(page.locator('#agent-status')).to_contain_text('paused')
+  expect(page.locator('#agent-status')).to_contain_text('0/50 cycles')
   page.locator('#agent-resume').click();expect(page.locator('#agent-status')).to_contain_text('queued')
   snap['active']=True;manager.tick()
   fake.message.return_value={'status':'exited','exit':0,'output':{'output':'tests passed'}}
   snap['active']=False;snap['messages']=[{'id':'a_browser','type':'assistant','finish':'stop','content':[{'type':'text','text':'Verified result\n'+MARKER}]}]
   manager.tick();manager.tick()
   expect(page.locator('#agent-status')).to_contain_text('completed',timeout=7000)
+  expect(page.locator('#agent-result-heading')).to_have_text('Completed result')
+  expect(page.locator('#agent-result')).to_contain_text('Verified result')
   expect(page.locator('#agent-result')).to_contain_text('Verified by the assigned command')
+  current=manager.jobs[key]
+  current['activity']=[{'time':time.time()-60,'text':'Older activity event'},
+                       {'time':time.time(),'text':'Newest activity event'}]
+  manager.save(current)
+  page.reload(wait_until='domcontentloaded')
+  expect(page.locator('#agent-activity-feed .agent-activity-item span').first).to_have_text('Newest activity event')
+  full_activity=page.locator('#agent-activity').text_content()
+  assert full_activity.index('Newest activity event') < full_activity.index('Older activity event')
   assert page.locator('#agent-title img').count()==0
   assert not errors,errors
   page.screenshot(path='/tmp/hearth-agents-ui.png',full_page=True)
