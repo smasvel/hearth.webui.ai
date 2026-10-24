@@ -38,15 +38,25 @@
 
   // Production may retain an older Jinja template until the server restarts.
   // Keep the versioned script compatible with that page during active downloads.
-  let toolsOnlyEl = document.getElementById("tools-only");
-  if (!toolsOnlyEl) {
+  let toolFilterEls = [...document.querySelectorAll("[data-tools-backend]")];
+  if (!toolFilterEls.length) {
     const filter = document.createElement("div");
-    filter.innerHTML = '<label><input id="tools-only" type="checkbox" /> Tool calling only (all searches)</label><p class="hint">Shows declared tool calling support. Models with unknown support are excluded. Backend configuration may also be required.</p>';
+    filter.className = "download-tool-filters";
+    filter.innerHTML = '<strong>Tool calling filters:</strong>' +
+      [['lemonade','Lemonade'],['vllm','vLLM'],['lmstudio','LM Studio'],['kobold','KoboldCPP'],['fastflowlm','FastFlowLM']]
+        .map(([key,label]) => `<label><input data-tools-backend="${key}" type="checkbox" /> ${label}</label>`).join("") +
+      '<strong>Model size:</strong>' +
+      [['small','Small (up to 4B)'],['medium','Medium (over 4B to 13B)'],['large','Large (over 13B)']]
+        .map(([key,label]) => `<label><input data-parameter-band="${key}" type="checkbox" /> ${label}</label>`).join("");
     document.querySelector(".console-head").appendChild(filter);
-    toolsOnlyEl = filter.querySelector("input");
+    toolFilterEls = [...filter.querySelectorAll("[data-tools-backend]")];
   }
   const searchResults = new Map();
-  toolsOnlyEl.addEventListener("change", () => {
+  const parameterFilterEls = [...document.querySelectorAll("[data-parameter-band]")];
+  // Browsers may restore checkbox state after a reload. Start a fresh page view with
+  // unfiltered catalogs so an empty Search all submission really shows every model.
+  for (const filter of [...toolFilterEls, ...parameterFilterEls]) filter.checked = false;
+  for (const filter of [...toolFilterEls, ...parameterFilterEls]) filter.addEventListener("change", () => {
     for (const [container, cached] of searchResults) {
       renderResults(cached.results, { container, onDownload: cached.onDownload });
     }
@@ -159,19 +169,26 @@
   }
 
   async function searchAll(query) {
-    if (!query) {
-      allResultsEl.innerHTML = `<p class="hint">Enter a model name to search every backend.</p>`;
-      return;
-    }
     allResultsEl.innerHTML = `<p class="hint">Searching all backends&hellip;</p>`;
     try {
       const res = await fetch(`/api/models/search?backend=all&q=${encodeURIComponent(query)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "search failed");
+      if (!data.results?.length && data.backend_errors?.length) {
+        allResultsEl.innerHTML = `<p class="hint">No models could be loaded. Backend search failed: ${data.backend_errors.map(escapeHtml).join(", ")}.</p>`;
+        return;
+      }
       renderResults(data.results || [], {
         container: allResultsEl,
         onDownload: downloadAllBackendModel,
+        backendErrors: data.backend_errors || [],
       });
+      if (data.results?.length && data.backend_errors?.length) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = `Some backends could not be searched: ${data.backend_errors.join(", ")}.`;
+        allResultsEl.prepend(note);
+      }
     } catch (err) {
       allResultsEl.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
     }
@@ -197,14 +214,9 @@
   }
 
   // Generic backend search → cards. Used by LM Studio / KoboldCPP (both search the HF
-  // GGUF index server-side) and FastFlowLM (its own NPU catalog). Empty query: LM Studio
-  // and Kobold have no catalog to browse, so the server returns nothing and we keep the
-  // prompt hint; FastFlowLM's empty query loads its full catalog.
+  // GGUF index server-side) and FastFlowLM (its own NPU catalog). Empty query browses each
+  // backend's available catalog/popular Hugging Face results.
   async function searchBackend(query, { backend, container, input, onDownload, browseHint, emptyIsCatalog }) {
-    if (!query && !emptyIsCatalog) {
-      container.innerHTML = `<p class="hint">${browseHint}</p>`;
-      return;
-    }
     container.innerHTML = `<p class="hint">Searching&hellip;</p>`;
     try {
       const res = await fetch(`/api/models/search?backend=${backend}&q=${encodeURIComponent(query)}`);
@@ -246,11 +258,26 @@
     return `${n}`;
   }
 
-  function renderResults(results, { container, onDownload }) {
+  function renderResults(results, { container, onDownload, backendErrors = [] }) {
     searchResults.set(container, { results, onDownload });
-    if (toolsOnlyEl.checked) results = results.filter((r) => r.supports_tool_calling === true);
+    const activeFilters = new Set(toolFilterEls.filter((el) => el.checked).map((el) => el.dataset.toolsBackend));
+    results = results.filter((r) => !activeFilters.has(r.backend) || r.supports_tool_calling === true);
+    const activeBands = new Set(parameterFilterEls.filter((el) => el.checked).map((el) => el.dataset.parameterBand));
+    if (activeBands.size) {
+      results = results.filter((r) => {
+        const count = parameterCountBillions(r);
+        if (count == null) return false;
+        const band = count <= 4 ? "small" : count <= 13 ? "medium" : "large";
+        return activeBands.has(band);
+      });
+    }
     if (results.length === 0) {
-      container.innerHTML = `<p class="hint">No matches. Try a different search term or turn off the tool calling filter.</p>`;
+      const detail = searchResults.get(container).results.length
+        ? "No models match the selected filters. Clear or adjust the tool calling and model size filters."
+        : backendErrors.length
+          ? `No models returned. Backend search failed: ${backendErrors.map(escapeHtml).join(", ")}.`
+          : "No models were returned by the available catalogs.";
+      container.innerHTML = `<p class="hint">${detail}</p>`;
       return;
     }
     container.innerHTML = "";
@@ -275,6 +302,8 @@
       if (r.source === "huggingface") metaParts.push("Hugging Face");
       if (r.format) metaParts.push(r.format);
       if (r.compatibility) metaParts.push(r.compatibility);
+      const contextTokens = Number(r.max_context_length || r.context_window_tokens || r.context_length || r.max_position_embeddings || 0);
+      if (Number.isSafeInteger(contextTokens) && contextTokens > 0) metaParts.push(`max ${contextTokens.toLocaleString()} tokens`);
       const metaHtml = metaParts.map(escapeHtml).join(" &middot; ");
 
       const descHtml = r.description
@@ -285,6 +314,10 @@
       // comma-separated meta line — the whole point of flagging a suggested/curated model is
       // to make it easy to spot at a glance for someone who doesn't know what to pick yet.
       const pickBadge = r.suggested ? `<span class="badge staff-pick">staff pick</span>` : "";
+      const toolSupport = r.supports_tool_calling === true
+        ? "yes"
+        : r.supports_tool_calling === false ? "no" : "unknown";
+      const toolBadge = `<span class="badge" title="${r.supports_tool_calling === true || r.supports_tool_calling === false ? "Reported by model catalog metadata." : "The catalog does not report tool calling support."}">tool calling: ${toolSupport}</span>`;
       card.innerHTML = `
         <div class="model-card-top">
           <div>
@@ -294,6 +327,7 @@
           </div>
           <div class="model-card-badges">
             ${pickBadge}
+            ${toolBadge}
             <span class="badge ${r.downloaded ? "loaded" : "not-loaded"}">${r.downloaded ? "downloaded" : "not downloaded"}</span>
           </div>
         </div>
@@ -324,6 +358,14 @@
       }
       container.appendChild(card);
     }
+  }
+
+  function parameterCountBillions(result) {
+    const explicit = result.parameter_count_billions ?? result.parameters_billions;
+    if (Number.isFinite(Number(explicit)) && Number(explicit) > 0) return Number(explicit);
+    const text = [result.parameter_size, result.id, result.description].filter(Boolean).join(" ");
+    const match = text.match(/(?:^|[^\d])(\d+(?:\.\d+)?)\s*(?:billion\b|b\b)/i);
+    return match ? Number(match[1]) : null;
   }
 
   function downloadAllBackendModel(query, source, btn, sizeGb, backend, result) {

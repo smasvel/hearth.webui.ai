@@ -1580,6 +1580,12 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 }
 
 .result-grid > .hint { grid-column: 1 / -1; }
+.download-tool-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0; }
+.download-tool-filters label { display: inline-flex; align-items: center; gap: 5px; }
+.download-tool-filters input { accent-color: var(--accent); }
+.download-size-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0; }
+.download-size-filters label { display: inline-flex; align-items: center; gap: 5px; }
+.download-size-filters input { accent-color: var(--accent); }
 
 /* Console tables (history, and anywhere else tabular) */
 .console-table {

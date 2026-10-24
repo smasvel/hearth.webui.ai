@@ -61,23 +61,32 @@ and model management** in one browser interface. Open **Downloads** as an
 administrator to find models, then use **Models** to load and evaluate them.
 
 1. Use **Search all backends** to search LM Studio, Lemonade, vLLM, KoboldCPP,
-   and FastFlowLM together, or search a single backend.
-2. Compare result cards by backend, model format, execution compatibility, size,
-   task type, update date, popularity, download status, and source link. Enable
-   **Tool calling only (all searches)** to restrict results across backend searches
-   to models whose catalog metadata explicitly declares tool-calling support.
-   Results with unknown support are excluded; this filter does not guarantee that
-   a model will work with every tool or runtime, so use **Test tools** before relying
-   on it.
-3. Download a compatible model. Follow progress and logs, inspect active downloads,
+   and FastFlowLM together, or search a single backend. Leave the search field
+   empty to browse each backend's available catalog or popular Hugging Face models.
+2. Compare result cards by backend, model format, execution compatibility, download
+   size, task type, update date, popularity, download status, and source link. Each
+   card labels tool-calling support as **yes**, **no**, or **unknown**, based on
+   catalog metadata.
+3. Use the independent **Tool calling filters** to restrict results for selected
+   backends to models whose catalog metadata explicitly declares support. Models
+   with unknown support are excluded for a filtered backend. A positive label does
+   not guarantee compatibility with every tool or runtime, so use **Test tools**
+   before relying on it.
+4. Filter by parameter count with **Small** (up to 4B), **Medium** (over 4B through
+   13B), or **Large** (over 13B). These filters use reported parameter counts or
+   recognizable sizes in model names/descriptions; models without a detectable
+   count are hidden while a size filter is active. Clear the size checkboxes to
+   show all sizes again.
+5. Download a compatible model. Follow progress and logs, inspect active downloads,
    or cancel a download. Progress detail depends on the runtime.
-4. Open **Models** to load, unload, or delete installed models. Select a loaded
+6. Open **Models** to load, unload, or delete installed models. Select a loaded
    chat model in the conversation model picker.
-5. Check the context limit shown on each model label in **Models** when choosing
+7. Check the maximum context-token label shown on a **Downloads** result when
+   metadata reports it. In **Models**, check the context limit shown on each label when choosing
    how much chat history to send. The displayed limit is the model/backend
    capability Hearth knows about; runtime settings can impose a lower active
    context size.
-6. Run **Test tools** before using a model for coding or tool-driven workflows.
+8. Run **Test tools** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
 |---|---|---|

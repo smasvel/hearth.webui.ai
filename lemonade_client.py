@@ -805,18 +805,18 @@ def search_huggingface(query: str, limit: int = 12) -> list[dict]:
 
     Descriptions are filled in concurrently via each repo's README (see
     _fetch_readme_description) since the search API itself has no description field."""
-    if not query.strip():
-        return []
     try:
+        params = {
+            "filter": "gguf",
+            "limit": limit,
+            "sort": "downloads",
+            "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
+        }
+        if query.strip():
+            params["search"] = query
         resp = requests.get(
             "https://huggingface.co/api/models",
-            params={
-                "search": query,
-                "filter": "gguf",
-                "limit": limit,
-                "sort": "downloads",
-                "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
-            },
+            params=params,
             timeout=10,
         )
         resp.raise_for_status()

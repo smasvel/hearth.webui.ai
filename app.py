@@ -2783,6 +2783,17 @@ def _model_supports_tool_calling(result: dict) -> bool | None:
     return None
 
 
+def _model_max_context_length(result: dict) -> int | None:
+    """Return an explicitly reported model context limit when catalog metadata has one."""
+    config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    for key in ("max_context_length", "max_context_window", "context_window_tokens",
+                "max_position_embeddings", "max_sequence_length", "n_ctx"):
+        value = result.get(key, config.get(key))
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
     """Give every backend result the same complete, linkable metadata contract."""
     label, model_format, compatibility = _MODEL_BACKEND_INFO[backend]
@@ -2804,6 +2815,7 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
             "backend": backend,
             "backend_label": label,
             "supports_tool_calling": _model_supports_tool_calling(result),
+            "max_context_length": _model_max_context_length(result),
             "format": model_format,
             "compatibility": compatibility,
             "source_url": source_url,
@@ -2819,15 +2831,13 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
         results = vllm.search_huggingface(query) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
     if backend in ("lmstudio", "kobold"):
-        if not query:
-            return []
         results = lemonade.search_huggingface(query)
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
-        return _normalize_model_results(fastflowlm.search_catalog(query), backend)
+        return _normalize_model_results(fastflowlm.search_catalog(query, limit=500 if not query else 80), backend)
     if backend == "lemonade":
-        results = lemonade.search_catalog(query)
+        results = lemonade.search_catalog(query, limit=500 if not query else 40)
         if query:
             results = lemonade.enrich_with_hf_metadata(results)
             results += lemonade.search_huggingface(query)
@@ -2852,9 +2862,8 @@ def api_search_models():
         return jsonify({"error": f"'backend' must be 'all' or one of: {', '.join(valid)}"}), 400
     try:
         if backend == "all":
-            if not query:
-                return jsonify({"results": []})
             results = []
+            backend_errors = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(valid)) as pool:
                 futures = {
                     pool.submit(_search_models_for_backend, name, query): name
@@ -2865,10 +2874,10 @@ def api_search_models():
                         results.extend(future.result(timeout=30))
                     except Exception:
                         # One unavailable backend must not erase useful results from four others.
-                        continue
+                        backend_errors.append(name)
             order = {name: i for i, name in enumerate(valid)}
             results.sort(key=lambda r: (order.get(r["backend"], 99), -(r.get("downloads") or 0)))
-            return jsonify({"results": filtered(results)})
+            return jsonify({"results": filtered(results), "backend_errors": backend_errors})
         return jsonify({"results": filtered(_search_models_for_backend(backend, query))})
     except (lemonade.LemonadeError, vllm.VLLMError) as exc:
         return jsonify({"error": str(exc)}), 502
