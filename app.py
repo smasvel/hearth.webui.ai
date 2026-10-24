@@ -28,6 +28,7 @@ import browse_history_store
 import chat_store
 import chat_jobs
 import agent_tasks
+import agent_store
 import agent_container
 import model_tests
 import model_test_profiles
@@ -64,6 +65,7 @@ browse_history_store.init_db()
 chat_store.init_db()
 memory_store.init_db()
 users_store.init_db()
+agent_store.init_db()
 settings_store.init_db()
 quiz_store.init_db()
 metrics_store.init_db()
@@ -1770,6 +1772,7 @@ _model_test_registry = model_tests.Registry(database.DATA_DIR / 'model-test-runs
 _agent_container_client = agent_container.ContainerOpenCode(database.DATA_DIR / 'agent-runtime')
 _agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks', client=_agent_container_client,
     prepare_model=lambda job: _prepare_agent_model(job))
+_agent_container_client.migrate_legacy_runtime()
 _agent_container_client.progress = _agent_tasks.report_progress
 
 
@@ -1856,13 +1859,37 @@ def _prepare_agent_model(job):
 @app.get('/agents')
 @agent_workflow_required
 def agents_page():
-    return render_template('agents.html', username=session.get('username'))
+    return render_template('agents.html', username=session.get('username'),
+                           page='list', initial_task_id=request.args.get('task', ''))
+
+
+@app.get('/agents/new')
+@agent_workflow_required
+def agents_new_page():
+    return render_template('agents.html', username=session.get('username'), page='new', initial_task_id='')
+
+
+@app.get('/agents/schedules')
+@agent_workflow_required
+def agents_schedules_page():
+    return render_template('agents.html', username=session.get('username'), page='schedules', initial_task_id='')
+
+
+@app.get('/agents/<task_id>')
+@agent_workflow_required
+def agent_task_page(task_id):
+    return render_template('agents.html', username=session.get('username'), page='execution', initial_task_id=task_id)
 
 
 def _agent_task_visible_to_current_user(job):
     return bool(job) and (
-        session.get('role') == 'admin' or job.get('owner') == session.get('user_id')
+        job.get('owner') == session.get('user_id')
+        or session.get('user_id') in job.get('shared_with', [])
     )
+
+
+def _agent_task_owned_by_current_user(job):
+    return bool(job) and job.get('owner') == session.get('user_id')
 
 
 @app.get('/api/agent-tasks/models')
@@ -1886,14 +1913,19 @@ def api_agent_models():
 @app.get('/api/agent-tasks')
 @agent_workflow_required
 def api_agent_tasks_list():
-    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error')
+    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error', 'schedule_id', 'scheduled_run_at')
     tasks = []
     for job in _agent_tasks.list():
         if not _agent_task_visible_to_current_user(job):
             continue
         task = {key: job.get(key) for key in fields}
+        task['shared'] = not _agent_task_owned_by_current_user(job)
+        task['shared_with'] = job.get('shared_with', []) if not task['shared'] else []
+        if task['shared']:
+            task['project'] = 'Shared project'
         activity = job.get('activity') or []
         task['latest_activity'] = str(activity[-1].get('text', ''))[:180] if activity else ''
+        task['latest_activity_at'] = activity[-1].get('time') if activity else None
         tasks.append(task)
     return jsonify({'tasks': tasks})
 
@@ -1920,13 +1952,113 @@ def api_agent_tasks_get(task_id):
     job = _agent_tasks.get(task_id)
     if not _agent_task_visible_to_current_user(job):
         return jsonify({'error': 'Assignment not found.'}), 404
+    if not _agent_task_owned_by_current_user(job):
+        job.pop('owner', None)
+        job.pop('shared_with', None)
+        job['shared'] = True
     return jsonify(job)
+
+
+@app.get('/api/agent-tasks/<task_id>/live-messages')
+@agent_workflow_required
+def api_agent_tasks_live_messages(task_id):
+    job = _agent_tasks.get(task_id)
+    if not _agent_task_visible_to_current_user(job):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    session_id = job.get('session_id')
+    if not session_id:
+        return jsonify({'messages': job.get('messages', []), 'streaming': False})
+    try:
+        return jsonify(_agent_live_payload(job))
+    except Exception as exc:
+        app.logger.warning('Live agent message fetch failed for %s: %s', task_id, exc)
+        return jsonify({'messages': job.get('messages', []), 'streaming': job.get('status') in agent_tasks.ACTIVE,
+                        'source': 'saved'}), 200
+
+
+def _agent_live_payload(job):
+    session_id = job.get('session_id')
+    source = 'live'
+    if not session_id:
+        messages = job.get('messages', [])
+    else:
+        try:
+            upstream = _agent_tasks.client.live_messages(session_id)
+            messages = []
+            for message in reversed(upstream[:50]):
+                parts = []
+                for part in message.get('content', []):
+                    if part.get('type') == 'text':
+                        parts.append({'type': 'text', 'text': part.get('text', '')[-12000:]})
+                    elif part.get('type') == 'tool':
+                        state = part.get('state') or {}
+                        content = state.get('content') or []
+                        output = '\n'.join(str(item.get('text', '')) for item in content
+                                           if isinstance(item, dict) and item.get('type') == 'text')
+                        parts.append({'type': 'tool', 'name': part.get('name'),
+                                      'status': state.get('status'),
+                                      'input': json.dumps(state.get('input') or {})[:2000],
+                                      'output': output[-12000:]})
+                message_time = message.get('time') or message.get('createdAt')
+                if isinstance(message_time, dict):
+                    message_time = message_time.get('created') or message_time.get('updated')
+                messages.append({'id': message.get('id'), 'type': message.get('type'),
+                                 'time': message_time, 'content': parts})
+        except Exception as exc:
+            app.logger.info('Using saved agent activity for %s because its live container is unavailable: %s',
+                            job.get('id'), type(exc).__name__)
+            messages = job.get('messages', [])
+            source = 'saved'
+    activity = job.get('activity') or []
+    return {'id': job['id'], 'messages': messages, 'streaming': job.get('status') in agent_tasks.ACTIVE,
+            'status': job.get('status'), 'activity': activity[-50:], 'source': source}
+
+
+@app.get('/api/agent-tasks/<task_id>/events')
+@agent_workflow_required
+def api_agent_tasks_events(task_id):
+    job = _agent_tasks.get(task_id)
+    if not _agent_task_visible_to_current_user(job):
+        return jsonify({'error': 'Assignment not found.'}), 404
+
+    @stream_with_context
+    def event_stream():
+        last_payload = None
+        last_heartbeat = time.monotonic()
+        deadline = time.monotonic() + 300
+        yield 'retry: 1500\n\n'
+        while time.monotonic() < deadline:
+            current = _agent_tasks.get(task_id)
+            if not _agent_task_visible_to_current_user(current):
+                yield 'event: access-revoked\ndata: {}\n\n'
+                return
+            try:
+                payload = _agent_live_payload(current)
+                encoded = json.dumps(payload, separators=(',', ':'))
+                if encoded != last_payload:
+                    yield 'data: '+encoded+'\n\n'
+                    last_payload = encoded
+                elif time.monotonic() - last_heartbeat > 15:
+                    yield ': keep-alive\n\n'
+                    last_heartbeat = time.monotonic()
+            except Exception as exc:
+                app.logger.debug('Agent event stream read failed for %s: %s', task_id, exc)
+                yield 'event: stream-error\ndata: {}\n\n'
+                time.sleep(1)
+            if current.get('status') not in agent_tasks.ACTIVE:
+                return
+            time.sleep(0.5)
+
+    return Response(event_stream(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive',
+    })
 
 
 @app.delete('/api/agent-tasks/<task_id>')
 @agent_workflow_required
 def api_agent_tasks_delete(task_id):
-    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     try:
         _agent_tasks.delete(task_id)
@@ -1935,6 +2067,9 @@ def api_agent_tasks_delete(task_id):
         return jsonify({'error': 'Assignment not found.'}), 404
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not fully remove the agent assignment container')
+        return jsonify({'error': f'Assignment container cleanup failed: {exc}'}), 503
 
 
 @app.get('/api/agent-tasks/<task_id>/download')
@@ -1956,7 +2091,7 @@ def api_agent_tasks_download(task_id):
 @app.post('/api/agent-tasks/<task_id>/control')
 @agent_workflow_required
 def api_agent_tasks_control(task_id):
-    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -1969,12 +2104,32 @@ def api_agent_tasks_control(task_id):
         return jsonify({'error': 'Assignment not found.'}), 404
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not stop or remove the agent container')
+        return jsonify({'error': f'Agent container cleanup failed: {exc}'}), 503
+
+
+@app.patch('/api/agent-tasks/<task_id>/model')
+@agent_workflow_required
+def api_agent_tasks_model(task_id):
+    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(_agent_tasks.change_model(task_id, body.get('model') if isinstance(body, dict) else None))
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not change the agent model')
+        return jsonify({'error': f'Could not change agent model: {exc}'}), 503
 
 
 @app.post('/api/agent-tasks/<task_id>/steer')
 @agent_workflow_required
 def api_agent_tasks_steer(task_id):
-    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     try:
@@ -1988,7 +2143,7 @@ def api_agent_tasks_steer(task_id):
 @app.post('/api/agent-tasks/<task_id>/reply')
 @agent_workflow_required
 def api_agent_tasks_reply(task_id):
-    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -2001,6 +2156,89 @@ def api_agent_tasks_reply(task_id):
         return jsonify({'error': str(exc)}), 409
     except Exception as exc:
         return jsonify({'error': str(exc)}), 502
+
+
+@app.get('/api/agent-tasks/share-targets')
+@agent_workflow_required
+def api_agent_share_targets():
+    query = request.args.get('q', '').strip()
+    ids_value = request.args.get('ids')
+    if ids_value is not None:
+        user_ids = list(dict.fromkeys(value for value in ids_value.split(',') if value))
+        if len(user_ids) > 100:
+            return jsonify({'error': 'Resolve up to 100 selected users at a time.'}), 400
+        users = users_store.list_agent_share_targets(session['user_id'], user_ids=user_ids)
+        return jsonify({'users': users})
+    if len(query) < 2:
+        return jsonify({'users': [], 'min_query_length': 2})
+    users = users_store.list_agent_share_targets(session['user_id'], query=query, limit=20)
+    return jsonify({'users': users, 'min_query_length': 2})
+
+
+@app.put('/api/agent-tasks/<task_id>/shares')
+@agent_workflow_required
+def api_agent_task_shares(task_id):
+    job = _agent_tasks.get(task_id)
+    if not _agent_task_owned_by_current_user(job):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    body = request.get_json(silent=True)
+    user_ids = body.get('user_ids') if isinstance(body, dict) else None
+    if not isinstance(user_ids, list) or any(not isinstance(user_id, str) for user_id in user_ids):
+        return jsonify({'error': 'user_ids must be a list of registered user IDs.'}), 400
+    if len(user_ids) > 100 or len(set(user_ids)) != len(user_ids):
+        return jsonify({'error': 'Choose up to 100 distinct users.'}), 400
+    if not users_store.agent_share_targets_exist(session['user_id'], user_ids):
+        return jsonify({'error': 'Assignments can only be shared with registered users who have agent workflow enabled.'}), 400
+    usernames = {user['id']: user['username'] for user in users_store.list_agent_share_targets(
+        session['user_id'], user_ids=user_ids, limit=100
+    )}
+    with _agent_tasks.lock:
+        current = _agent_tasks.jobs.get(task_id)
+        if not current or current.get('owner') != session['user_id']:
+            return jsonify({'error': 'Assignment not found.'}), 404
+        current['shared_with'] = user_ids
+        _agent_tasks.save(current)
+        return jsonify({'shared_with': [{'id': user_id, 'username': usernames[user_id]} for user_id in user_ids]})
+
+
+@app.get('/api/agent-schedules')
+@agent_workflow_required
+def api_agent_schedules_list():
+    return jsonify({'schedules': _agent_tasks.list_schedules(session['user_id'])})
+
+
+@app.post('/api/agent-schedules')
+@agent_workflow_required
+def api_agent_schedules_create():
+    if any(job['status'] in model_tests.ACTIVE for job in _model_test_registry.list()):
+        return jsonify({'error': 'Wait for model validation to finish before scheduling an agent.'}), 409
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'A schedule configuration is required.'}), 400
+    try:
+        return jsonify(_agent_tasks.create_schedule(body, session['user_id'])), 201
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 503
+
+
+@app.patch('/api/agent-schedules/<schedule_id>')
+@agent_workflow_required
+def api_agent_schedules_update(schedule_id):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or type(body.get('enabled')) is not bool:
+        return jsonify({'error': 'enabled must be a boolean.'}), 400
+    schedule = _agent_tasks.set_schedule_enabled(schedule_id, session['user_id'], body['enabled'])
+    return (jsonify(schedule), 200) if schedule else (jsonify({'error': 'Schedule not found.'}), 404)
+
+
+@app.delete('/api/agent-schedules/<schedule_id>')
+@agent_workflow_required
+def api_agent_schedules_delete(schedule_id):
+    if not _agent_tasks.delete_schedule(schedule_id, session['user_id']):
+        return jsonify({'error': 'Schedule not found.'}), 404
+    return jsonify({'deleted': True})
 
 
 @app.get('/api/model-tests')
@@ -3367,7 +3605,11 @@ def api_delete_user(user_id):
         return jsonify({"error": "not found"}), 404
     if target["role"] == "admin" and users_store.count_admins() <= 1:
         return jsonify({"error": "can't delete the last remaining admin account"}), 400
-    _request_stop_for_user_agents(user_id)
+    try:
+        _agent_tasks.delete_owner(user_id)
+    except Exception as exc:
+        app.logger.exception('Could not remove the user’s agent assignments and containers')
+        return jsonify({'error': f'Could not remove the user’s agent data: {exc}'}), 503
     for conv in chat_store.list_conversations(user_id):
         _delete_generated_images(conv["id"], user_id)
     users_store.delete_user(user_id)

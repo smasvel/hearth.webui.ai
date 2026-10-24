@@ -1,17 +1,21 @@
 """Durable, single-lane supervision of real OpenCode project sessions."""
 import copy
-import fcntl
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
 import logging
 from pathlib import Path
+import shutil
 import tarfile
 import threading
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_opencode import OpenCode, SYSTEM
+import agent_store
+import database
 
 WORKING = {'queued', 'running', 'waiting_input', 'verifying'}
 ACTIVE = WORKING | {'pausing', 'stopping'}
@@ -31,21 +35,60 @@ def fingerprint(message):
 class Manager:
     def __init__(self, directory, client=None, prepare_model=None):
         self.directory = Path(directory)
-        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.directory.chmod(0o700)
         self.client = client or OpenCode()
         self.prepare_model = prepare_model or (lambda job: None)
         self.lock = threading.RLock()
         self.dispatch_lock = threading.RLock()
-        self.jobs = {}
+        self.jobs = {job['id']: job for job in agent_store.list_tasks()}
         self.thread = None
         self.lease = None
+        legacy_projects = set()
         for path in self.directory.glob('*.json'):
             try:
                 job = json.loads(path.read_text())
-                self.jobs[job['id']] = job
+                project = Path(job.get('project', ''))
+                agents_root = Path.home().resolve()/'agents'
+                if not agent_store.user_exists(job.get('owner')):
+                    path.unlink(missing_ok=True)
+                    if project.is_relative_to(agents_root) and project.is_dir() and not project.is_symlink():
+                        legacy_projects.add(project)
+                    continue
+                if project.is_relative_to(agents_root) and project.is_dir():
+                    if agent_store.import_legacy_workspace(job['owner'], project):
+                        legacy_projects.add(project)
+                job['project'] = 'PostgreSQL private workspace'
+                if not agent_store.get_task(job['id']):
+                    agent_store.save_task(job)
+                path.unlink(missing_ok=True)
             except (ValueError, KeyError, OSError):
                 pass
+        agents_root = Path.home().resolve()/'agents'
+        for owner in agent_store.list_user_ids():
+            owner_key = hashlib.sha256(str(owner).encode()).hexdigest()[:24]
+            project = agents_root/'users'/owner_key/'project'
+            if project.is_dir() and not project.is_symlink():
+                if agent_store.import_legacy_workspace(owner, project):
+                    legacy_projects.add(project)
+        shared_legacy_project = agents_root/'project'
+        if shared_legacy_project.is_dir() and not shared_legacy_project.is_symlink():
+            task_owners = {job['owner'] for job in agent_store.list_tasks()}
+            if len(task_owners) == 1:
+                owner = next(iter(task_owners))
+                if agent_store.import_legacy_workspace(owner, shared_legacy_project):
+                    legacy_projects.add(shared_legacy_project)
+            else:
+                logging.error('Legacy shared agent workspace was left unmigrated because its owner cannot be determined safely.')
+        self.jobs = {job['id']: job for job in agent_store.list_tasks()}
+        for job in self.jobs.values():
+            if job.get('project') != 'PostgreSQL private workspace':
+                job['project'] = 'PostgreSQL private workspace'
+                agent_store.save_task(job)
+        for project in legacy_projects:
+            try: shutil.rmtree(project)
+            except OSError: logging.exception('Could not remove migrated legacy agent project files')
+        (self.directory/'worker.lock').unlink(missing_ok=True)
+        try: self.directory.rmdir()
+        except OSError: pass
         # The supervisor is single-process. Any persisted active state belongs to a
         # worker that was interrupted by a Hearth restart or an unclean shutdown.
         with self.lock:
@@ -58,11 +101,7 @@ class Manager:
 
     def save(self, job):
         job['updated_at'] = time.time()
-        path = self.directory/(job['id']+'.json')
-        temporary = path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(job, indent=2))
-        temporary.chmod(0o600)
-        temporary.replace(path)
+        agent_store.save_task(job)
 
     def note(self, job, text):
         job['activity'] = (job.get('activity', [])+[{'time': time.time(), 'text': text}])[-200:]
@@ -93,14 +132,25 @@ class Manager:
                 if job['status'] in ACTIVE:
                     raise ValueError('Stop or pause the assignment before deleting it.')
                 snapshot = copy.deepcopy(job)
-            with self.lock:
-                del self.jobs[key]
-                (self.directory/(key+'.json')).unlink(missing_ok=True)
             cleanup = getattr(type(self.client), 'cleanup', None)
             if cleanup:
-                try: cleanup(self.client, snapshot)
-                except Exception: logging.exception('Could not clean up deleted agent container')
+                cleanup(self.client, snapshot)
+            with self.lock:
+                del self.jobs[key]
+                agent_store.delete_task(key)
         return snapshot
+
+    def delete_owner(self, owner_id):
+        """Remove every assignment/container before the owning account is deleted."""
+        with self.dispatch_lock:
+            owned = [self.get(job['id']) for job in self.list() if job.get('owner') == owner_id]
+            cleanup = getattr(type(self.client), 'cleanup', None)
+            for job in owned:
+                if cleanup:
+                    cleanup(self.client, job)
+                with self.lock:
+                    self.jobs.pop(job['id'], None)
+                    agent_store.delete_task(job['id'])
 
     def download(self, key):
         job = self.get(key)
@@ -108,37 +158,28 @@ class Manager:
             raise KeyError(key)
         if job['status'] != 'completed':
             raise ValueError('Project download is available after the assignment completes.')
-        project = Path(job['project']).resolve()
-        if not project.is_dir():
+        files = agent_store.list_workspace_files(job['owner'])
+        if not files:
             raise ValueError('The completed project folder is no longer available.')
         output = io.BytesIO()
         with tarfile.open(fileobj=output, mode='w:gz') as archive:
-            for path in project.rglob('*'):
-                if any(part in ('.git', 'node_modules', '.venv', 'venv', '__pycache__') for part in path.parts):
+            for item in files:
+                path = Path(item['path'])
+                if item['is_dir'] or any(part in ('.git', 'node_modules', '.venv', 'venv', '__pycache__') for part in path.parts):
                     continue
-                if path.is_file() and not path.is_symlink():
-                    archive.add(path, arcname=str(Path(project.name)/path.relative_to(project)), recursive=False)
+                info = tarfile.TarInfo(str(Path('project')/path))
+                info.size = len(item['content'])
+                info.mtime = item['updated_at']
+                archive.addfile(info, io.BytesIO(item['content']))
         output.seek(0)
-        return output, project.name
+        return output, 'project'
 
-    def create(self, values, owner):
+    def _normalize_assignment(self, values):
         title, goal = str(values.get('title', '')).strip(), str(values.get('goal', '')).strip()
         if 'project' in values or 'create_project' in values:
             raise ValueError('Project path is managed by the server and cannot be supplied.')
-        agent_root = Path.home().resolve() / 'agents'
-        if agent_root.is_symlink():
-            raise ValueError('The configured ~/agents directory cannot be a symlink.')
-        agent_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        agent_root.chmod(0o700)
-        owner_key = hashlib.sha256(str(owner).encode()).hexdigest()[:24]
-        users_root = agent_root / 'users'
-        owner_root = users_root / owner_key
-        project = owner_root / 'project'
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
-        if any(path.is_symlink() or (path.exists() and not path.is_dir())
-               for path in (users_root, owner_root, project)):
-            raise ValueError('The configured agent project path must be a real directory, not a symlink.')
         model = values.get('model')
         if not isinstance(model, dict) or not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True)):
             raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
@@ -154,25 +195,147 @@ class Manager:
         shell_mode = values.get('shell_mode', 'auto' if values.get('auto_commands') is True else 'ask')
         if shell_mode not in ('ask', 'auto'):
             raise ValueError('Choose whether shell commands should ask or run automatically.')
+        return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
+                'verification_timeout': timeout, 'criteria': criteria,
+                'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode}
+
+    def create(self, values, owner):
+        assignment = self._normalize_assignment(values)
         self.client.ensure_agent()
         with self.lock:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
                 raise ValueError('The agent queue already has 20 active assignments.')
-            project.mkdir(mode=0o700, parents=True, exist_ok=True)
-            users_root.chmod(0o700)
-            owner_root.chmod(0o700)
-            project.chmod(0o700)
-            job = {'id': uuid.uuid4().hex, 'owner': owner, 'title': title, 'goal': goal,
-                'project': str(project.resolve()), 'assignee': assignee, 'model': model,
-                'criteria': criteria, 'verification_command': command, 'verification_timeout': timeout,
-                'auto_commands': shell_mode == 'auto', 'shell_mode': shell_mode, 'max_cycles': cycles,
+            job = {'id': uuid.uuid4().hex, 'owner': owner, **assignment,
+                'project': 'PostgreSQL private workspace', 'auto_commands': assignment['shell_mode'] == 'auto',
                 'cycles': 0, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
-            self.note(job, 'Assignment queued. Project files are managed in this account’s private agent workspace.')
+            self.note(job, 'Assignment queued. Project files are stored in this account’s private PostgreSQL workspace.')
             self.jobs[job['id']] = job
             self.save(job)
             return copy.deepcopy(job)
+
+    def create_schedule(self, values, owner):
+        interval = values.get('interval_seconds')
+        if type(interval) is not int or not 300 <= interval <= 31536000:
+            raise ValueError('Schedule interval must be between 5 minutes and 365 days.')
+        unit = values.get('interval_unit')
+        value = values.get('interval_value')
+        unit_seconds = {'minutes': 60, 'hours': 3600, 'days': 86400, 'weeks': 604800}
+        if unit not in unit_seconds or type(value) is not int or value < 1 or value*unit_seconds[unit] != interval:
+            raise ValueError('Choose a valid repeat interval.')
+        timezone_name = str(values.get('timezone', 'UTC')).strip() or 'UTC'
+        try:
+            schedule_timezone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError('Choose a valid timezone.')
+        run_time = str(values.get('run_time', '')).strip()
+        if run_time:
+            try:
+                hour, minute = (int(part) for part in run_time.split(':', 1))
+                if len(run_time.split(':', 1)) != 2 or not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError
+            except ValueError:
+                raise ValueError('Choose a valid local run time.')
+            if unit not in {'days', 'weeks'}:
+                raise ValueError('A run time of day requires a daily or weekly interval.')
+            now_local = datetime.now(schedule_timezone)
+            next_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if next_local <= now_local:
+                next_local += timedelta(days=value * (7 if unit == 'weeks' else 1))
+            first_run = next_local.timestamp()
+        else:
+            first_run = time.time() + interval
+        comment = str(values.get('comment', '')).strip()
+        if len(comment) > 10000:
+            raise ValueError('Schedule comments can be at most 10,000 characters.')
+        assignment = self._normalize_assignment(values)
+        schedule = {'id': uuid.uuid4().hex, 'owner': owner, 'assignment': assignment,
+                    'comment': comment, 'interval_seconds': interval, 'interval_value': value,
+                    'interval_unit': unit, 'run_time': run_time or None,
+                    'timezone': timezone_name, 'enabled': True,
+                    'created_at': time.time(), 'next_run_at': first_run,
+                    'last_run_at': None, 'last_task_id': None, 'last_error': None}
+        agent_store.save_schedule(schedule)
+        return schedule
+
+    def list_schedules(self, owner):
+        return agent_store.list_schedules(owner)
+
+    def set_schedule_enabled(self, schedule_id, owner, enabled):
+        schedule = next((x for x in agent_store.list_schedules(owner) if x['id'] == schedule_id), None)
+        if not schedule:
+            return None
+        schedule['enabled'] = enabled
+        if enabled and schedule['next_run_at'] <= time.time():
+            if schedule.get('run_time') and schedule.get('timezone'):
+                zone = ZoneInfo(schedule['timezone'])
+                hour, minute = (int(part) for part in schedule['run_time'].split(':', 1))
+                now_local = datetime.now(zone)
+                next_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if next_local.timestamp() <= time.time():
+                    next_local += timedelta(days=schedule['interval_value'] * (7 if schedule['interval_unit'] == 'weeks' else 1))
+                schedule['next_run_at'] = next_local.timestamp()
+            else:
+                schedule['next_run_at'] = time.time()+schedule['interval_seconds']
+        agent_store.save_schedule(schedule)
+        return schedule
+
+    def delete_schedule(self, schedule_id, owner):
+        return agent_store.delete_schedule(schedule_id, owner)
+
+    def _run_due_schedule(self):
+        due = agent_store.list_due_schedules(time.time(), limit=1)
+        if not due:
+            return
+        schedule = due[0]
+        now = time.time()
+        scheduled_at = schedule['next_run_at']
+        if schedule.get('run_time') and schedule.get('timezone') and schedule.get('interval_unit') in {'days', 'weeks'}:
+            zone = ZoneInfo(schedule['timezone'])
+            hour, minute = (int(part) for part in schedule['run_time'].split(':', 1))
+            next_local = datetime.fromtimestamp(schedule['next_run_at'], zone)
+            while next_local.timestamp() <= now:
+                next_local += timedelta(days=schedule['interval_value'] * (7 if schedule['interval_unit'] == 'weeks' else 1))
+            schedule['next_run_at'] = next_local.replace(hour=hour, minute=minute, second=0, microsecond=0).timestamp()
+        else:
+            while schedule['next_run_at'] <= now:
+                schedule['next_run_at'] += schedule['interval_seconds']
+        # Claim this occurrence before creating the task so a service crash cannot
+        # create the same scheduled assignment twice on restart.
+        agent_store.save_schedule(schedule)
+        if not agent_store.user_exists(schedule['owner']):
+            schedule['enabled'] = False
+            schedule['last_error'] = 'Owner account no longer exists.'
+            agent_store.save_schedule(schedule)
+            return
+        if not agent_store.user_agent_access_enabled(schedule['owner']):
+            schedule['last_error'] = 'Owner’s Agent access is disabled; this scheduled run was skipped.'
+            agent_store.save_schedule(schedule)
+            return
+        previous = self.get(schedule.get('last_task_id')) if schedule.get('last_task_id') else None
+        if previous and previous.get('status') not in ('completed', 'stopped'):
+            schedule['last_error'] = 'Run skipped because the previous scheduled assignment is still active.'
+            agent_store.save_schedule(schedule)
+            return
+        try:
+            assignment = dict(schedule['assignment'])
+            if schedule.get('comment'):
+                assignment['goal'] += '\n\nScheduled agent comment:\n'+schedule['comment']
+            assignment['goal'] += '\n\nScheduled occurrence (UTC): '+datetime.fromtimestamp(scheduled_at, timezone.utc).isoformat()
+            job = self.create(assignment, schedule['owner'])
+            job['schedule_id'] = schedule['id']
+            job['scheduled_run_at'] = scheduled_at
+            with self.lock:
+                self.jobs[job['id']].update(schedule_id=schedule['id'], scheduled_run_at=scheduled_at)
+                self.save(self.jobs[job['id']])
+            schedule['last_task_id'] = job['id']
+            schedule['last_run_at'] = now
+            schedule['last_error'] = None
+        except Exception as exc:
+            schedule['last_error'] = str(exc)[:1000]
+            logging.exception('Could not start scheduled agent assignment %s', schedule['id'])
+        agent_store.save_schedule(schedule)
 
     def control(self, key, action):
         if action not in ('pause', 'resume', 'stop'):
@@ -206,12 +369,43 @@ class Manager:
                         job['error'] = 'Waiting for OpenCode to acknowledge interruption; execution may still be active.'
                         self.save(job)
             result = self.get(key)
-            if action == 'stop' and result and result['status'] == 'stopped':
+            if action == 'stop' and result:
+                if result['status'] != 'stopped':
+                    with self.lock:
+                        job = self.jobs[key]
+                        job.update(status='stopped', session_id=None)
+                        self.note(job, 'Agent container was stopped and removed.')
+                        self.save(job)
+                    result = self.get(key)
                 cleanup = getattr(type(self.client), 'cleanup', None)
                 if cleanup:
-                    try: cleanup(self.client, result)
-                    except Exception: logging.exception('Could not clean up stopped agent container')
+                    cleanup(self.client, result)
             return result
+
+    def change_model(self, key, model):
+        with self.dispatch_lock:
+            with self.lock:
+                job = self.jobs[key]
+                if job.get('status') not in RESUMABLE:
+                    raise ValueError('Pause or review the assignment before changing its model.')
+                if not isinstance(model, dict) or not any(
+                    model == {'providerID': m['providerID'], 'id': m['id']}
+                    for m in self.client.models() if m.get('usable', True)
+                ):
+                    raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
+                if model == job.get('model'):
+                    return copy.deepcopy(job)
+                old_model = job.get('model')
+                job['model'] = model
+                # OpenCode sessions keep their model. Continue from the durable
+                # workspace checkpoint in a newly created session instead.
+                job.update(session_id=None, resume_session=False, verification_id=None,
+                           verification_admitted=False, model_prepared=False)
+                job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex,
+                    'text': 'Continue the existing assignment from the current project files in /workspace. Preserve completed work, inspect the current project state, and continue any unfinished work. Previous agent summary:\n'+str(job.get('summary', ''))}
+                self.note(job, f"Model changed from {old_model.get('providerID')}/{old_model.get('id')} to {model['providerID']}/{model['id']}; continuation will use the latest workspace checkpoint.")
+                self.save(job)
+                return copy.deepcopy(job)
 
     def _interrupt(self, job):
         self.client.interrupt(job['session_id'])
@@ -329,6 +523,7 @@ class Manager:
         self._send(job, 'The completion claim failed independent verification. Fix the remaining issue and verify again.\n'+json.dumps(result))
 
     def tick(self):
+        self._run_due_schedule()
         with self.lock:
             job = next((j for j in sorted(self.jobs.values(), key=lambda x: (x['status'] == 'queued', x['created_at'])) if j['status'] in ACTIVE), None)
             if not job or time.time() < job.get('next_retry', 0):
@@ -411,10 +606,16 @@ class Manager:
                         if part.get('type') == 'text':
                             parts.append({'type': 'text', 'text': part.get('text', '')[-8000:]})
                         elif part.get('type') == 'tool':
+                            state = part.get('state') or {}
+                            content = state.get('content') or []
+                            output = '\n'.join(str(item.get('text', '')) for item in content
+                                               if isinstance(item, dict) and item.get('type') == 'text')
                             parts.append({'type': 'tool', 'name': part.get('name'),
-                                'status': (part.get('state') or {}).get('status'),
-                                'input': json.dumps((part.get('state') or {}).get('input') or {})[:2000]})
-                    recent.append({'id': message['id'], 'type': message.get('type'), 'content': parts})
+                                'status': state.get('status'),
+                                'input': json.dumps(state.get('input') or {})[:2000],
+                                'output': output[-8000:]})
+                    recent.append({'id': message['id'], 'type': message.get('type'),
+                                   'time': message.get('time') or message.get('createdAt'), 'content': parts})
                 job.update(messages=recent, forms=snap['forms'], permissions=snap['permissions'])
                 if snap['forms'] or snap['permissions']:
                     job['status'] = 'waiting_input'
@@ -513,10 +714,13 @@ class Manager:
     def start_worker(self, available=lambda: True):
         if self.thread and self.thread.is_alive():
             return
-        lease = (self.directory/'worker.lock').open('a')
+        lease = database.connect(autocommit=True)
         try:
-            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            acquired = lease.execute('SELECT pg_try_advisory_lock(74192610, 1)').fetchone()[0]
+        except Exception:
+            lease.close()
+            raise
+        if not acquired:
             lease.close()
             return
         self.lease = lease

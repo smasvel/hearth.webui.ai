@@ -50,6 +50,11 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "agentic_workflow_enabled BOOLEAN NOT NULL DEFAULT FALSE"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_agent_share_search "
+            "ON users (lower(username) text_pattern_ops) "
+            "WHERE agentic_workflow_enabled = TRUE"
+        )
         if not has_agent_permission:
             conn.execute("UPDATE users SET agentic_workflow_enabled = (role = 'admin')")
         for row in conn.execute("SELECT id FROM users WHERE caddy_token IS NULL").fetchall():
@@ -89,6 +94,44 @@ def list_users(page: int = 1, per_page: int = 20) -> dict:
         "per_page": per_page,
         "total_pages": max((total + per_page - 1) // per_page, 1),
     }
+
+
+def list_agent_share_targets(owner_id: str, query: str = '', user_ids: list[str] | None = None,
+                             limit: int = 20) -> list[dict]:
+    """Search enabled accounts or resolve a bounded set of previously selected IDs."""
+    conditions = ["id <> %s", "agentic_workflow_enabled = TRUE"]
+    params: list = [owner_id]
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        conditions.append("id = ANY(%s)")
+        params.append(user_ids)
+    else:
+        query = query.strip().lower()
+        if len(query) < 2:
+            return []
+        escaped = query.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+        conditions.append("lower(username) LIKE %s ESCAPE '!'")
+        params.append(escaped+'%')
+    params.append(max(1, min(limit, 100 if user_ids is not None else 20)))
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, username FROM users WHERE "+" AND ".join(conditions)+
+            " ORDER BY lower(username) LIMIT %s",
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def agent_share_targets_exist(owner_id: str, user_ids: list[str]) -> bool:
+    if not user_ids:
+        return True
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM users WHERE id <> %s AND agentic_workflow_enabled = TRUE AND id = ANY(%s)",
+            (owner_id, user_ids),
+        ).fetchall()
+    return len(rows) == len(set(user_ids))
 
 
 def get_user_by_id(user_id: str) -> dict | None:

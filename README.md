@@ -259,7 +259,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Model evaluation | Tool and coding-workflow checks, queued runs, saved results, JSON reports, and repair-profile reset | Models → Test tools |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Admin-controlled per-user enable/disable access, private project workspaces, local project tasks, activity, permission responses, pause/resume/stop, and optional verification commands | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable read-only sharing, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-and-browsing); Browse history |
@@ -377,13 +377,16 @@ bash deploy/install-first-time.sh
 
 This single installer adds missing Ubuntu packages with sudo, prepares the Docker
 agent image and Python environment, installs requirements and Chromium, starts
-PostgreSQL in Docker Compose, loads the application DDL, generates private
-database/session credentials, and creates the initial `admin` account after you
-choose and confirm its password. Use `--admin-username NAME` to choose another
-username. The installer enables the systemd user service and lingering, so Hearth
-starts after a reboot even before login. It keeps existing users and secrets on
-reruns. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for secure
-scripted admin setup. Model backends and weights are installed separately.
+PostgreSQL in Docker Compose, loads the application DDL (including agent schedule
+tables), generates private database/session credentials, and creates the initial
+`admin` account after you choose and confirm its password. Use
+`--admin-username NAME` to choose another username. The installer enables the
+systemd user service and lingering, so Hearth and its recurring schedule worker
+start after a reboot, even before login. Schedules are saved in PostgreSQL and resume on service startup;
+if a run became due while Hearth was stopped, it runs once after startup and skips
+missed intervals. With `--no-service`, scheduled runs start only while you run
+Hearth manually. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for
+secure scripted admin setup. Model backends and weights are installed separately.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -499,17 +502,55 @@ Open **Agents** and provide a goal, acceptance criteria, and configured OpenCode
 model. Administrators can grant or revoke Agent access separately for each user on
 the **Users** page; new regular users start with it disabled, while admins start
 with it enabled. Disabling access blocks the page and API and requests stops for
-that user's active assignments. Each account's project files live in a private
-server-side workspace managed by Hearth. Hearth bundles the OpenCode worker in its
-agent container. The selected local model requires at least 16K context; the model
-picker excludes configurations that cannot fit its tools and prompt.
+that user's active assignments. PostgreSQL stores each account's private project
+workspace. Hearth bundles the OpenCode worker in its agent container. The selected
+local model requires at least 16K context; the model picker excludes configurations
+that cannot fit its tools and prompt.
 
-Assignments queue and run one at a time. Follow activity, answer questions, approve
-or reject permission requests, add instructions, and pause, resume, or stop work.
-Tasks persist when you close the browser, and Hearth reconnects to existing sessions
-after restarting. Assignments interrupted by a Hearth restart can be resumed from
-the Assignments panel. Pause agents before starting model management or evaluation
-work that would compete for their model.
+PostgreSQL stores assignment records, activity and message history, sharing rules,
+runtime metadata, and private project files. Existing file-backed agent tasks and
+workspaces are imported into the database on upgrade and their migrated host
+copies are removed. A running isolated container has a temporary working copy so
+OpenCode can use normal project tools; Hearth synchronizes that copy to PostgreSQL,
+which remains the durable workspace source.
+
+Agent assignments and project files are private to their owner by default,
+including from other administrators. An owner can explicitly share assignment
+information with registered users who have Agent access enabled. Shared users can
+view task details and activity and download the completed project, but cannot
+change instructions, answer prompts, control, or delete the task. The owner can
+revoke access at any time from the assignment's **Share assignment information**
+panel. Sharing does not grant direct access to the owner's private workspace.
+
+Create an agent from **New agent** by giving the task a name and describing the result
+you want in everyday language. Optional model and control settings are grouped under
+**More options**. The **My agents** page lists tasks and their plain-language status;
+open one to see its separate execution page. There, the **Activity** feed streams the
+agent progress, container tool inputs and outputs, and user-facing model responses
+from the active OpenCode session over a task-scoped live event stream, with correctly
+formatted timestamps and a live indicator while it is working. Private reasoning
+traces are not displayed. The stream is limited to tasks the signed-in user owns or
+has been explicitly allowed to view; the global chat metrics stream is not used for
+agent content. Answer questions, approve or reject permission
+requests, add instructions, and pause, continue, or stop work from the same page. Detailed activity
+history shows the newest activity and conversation entries first. When an assignment is
+paused, blocked, or interrupted, its owner can choose another configured model before
+continuing. A model change continues in a fresh OpenCode session from the latest saved
+workspace checkpoint and carries forward the previous agent summary. Tasks persist when you close the browser, and Hearth
+reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
+restart can be resumed from the task page.
+
+Use **Recurring agent schedules** to save a task goal, reusable agent comment,
+model, and repeat interval from 5 minutes up to 365 days. Daily or weekly schedules
+can specify a local run time using the browser timezone shown in the form. Without a
+run time, the first run starts after one interval; timed schedules start at the next
+matching local time and keep that wall-clock time across daylight-saving changes.
+Later runs create separate assignments. Hearth skips a scheduled
+occurrence until that schedule's previous assignment is completed or stopped, so
+runs do not overlap unfinished work. You can pause, resume, or delete a schedule
+without deleting its past assignments. Schedules run only while the Hearth service
+is running, and disabling the owner's Agent access prevents scheduled runs from
+starting.
 
 Each assignment runs its own Docker container with OpenCode, Python 3, Java (JDK and
 Maven), Node.js, npm, git, and common build tools. The agent can install additional
