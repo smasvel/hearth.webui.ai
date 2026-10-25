@@ -2356,6 +2356,8 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .model-resource-warning strong { font-size: 11.5px; color: var(--text-dim); }
 .model-card2 .badge { grid-area: badge; align-self: start; }
 .model-card2-actions { grid-area: actions; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.model-thinking-toggle { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; color: var(--muted); font-size: 0.88rem; }
+.model-thinking-toggle input { accent-color: var(--accent); }
 /* Resource-warning text, shown in the same actions row as the Load button (above it,
    spanning the row) so it can't be missed at click time. Used by both the Models page
    cards (model-card2) and the chat sidebar cards (model-card). */
@@ -2451,6 +2453,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .agent-form label:has(> input[type=checkbox]) { display:flex;gap:8px;align-items:center; }
 .agent-budget { display:grid;grid-template-columns:1fr 1fr;gap:12px; }
 .agent-output { white-space:pre-wrap;overflow-wrap:anywhere;max-height:65vh;overflow:auto;font-size:.9rem; }
+.agent-execution iframe#agent-html-preview { display:block;width:100%;height:65vh;min-height:420px;border:1px solid var(--border);border-radius:10px;background:#fff; }
 .agent-output pre { white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 14px; }
 #agent-list { display:grid;gap:8px; }
 #agent-error { color:var(--danger,#d96c6c); }

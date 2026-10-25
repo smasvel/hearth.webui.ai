@@ -457,7 +457,10 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
             # sees these requests, they go straight through Caddy. Harmless for any other
             # Lemonade model: a chat template that doesn't read this kwarg just ignores it.
             thinking = (settings_store.get("lemonade_enable_thinking") or "true") == "true"
-            options["extraBody"] = {"chat_template_kwargs": {"enable_thinking": thinking}}
+            options["extraBody"] = {
+                "enable_thinking": thinking,
+                "chat_template_kwargs": {"enable_thinking": thinking},
+            }
         provider[be] = {
             "npm": "@ai-sdk/openai-compatible",
             "name": f"{_LABELS[be]} ({network_label} via Caddy)",

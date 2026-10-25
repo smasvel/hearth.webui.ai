@@ -1364,6 +1364,13 @@ def models_page():
     return render_template("models.html", username=session.get("username"))
 
 
+@app.get("/model-tests")
+@admin_required
+def model_tests_page():
+    """Dedicated model validation, repair progress, and saved reports page."""
+    return render_template("model_tests.html", username=session.get("username"))
+
+
 @app.get("/metrics")
 @admin_required
 def metrics_page():
@@ -1707,8 +1714,11 @@ def api_list_models():
     # Best-effort: Lemonade (Ryzen AI NPU backend) not being installed/running is
     # normal, not an error — it just means that entry doesn't appear in the list.
     lemonade_models = lemonade.list_models()
+    global_thinking = (settings_store.get("lemonade_enable_thinking") or "true") == "true"
+    model_thinking = _lemonade_model_thinking_overrides()
     for m in lemonade_models:
         m["backend"] = "lemonade"
+        m["enable_thinking"] = model_thinking.get(m.get("id"), global_thinking)
     models += lemonade_models
     # Best-effort, same as Lemonade above: runs locally via vllm.service (see
     # vllm_client's docstring), but the same fail-soft contract applies regardless —
@@ -1793,6 +1803,32 @@ def api_list_models():
     local_backends = {name for name, client in clients.items()
                       if urlsplit(client.base_url()).hostname in ('localhost', '127.0.0.1', '::1')}
     return jsonify({"models": model_resource_warnings.annotate(models, local_backends)})
+
+
+def _lemonade_model_thinking_overrides() -> dict[str, bool]:
+    raw = settings_store.get("lemonade_model_thinking_overrides") or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(model_id): value for model_id, value in data.items() if isinstance(model_id, str) and isinstance(value, bool)}
+
+
+@app.post("/api/models/thinking")
+@admin_required
+def api_set_model_thinking():
+    body = request.get_json(force=True, silent=True) or {}
+    model_id = str(body.get("model") or "").strip()
+    if not model_id or len(model_id) > 512:
+        return jsonify({"error": "model is required"}), 400
+    if not isinstance(body.get("enabled"), bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    overrides = _lemonade_model_thinking_overrides()
+    overrides[model_id] = body["enabled"]
+    settings_store.set("lemonade_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
+    return jsonify({"model": model_id, "enable_thinking": body["enabled"]})
 
 
 _model_test_context = threading.local()
@@ -2018,6 +2054,10 @@ def _agent_live_payload(job):
             messages = []
             for message in reversed(upstream[:50]):
                 parts = []
+                raw_time = message.get('time') or message.get('createdAt')
+                message_time = raw_time
+                if isinstance(raw_time, dict):
+                    message_time = raw_time.get('created') or raw_time.get('updated')
                 for part in message.get('content', []):
                     if part.get('type') == 'text':
                         parts.append({'type': 'text', 'text': part.get('text', '')[-12000:]})
@@ -2028,16 +2068,20 @@ def _agent_live_payload(job):
                                            if isinstance(item, dict) and item.get('type') == 'text')
                         parts.append({'type': 'tool', 'name': part.get('name'),
                                       'status': state.get('status'),
+                                      'time': ((raw_time.get('completed') or raw_time.get('streamed') or raw_time.get('created'))
+                                               if isinstance(raw_time, dict) else raw_time),
                                       'input': json.dumps(state.get('input') or {})[:2000],
                                       'output': output[-12000:]})
-                message_time = message.get('time') or message.get('createdAt')
-                if isinstance(message_time, dict):
-                    message_time = message_time.get('created') or message_time.get('updated')
                 messages.append({'id': message.get('id'), 'type': message.get('type'),
                                  'time': message_time, 'content': parts})
         except Exception as exc:
             app.logger.info('Using saved agent activity for %s because its live container is unavailable: %s',
                             job.get('id'), type(exc).__name__)
+            messages = job.get('messages', [])
+            source = 'saved'
+        if not messages and job.get('messages'):
+            # A live session can briefly return no messages during reconnects even
+            # though earlier assistant output is already persisted with the task.
             messages = job.get('messages', [])
             source = 'saved'
     activity = job.get('activity') or []
@@ -2050,6 +2094,7 @@ def _agent_live_payload(job):
         # instead of keeping the initial (often empty) task detail forever.
         'summary': job.get('summary'), 'completion': job.get('completion'),
         'verification': job.get('verification'), 'error': job.get('error'),
+        'result_label': job.get('result_label'), 'result_platform': job.get('result_platform', 'general'),
     }
 
 
@@ -2097,7 +2142,7 @@ def api_agent_tasks_events(task_id):
 @app.delete('/api/agent-tasks/<task_id>')
 @agent_workflow_required
 def api_agent_tasks_delete(task_id):
-    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     try:
         _agent_tasks.delete(task_id)
@@ -2127,10 +2172,30 @@ def api_agent_tasks_download(task_id):
         return jsonify({'error': str(exc)}), 409
 
 
+@app.get('/api/agent-tasks/<task_id>/preview')
+@agent_workflow_required
+def api_agent_tasks_preview(task_id):
+    job = _agent_tasks.get(task_id)
+    if not _agent_task_visible_to_current_user(job):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    if job.get('result_platform', 'general') != 'web':
+        return jsonify({'error': 'This assignment is not configured for an HTML result.'}), 409
+    files = agent_store.list_workspace_files(job['owner'])
+    entry = next((item for item in files if not item['is_dir'] and item['path'] in
+                  ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
+    if not entry:
+        return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
+    response = Response(bytes(entry['content']), mimetype='text/html')
+    response.headers['Content-Security-Policy'] = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; sandbox"
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @app.post('/api/agent-tasks/<task_id>/control')
 @agent_workflow_required
 def api_agent_tasks_control(task_id):
-    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -2148,10 +2213,35 @@ def api_agent_tasks_control(task_id):
         return jsonify({'error': f'Agent container cleanup failed: {exc}'}), 503
 
 
+@app.post('/api/agent-tasks/<task_id>/rerun')
+@agent_workflow_required
+def api_agent_tasks_rerun(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    if any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
+        return jsonify({'error': 'Wait for model validation to finish before rerunning an agent.'}), 409
+    try:
+        if not _agent_tasks.thread or not _agent_tasks.thread.is_alive():
+            _agent_tasks.start_worker(lambda: not any(
+                job['status'] in model_tests.ACTIVE for job in _model_test_registry.list()
+            ))
+        if not _agent_tasks.thread or not _agent_tasks.thread.is_alive():
+            app.logger.error('Rerun requested but the persistent agent supervisor did not start.')
+            return jsonify({'error': 'The agent supervisor is not running; the completed task was not queued.'}), 503
+        return jsonify(_agent_tasks.rerun(task_id))
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not rerun the completed agent assignment')
+        return jsonify({'error': f'Could not rerun assignment: {exc}'}), 503
+
+
 @app.patch('/api/agent-tasks/<task_id>/model')
 @agent_workflow_required
 def api_agent_tasks_model(task_id):
-    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     try:
@@ -2168,7 +2258,7 @@ def api_agent_tasks_model(task_id):
 @app.post('/api/agent-tasks/<task_id>/steer')
 @agent_workflow_required
 def api_agent_tasks_steer(task_id):
-    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     try:
@@ -2182,7 +2272,7 @@ def api_agent_tasks_steer(task_id):
 @app.post('/api/agent-tasks/<task_id>/reply')
 @agent_workflow_required
 def api_agent_tasks_reply(task_id):
-    if not _agent_task_owned_by_current_user(_agent_tasks.get(task_id)):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -2336,6 +2426,18 @@ def api_model_tests_get(job_id):
 def api_model_tests_cancel(job_id):
     try:
         return jsonify(_model_test_registry.cancel(job_id))
+    except KeyError:
+        return jsonify({'error': 'Test run not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+
+
+@app.delete('/api/model-tests/<job_id>')
+@admin_required
+def api_model_tests_delete(job_id):
+    try:
+        _model_test_registry.delete(job_id)
+        return jsonify({'deleted': True})
     except KeyError:
         return jsonify({'error': 'Test run not found.'}), 404
     except ValueError as exc:
@@ -4304,7 +4406,12 @@ def api_chat():
                     npu_handle = _claim_selected_npu(backend, model)
                 extra_kwargs = {}
                 if backend is lemonade:
-                    thinking = (settings_store.get("lemonade_enable_thinking") or "true") == "true"
+                    overrides = _lemonade_model_thinking_overrides()
+                    thinking = overrides.get(model, (settings_store.get("lemonade_enable_thinking") or "true") == "true")
+                    # Newer Lemonade servers map the top-level control to llama.cpp's
+                    # native reasoning setting. Keep chat_template_kwargs for runtimes
+                    # that honor the Qwen chat-template switch directly.
+                    extra_kwargs["enable_thinking"] = thinking
                     extra_kwargs["chat_template_kwargs"] = {"enable_thinking": thinking}
                 if tools_list:
                     extra_kwargs["tools"] = tools_list

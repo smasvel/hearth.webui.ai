@@ -115,6 +115,28 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(restored['status'], 'interrupted')
         self.assertIn('restarted', restored['error'])
 
+    def test_delete_saved_run_removes_memory_and_report(self):
+        job, _ = self.run_job([[result('chat', True)]], repair=False)
+        self.assertTrue(self.registry.delete(job['id']))
+        self.assertIsNone(self.registry.get(job['id']))
+        self.assertFalse(Path(self.directory, job['id'] + '.json').exists())
+
+    def test_active_run_cannot_be_deleted(self):
+        gate = threading.Event()
+        with patch.object(model_tests, 'run_suite', side_effect=lambda *a, **kw: (gate.wait(2), [] )[1]):
+            job = self.registry.start([TARGET], False, Mock(), lambda t: ('http://local', t['id'], {}),
+                lambda t: 8192, background=True)
+            deadline = time.monotonic() + 2
+            while self.registry.get(job['id'])['status'] not in model_tests.ACTIVE and time.monotonic() < deadline:
+                time.sleep(.01)
+            with self.assertRaises(ValueError):
+                self.registry.delete(job['id'])
+            gate.set()
+            deadline = time.monotonic() + 3
+            while self.registry.get(job['id'])['status'] in model_tests.ACTIVE and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(self.registry.get(job['id'])['status'], 'completed')
+
     def test_inspection_does_not_interrupt_a_live_owner(self):
         job = {'id': 'b' * 32, 'status': 'running', 'started_at': 1, 'owner_pid': os.getpid()}
         path = Path(self.directory, job['id'] + '.json')
@@ -228,6 +250,16 @@ class ModelTestAPITests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/model-tests/no-such-run').status_code, 404)
         summary = self.client.get('/api/model-tests').json['jobs'][0]
         self.assertNotIn('results', summary)
+
+    def test_delete_saved_report_and_reject_active_or_missing(self):
+        self.login()
+        job, _ = self.fixture_job()
+        response = self.client.delete('/api/model-tests/' + job['id'], headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get('/api/model-tests/' + job['id']).status_code, 404)
+        self.assertEqual(self.client.delete('/api/model-tests/no-such-run', headers=self.headers).status_code, 404)
+        with patch.object(self.registry, 'delete', side_effect=ValueError('Active run')):
+            self.assertEqual(self.client.delete('/api/model-tests/' + job['id'], headers=self.headers).status_code, 409)
 
     def fixture_job(self):
         with patch.object(model_tests, 'run_suite', return_value=[]):

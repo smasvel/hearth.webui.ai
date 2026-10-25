@@ -86,7 +86,7 @@ def has_sqlite_data():
 
 
 def initialize_application_storage():
-    """Apply the canonical DDL and migrate file-backed configuration before launch."""
+    """Apply the canonical DDL and prepare private report storage before launch."""
     import database
     import agent_store
     import secret_store
@@ -94,6 +94,11 @@ def initialize_application_storage():
     import users_store
 
     database.init_schema()
+    # Model validation reports are JSON files rather than database rows. Keep the
+    # report directory private because reports include model responses and errors.
+    model_test_reports = database.DATA_DIR / 'model-test-runs'
+    model_test_reports.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(model_test_reports, 0o700)
     users_store.init_db()
     agent_store.init_db()
     settings_store.init_db()

@@ -1,12 +1,29 @@
 import unittest
+import copy
 from unittest.mock import Mock, patch
 import requests
+import socket
 from agent_opencode import OpenCode
-from agent_container import ContainerOpenCode, _system_ca_bundle
+from agent_container import ContainerOpenCode, _ModelProxy, _system_ca_bundle
 import tempfile
+from pathlib import Path
 
 
 class OpenCodeAdapterTests(unittest.TestCase):
+    def test_container_permissions_allow_project_and_auto_mode_without_approval(self):
+        client=ContainerOpenCode('/tmp/hearth-agent-test')
+        rules=client._permissions({'auto_commands':True})
+        self.assertEqual(rules[0],{'action':'external_directory','resource':'/home/node/agents/project/*','effect':'allow'})
+        self.assertEqual(rules[1],{'action':'*','resource':'*','effect':'allow'})
+        self.assertEqual(rules[2],{'action':'shell','resource':'*','effect':'allow'})
+        self.assertEqual(rules[-2],{'action':'external_directory','resource':'*','effect':'deny'})
+        self.assertEqual(rules[-1],{'action':'subagent','resource':'*','effect':'deny'})
+
+    def test_container_permissions_ask_only_for_shell_when_requested(self):
+        client=ContainerOpenCode('/tmp/hearth-agent-test')
+        rules=client._permissions({'auto_commands':False})
+        self.assertEqual(rules[2],{'action':'shell','resource':'*','effect':'ask'})
+
     def test_session_uses_opencode_v2_shell_and_subagent_permissions(self):
         client=OpenCode();job={'title':'Test','model':{'providerID':'lmstudio','id':'model'},'project':'/tmp/project','auto_commands':False}
         with patch.object(client,'call',return_value={'data':{'id':'session'}}) as call:
@@ -59,6 +76,34 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
 
 class ContainerRecoveryTests(unittest.TestCase):
+    def test_agent_config_controls_thinking_and_preserves_template_options(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        provider = {'options': {'extraBody': {'chat_template_kwargs': {'temperature': 0.2}, 'keep': 'yes'}}}
+        enabled = client._agent_config({'enable_thinking': True}, 'lemonade', 'model', copy.deepcopy(provider))
+        disabled = client._agent_config({'enable_thinking': False}, 'lemonade', 'model', copy.deepcopy(provider))
+        self.assertTrue(enabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['enable_thinking'])
+        self.assertFalse(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['enable_thinking'])
+        self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['temperature'], 0.2)
+        self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['keep'], 'yes')
+
+    def test_live_model_relay_socket_is_reused_instead_of_unlinked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'relay.sock'
+            owner=_ModelProxy({'socket_path':str(path),'token':'test-token'})
+            duplicate=_ModelProxy({'socket_path':str(path),'token':'test-token'})
+            try:
+                owner.start()
+                original_inode=path.stat().st_ino
+                duplicate.start()
+                self.assertEqual(path.stat().st_ino,original_inode)
+                with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+                    probe.settimeout(2)
+                    probe.connect(str(path))
+                    probe.sendall(b'GET /health HTTP/1.1\r\nHost: local\r\n\r\n')
+                    self.assertIn(b'403',probe.recv(1024))
+            finally:
+                owner.close()
+
     def test_runtime_migration_preserves_container_for_persisted_assignment(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)

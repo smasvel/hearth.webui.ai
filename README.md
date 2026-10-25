@@ -51,8 +51,8 @@ all documented in their own sections below.
 | Use case | Included capabilities |
 |---|---|
 | Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, response copy-to-clipboard, model switching, and supported reasoning displays |
-| Model management | Search, download, load, unload, and delete models through supported backends; see each model's supported context limit on the Models page |
-| LLM evaluation | Per-model tool-calling checks, typed argument validation, streamed and ordinary responses, and saved test reports |
+| Model management | Search, download, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
+| LLM evaluation | Individually selected model tests, typed argument checks, streamed and ordinary responses, repair progress, saved reports, and deletion of older reports during a run |
 | Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
 | Web research | Web search and page retrieval, with optional Chromium scraping |
@@ -93,7 +93,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    how much chat history to send. The displayed limit is the model/backend
    capability Hearth knows about; runtime settings can impose a lower active
    context size.
-8. Run **Test tools** before using a model for coding or tool-driven workflows.
+8. On a Lemonade model card, use **Enable thinking** to choose whether Hearth chat requests
+   include that model's reasoning phase. The toggle is saved per model and overrides the
+   Lemonade default in Settings; Hearth passes it through both Lemonade's request control and
+   the chat-template option. Models whose runtime does not support thinking controls may ignore it.
+9. Run **Test tools** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
 |---|---|---|
@@ -143,9 +147,12 @@ affect response time.
 
 ## Test and compare models before coding
 
-On **Models**, select **Test tools** on a loadable chat model. You can queue installed
-chat models, follow the current check and elapsed time, cancel after the current
-request, reopen recent runs, and download JSON reports.
+Open **Model tests** and choose an installed chat model to run its test suite by
+itself. On **Models**, select **Test tools** on a loadable chat model to open this
+page and start that model's run. Follow the current check and elapsed time, cancel
+after the current request, reopen recent runs, download JSON reports, or delete
+older saved reports from the separate report-management selector, including while
+another model is being tested. The active report cannot be deleted.
 
 The local LLM test suite covers chat and streaming, tool selection, typed JSON
 arguments, parallel tool calls, file reads and edits, exact file content, error
@@ -276,10 +283,10 @@ configured separately. The first-time Hearth installer does not perform that set
 | Local AI chat | Live answer and reasoning updates, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
 | Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation | Downloads |
 | Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
-| Model evaluation | Tool and coding-workflow checks, queued runs, saved results, JSON reports, and repair-profile reset | Models → Test tools |
+| Model evaluation | Individually selected model checks, tool and coding workflows, saved JSON reports, deletion of older reports during a run, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Guided task creation, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable read-only sharing, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation with per-run model thinking control, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-and-browsing); Browse history |
@@ -303,9 +310,14 @@ validation and kernel/ABI artifacts.
 ## Local LLM testing and tool-calling evaluation
 
 Use Hearth to evaluate whether a local language model can follow the tool contracts
-needed by an AI coding agent. The **Models** page includes model tests with saved
-results, so you can inspect failures by model and backend rather than relying only
-on how convincing a chat response sounds.
+needed by an AI coding agent. On **Model tests**, choose an installed chat model to
+run it individually, monitor its progress, and inspect results by model and backend.
+From **Models**, **Test tools** opens the same page and starts that model's test run.
+Older completed reports can be deleted from the separate report selector even while
+another test is running; the active report remains protected. Reports are JSON files
+under `data/model-test-runs`, separate from the PostgreSQL tables. Back up this folder
+alongside PostgreSQL if you want to preserve test history, or delete individual
+reports from the UI.
 
 The evaluation workflows cover:
 
@@ -322,7 +334,7 @@ These checks evaluate responses against simulated tool results; they do not exec
 model-generated commands. They are a practical tool-use evaluation suite, not a
 general intelligence benchmark. A passing check establishes only the behavior tested
 for that model, backend configuration, and run. See
-[model tests in the Models page](#test-and-compare-models-before-coding) for details and
+[individual model tests](#test-and-compare-models-before-coding) for details and
 [saved failure reviews](reports/saved-failure-review-2026-10-19.md) for known limitations.
 
 ## Agentic AI and local coding agents
@@ -398,7 +410,8 @@ bash deploy/install-first-time.sh
 This single installer adds missing Ubuntu packages with sudo, prepares the Docker
 agent image and Python environment, installs requirements and Chromium, starts
 PostgreSQL in Docker Compose, loads the application DDL (including agent schedule
-tables), and generates private database credentials. On the first page
+tables), creates the private local model-test report directory, and generates
+private database credentials. On the first page
 visit, Hearth asks you to choose the administrator username and password, then
 stores the account in PostgreSQL. The username can be changed on the setup form.
 The installer enables the systemd user service and lingering, so Hearth and its recurring schedule worker
@@ -528,7 +541,8 @@ workspace. Hearth bundles the OpenCode worker in its agent container. The select
 local model requires at least 16K context; the model picker excludes configurations
 that cannot fit its tools and prompt.
 
-PostgreSQL stores assignment records, activity and message history, sharing rules,
+PostgreSQL stores assignment records, activity and message history, including tool
+completion timestamps, sharing rules,
 runtime metadata, and private project files. Existing file-backed agent tasks and
 workspaces are imported into the database on upgrade and their migrated host
 copies are removed. A running isolated container has a temporary working copy so
@@ -539,12 +553,13 @@ verification result, so the result panel updates when the task finishes. Interru
 tasks keep their latest response visible alongside the error and can be resumed.
 
 Agent assignments and project files are private to their owner by default,
-including from other administrators. An owner can explicitly share assignment
-information with registered users who have Agent access enabled. Shared users can
-view task details and activity and download the completed project, but cannot
-change instructions, answer prompts, control, or delete the task. The owner can
-revoke access at any time from the assignment's **Share assignment information**
-panel. Sharing does not grant direct access to the owner's private workspace.
+including from other administrators. An owner can explicitly share an assignment
+with registered users who have Agent access enabled. Shared users receive the same
+task controls as the owner: they can steer the agent, answer prompts, pause or
+continue work, change its model when it can be resumed, rerun completed work, and
+delete the assignment. Only the owner can change the share list. The owner can
+revoke access at any time from the assignment's **Share assignment access** panel.
+Sharing grants assignment access, including its task files and project download.
 
 Create an agent from **New agent** by giving the task a name and describing the result
 you want in everyday language. Optional model and control settings are grouped under
@@ -552,11 +567,17 @@ you want in everyday language. Optional model and control settings are grouped u
 open one to see its separate execution page. There, the **Activity** feed streams the
 agent progress, container tool inputs and outputs, and user-facing model responses
 from the active OpenCode session over a task-scoped live event stream, with correctly
-formatted timestamps and a live indicator while it is working. Private reasoning
-traces are not displayed. The stream is limited to tasks the signed-in user owns or
+formatted timestamps on agent messages and completed container tools, plus a live indicator while it is working. Private reasoning
+traces are not displayed. If a reconnect briefly returns no live messages, the page
+keeps showing the transcript already saved with the assignment. The execution page
+continues refreshing saved activity and conversation logs after live updates stop,
+so the latest output remains visible for interrupted and completed tasks. The stream is limited to tasks the signed-in user owns or
 has been explicitly allowed to view; the global chat metrics stream is not used for
-agent content. Answer questions, approve or reject permission
-requests, add instructions, and pause, continue, or stop work from the same page. Detailed activity
+agent content. Questions and permission controls appear on the assignment page
+when a response is needed. If the status says **Needs your help** but the request
+details have not loaded, use **Refresh request** in the notice to reload them.
+You can also add instructions and pause, continue, or stop work from the same
+page. Detailed activity
 The activity feed and full activity history always put the newest timestamp at the top,
 including when live events arrive out of order. When an assignment is
 paused, blocked, or interrupted, its owner can choose another configured model before
@@ -567,6 +588,9 @@ models reported through their loaded-instance list. A model change continues in 
 workspace checkpoint and carries forward the previous agent summary. Tasks persist when you close the browser, and Hearth
 reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
 restart can be resumed from the task page.
+Completed assignments show **Run again**. This queues a fresh execution of the same
+assignment from its latest saved project files and returns it to the queue while
+keeping its settings and activity history.
 After reviewing a running, waiting, paused, blocked, or interrupted assignment, its owner can use
 **Reset cycles** to set the work-cycle count back to zero without changing the saved
 workspace or model, then choose **Continue** when ready.
@@ -578,19 +602,23 @@ keeps polling for up to 30 minutes. A session that remains idle after that is ma
 **Needs review** once, rather than accumulating repeated worker errors; the selected
 model remains attached to the assignment when it is resumed.
 Provider transport resets such as `ECONNRESET` are retried automatically in the same
-assignment session; a failed assistant response is retried as a new work cycle.
+assignment session with backoff. A failed assistant response retries the same work
+cycle, so provider resets do not use up the task's cycle budget. Existing relay sockets
+are reused across concurrent checks rather than replaced.
+Hearth ignores completion markers when the response only describes future work or
+contains an implementation placeholder, and continues the assignment instead.
 
-Use **Recurring agent schedules** to save a task goal, reusable agent comment,
-model, and repeat interval from 5 minutes up to 365 days. Daily or weekly schedules
-can specify a local run time using the browser timezone shown in the form. Without a
-run time, the first run starts after one interval; timed schedules start at the next
-matching local time and keep that wall-clock time across daylight-saving changes.
-Later runs create separate assignments. Hearth skips a scheduled
-occurrence until that schedule's previous assignment is completed or stopped, so
-runs do not overlap unfinished work. You can pause, resume, or delete a schedule
-without deleting its past assignments. Schedules run only while the Hearth service
-is running, and disabling the owner's Agent access prevents scheduled runs from
-starting.
+Use **Recurring agent schedules** to select an existing assignment from the
+**Assignments** page and set its repeat interval, from 5 minutes to 365 days.
+Each occurrence reruns that same assignment with its saved goal, model, settings,
+and project files; schedules do not create a second agent definition. The first
+run starts after one interval. Daily or weekly schedules can specify a local run
+time using the browser timezone shown in the form, and keep that wall-clock time
+across daylight-saving changes. Hearth skips an occurrence if the selected
+assignment is still active or needs review, then checks it again at the next
+interval. You can pause, resume, or delete a schedule without deleting its
+assignment. Schedules run only while Hearth is running, and disabling the
+assignment owner's Agent access prevents scheduled runs from starting.
 
 Each assignment runs its own Docker container with OpenCode, Python 3, Java (JDK and
 Maven), Node.js, npm, git, and common build tools. The agent can install additional
@@ -599,7 +627,12 @@ package managers. Package installation and shell commands run inside that
 container. Docker applies memory, CPU, and process limits, drops unnecessary Linux
 capabilities, and disables privilege escalation. The container receives neither a
 host project bind mount nor the Docker socket. Hearth copies safe regular project
-files into and out of the account's private agent workspace; symlinks and common
+files into and out of a private per-task folder mounted at `/home/node/agents` in
+the container. OpenCode works in its `project` subfolder; its config and model relay
+socket also live under the mount, so agent project work and OpenCode files do not
+use `/tmp`. File tools are confined to the project folder and external directories
+are denied. The container's `/tmp` remains available to system processes for
+temporary runtime data. Symlinks and common
 generated dependency/cache directories are excluded from synchronization. Outbound
 networking supports package downloads and model calls, but Docker egress is not
 restricted to an allowlist.
@@ -610,8 +643,14 @@ can tune these in `.env` with `HEARTH_AGENT_MEMORY_LIMIT` (512m–256g),
 larger builds.
 
 At assignment time, choose to ask before each shell command or auto-accept shell
-commands. When a prompt appears, allow it once, always for the proposed command
-pattern, or reject it. Completed projects can be downloaded as a `.tar.gz` archive.
+commands. Auto mode allows actions without an explicit deny, including shell
+commands; file tools stay within the mounted project, and `.env` files, external
+directories, and subagents remain denied. Ask mode pauses shell commands for your
+decision. Completed projects can be downloaded as a `.tar.gz` archive.
+New assignments can also set a result label and output platform. For web-page
+results, Hearth previews a completed `index.html` (or `dist/index.html` or
+`build/index.html`) in a sandboxed frame; the same label and platform appear above
+the result text.
 Stopped assignments can be deleted; active assignments must first be stopped or
 paused.
 

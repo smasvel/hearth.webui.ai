@@ -63,7 +63,9 @@ class FirstTimeSetupTests(unittest.TestCase):
         from unittest.mock import patch
         env_path = self.root / '.env'
         env_path.write_text('DATABASE_URL=postgresql://test/db\nFLASK_SECRET_KEY=legacy-session-secret\n')
+        reports = self.root / 'data' / 'model-test-runs'
         with patch.dict('os.environ', {'FLASK_SECRET_KEY': 'legacy-session-secret'}, clear=False), \
+             patch('database.DATA_DIR', self.root / 'data'), \
              patch('database.init_schema') as init_schema, \
              patch('users_store.init_db') as init_users, \
              patch('users_store.count_users', return_value=2), \
@@ -80,6 +82,8 @@ class FirstTimeSetupTests(unittest.TestCase):
         save_secret.assert_called_once_with('legacy-session-secret')
         migrate_settings.assert_called_once_with()
         self.assertNotIn('FLASK_SECRET_KEY', env_path.read_text())
+        self.assertTrue(reports.is_dir())
+        self.assertEqual(reports.stat().st_mode & 0o777, 0o700)
 
     def test_canonical_ddl_creates_runtime_settings_and_app_secrets(self):
         schema = (Path(__file__).resolve().parents[1] / 'database_schema.sql').read_text()

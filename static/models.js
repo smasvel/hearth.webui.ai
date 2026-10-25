@@ -192,12 +192,47 @@
     if (!managedAutomatically && !externallyManaged && m.type !== "embeddings" && m.deletable !== false) {
       actions.appendChild(btn("Delete", "danger", () => deleteModel(m.id), isBusy));
     }
+    if (m.backend === "lemonade" && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
+      const thinkingLabel = document.createElement("label");
+      thinkingLabel.className = "model-thinking-toggle";
+      const thinkingInput = document.createElement("input");
+      thinkingInput.type = "checkbox";
+      thinkingInput.checked = m.enable_thinking !== false;
+      thinkingInput.disabled = isBusy || window.hearthModelTests?.isRunning();
+      thinkingInput.setAttribute("aria-label", `Enable thinking for ${m.id}`);
+      thinkingInput.addEventListener("change", () => setModelThinking(m, thinkingInput));
+      thinkingLabel.append(thinkingInput, document.createTextNode(" Enable thinking"));
+      actions.appendChild(thinkingLabel);
+    }
     if (!managedAutomatically && !unavailable && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
-      actions.appendChild(btn("Test tools", "", () => window.hearthModelTests.start([m]), isBusy));
-      actions.appendChild(btn("Reset repair", "", () => window.hearthModelTests.reset(m), isBusy));
+      actions.appendChild(btn("Test tools", "", () => {
+        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}`);
+      }, isBusy));
+      actions.appendChild(btn("Reset repair", "", () => {
+        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=reset`);
+      }, isBusy));
     }
     return c;
   }
+  async function setModelThinking(model, input) {
+    input.disabled = true;
+    try {
+      const res = await fetch("/api/models/thinking", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model.id, enabled: input.checked }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "could not update model thinking");
+      model.enable_thinking = data.enable_thinking;
+      toast(`${data.enable_thinking ? "Enabled" : "Disabled"} thinking for ${model.id}`);
+    } catch (err) {
+      input.checked = model.enable_thinking !== false;
+      toast(`Could not update thinking for ${model.id}: ${err.message}`, true);
+    } finally {
+      input.disabled = false;
+    }
+  }
+
   function btn(label, cls, onClick, disabled) {
     const b = document.createElement("button");
     b.type = "button";
@@ -381,6 +416,4 @@
   el("refresh").addEventListener("click", fetchModels);
   searchEl.addEventListener("input", renderGroups);
   fetchModels();
-  document.addEventListener("model-tests-state", () => renderGroups());
-  document.addEventListener("model-tests-finished", () => fetchModels());
 })();

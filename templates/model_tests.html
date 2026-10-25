@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
+  <script src="{{ asset('csrf.js') }}"></script>
+  <title>Model tests — Hearth</title>
+  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+</head>
+<body class="models-page model-tests-page">
+  <div class="app"><main class="chat">
+    <header class="chat-header">
+      <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
+      <nav class="console-tabs">
+        {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
+        <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+        <a class="console-tab active" href="{{ url_for('model_tests_page') }}">Model tests</a>
+        <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+        <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+        <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+        <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+        <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+        <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+      </nav>
+      <div class="chat-header-actions" style="margin-left:auto;">
+        <span class="hint">{{ username }}</span>
+        <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button type="submit" class="logout-button hint">Sign out</button>
+        </form>
+      </div>
+    </header>
+    <div class="console-body">
+      <div class="console-head"><h1>Model tests &amp; repairs</h1>
+        <p class="hint">Run compatibility checks, follow repair progress, and review saved results here. Model load and lifecycle controls remain on the Models page.</p>
+      </div>
+      <section class="console-card model-test-panel" id="model-tests" aria-labelledby="model-tests-heading">
+        <h2 id="model-tests-heading">Test progress and results</h2>
+        <p class="hint">Run chat, streaming, tool choices, typed arguments, file-tool contracts,
+          long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures,
+          large-code input, and context-limit checks. Question answers and tool results are simulated.
+          Dependent steps stop if an earlier step fails. Models are tested sequentially; local
+          loads unload other local chat models and leave the final local model loaded.
+          Returned tools are inspected; no generated shell commands or project changes are executed.</p>
+        <div class="model-test-controls">
+          <label><input id="tests-auto-repair" type="checkbox" checked /> Automatically try verified compatibility repairs</label>
+          <label>Model to test <select id="tests-model" class="panel-input" aria-label="Model to test"><option value="">Loading installed models…</option></select></label>
+          <button id="tests-run" type="button" class="panel-btn">Run tests for selected model</button>
+          <button id="tests-cancel" type="button" class="panel-btn" disabled>Cancel after current request</button>
+          <label>Reports <select id="tests-history" class="panel-input" aria-label="Previous test reports"></select></label>
+          <a id="tests-download" class="panel-btn" hidden>Download report</a>
+          <label>Saved reports to delete <select id="tests-delete-history" class="panel-input" aria-label="Saved reports to delete"></select></label>
+          <button id="tests-delete" type="button" class="panel-btn" disabled>Delete selected report</button>
+        </div>
+        <p id="tests-delete-status" class="hint" role="status" aria-live="polite"></p>
+        <p class="hint">Automatic repair applies a reversible per-model tool-instruction profile,
+          reruns failed checks, and keeps it only if results improve. It cannot retrain a model
+          or repair arbitrary application code. Repairs affect Hearth requests and local
+          compatibility proxies; clients connecting directly to remote servers need their own
+          configuration. Reports keep the latest 30 runs. Use Reset repair here from a model card to undo it.</p>
+        <p id="tests-status" role="status" aria-live="polite">Choose a model to run its tests. Test tools on a model card opens this page with that model selected.</p>
+        <div id="tests-repairs" class="hint"></div>
+        <div class="model-test-results" role="region" aria-label="Model test results" tabindex="0"><table id="tests-table" aria-label="Model test results" hidden>
+          <thead><tr><th scope="col">Model</th><th scope="col">Check</th><th scope="col">Mode</th><th scope="col">Attempt</th><th scope="col">Result</th><th scope="col">Seconds</th><th scope="col">Details</th></tr></thead>
+          <tbody id="tests-results"></tbody>
+        </table></div>
+      </section>
+    </div>
+  </main></div>
+  <div id="toast" class="users-toast" style="display:none;"></div>
+  <script src="{{ asset('model_tests.js') }}"></script>
+</body>
+</html>

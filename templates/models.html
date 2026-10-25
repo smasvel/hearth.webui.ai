@@ -16,6 +16,7 @@
         <nav class="console-tabs">
           {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
           <a class="console-tab active" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>
           <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
           <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
@@ -64,35 +65,6 @@
         <p class="hint model-resource-hint">Resource warnings identify recorded incidents on this machine.
           Expand a warning to see the measurements, conditions, and log dates. Unmarked models have no reviewed warning.</p>
 
-        <section class="console-card model-test-panel" id="model-tests" aria-labelledby="model-tests-heading">
-          <h2 id="model-tests-heading">Model tests &amp; automatic repair</h2>
-          <p class="hint">Run chat, streaming, tool choices, typed arguments, file-tool contracts,
-            long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures,
-            large-code input, and context-limit checks. Question answers and tool results are simulated.
-            Dependent steps stop if an earlier step fails. Models are tested sequentially; local
-            loads unload other local chat models and leave the final local model loaded.
-            Returned tools are inspected; no generated shell commands or
-            changes to your projects are executed.</p>
-          <div class="model-test-controls">
-            <label><input id="tests-auto-repair" type="checkbox" checked /> Automatically try verified compatibility repairs</label>
-            <button id="tests-all" type="button" class="panel-btn">Test all chat models</button>
-            <button id="tests-cancel" type="button" class="panel-btn" disabled>Cancel after current request</button>
-            <label>Reports <select id="tests-history" class="panel-input" aria-label="Previous test reports"></select></label>
-            <a id="tests-download" class="panel-btn" hidden>Download report</a>
-          </div>
-          <p class="hint">Automatic repair applies a reversible per-model tool-instruction profile,
-            reruns failed checks, and keeps it only if results improve. It cannot retrain a model
-            or repair arbitrary application code. Repairs affect Hearth requests and local
-            compatibility proxies; clients connecting directly to remote servers need their own
-            configuration. Reports keep the latest 30 runs. Use Reset repair on a model card to undo it.</p>
-          <p id="tests-status" role="status" aria-live="polite">Choose Test tools on a model card, or test all chat models.</p>
-          <div id="tests-repairs" class="hint"></div>
-          <div class="model-test-results" role="region" aria-label="Model test results" tabindex="0"><table id="tests-table" aria-label="Model test results" hidden>
-            <thead><tr><th scope="col">Model</th><th scope="col">Check</th><th scope="col">Mode</th><th scope="col">Attempt</th><th scope="col">Result</th><th scope="col">Seconds</th><th scope="col">Details</th></tr></thead>
-            <tbody id="tests-results"></tbody>
-          </table></div>
-        </section>
-
         <div id="model-groups" class="model-groups">
           <p class="hint">Loading models…</p>
         </div>
@@ -101,7 +73,6 @@
   </div>
 
   <div id="toast" class="users-toast" style="display:none;"></div>
-  <script src="{{ asset('model_tests.js') }}"></script>
   <script src="{{ asset('models.js') }}"></script>
 </body>
 </html>

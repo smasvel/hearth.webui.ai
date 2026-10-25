@@ -1176,6 +1176,7 @@ def chat_stream(
     max_tokens: int | None = None,
     frequency_penalty: float | None = 0.3,
     chat_template_kwargs: dict | None = None,
+    enable_thinking: bool | None = None,
 ):
     """Yield raw SSE 'data: ...' lines — identical contract to
     lmstudio_client.chat_stream(), since Lemonade's /v1/chat/completions is
@@ -1198,6 +1199,8 @@ def chat_stream(
         payload["frequency_penalty"] = frequency_penalty
     if chat_template_kwargs:
         payload["chat_template_kwargs"] = chat_template_kwargs
+    if enable_thinking is not None:
+        payload["enable_thinking"] = enable_thinking
     try:
         with requests.post(
             f"{base_url()}/v1/chat/completions",

@@ -19,7 +19,8 @@ class Registry:
         self.lock = threading.RLock()
         self.jobs = {}
         self.cancels = {}
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.directory, 0o700)
         paths = sorted(self.directory.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
         for old in paths[30:]:
             old.unlink(missing_ok=True)
@@ -65,6 +66,19 @@ class Registry:
                 job['status'] = 'cancelling'
                 self.save(job)
             return copy.deepcopy(job)
+
+    def delete(self, job_id):
+        """Delete one saved run; active runs must finish or be cancelled first."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job['status'] in ACTIVE:
+                raise ValueError('Cancel the active run and wait for it to finish before deleting its report.')
+            self.jobs.pop(job_id)
+            self.cancels.pop(job_id, None)
+            (self.directory / (job_id + '.json')).unlink(missing_ok=True)
+            return True
 
     def start(self, targets, repair, load, connection, context, *, background=True):
         with self.lock:

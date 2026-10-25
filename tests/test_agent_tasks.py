@@ -53,6 +53,16 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.manager.get(key)['cycles'],2)
         self.assertEqual(self.manager.get(key)['status'],'running')
 
+    def test_thinking_choice_is_saved_and_defaults_on(self):
+        enabled = self.manager.create(self.values, self.owner)
+        disabled = self.manager.create({**self.values, 'enable_thinking': False}, self.owner)
+        self.assertTrue(enabled['enable_thinking'])
+        self.assertFalse(disabled['enable_thinking'])
+
+    def test_thinking_choice_must_be_boolean(self):
+        with self.assertRaisesRegex(ValueError, 'model thinking'):
+            self.manager.create({**self.values, 'enable_thinking': 'false'}, self.owner)
+
     def test_restart_reconnects_active_session_without_duplicate_prompt(self):
         key = self.create();self.snap['active']=True
         restored = Manager(self.manager.directory,self.client)
@@ -106,7 +116,7 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(current['transport_retries'],4)
         self.assertIn('ECONNRESET',current['error'])
 
-    def test_provider_error_result_is_retried_as_a_new_cycle(self):
+    def test_provider_error_result_retries_same_cycle_with_backoff(self):
         key=self.create()
         self.snap['messages']=[assistant('a_transport','',error={
             'type':'provider.transport','message':'ECONNRESET: socket closed'})]
@@ -115,7 +125,15 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(current['status'],'running')
         self.assertIsNotNone(current['pending_prompt'])
         self.assertIn('retry the current assignment',current['pending_prompt']['text'].lower())
-        self.assertIn('retrying the assignment automatically',current['activity'][-1]['text'].lower())
+        self.assertEqual(current['cycles'],1)
+        self.assertTrue(current['retry_current_cycle'])
+        self.assertGreater(current['next_retry'],time.time())
+        self.manager.jobs[key]['next_retry']=0
+        self.manager.tick()
+        retried=self.manager.get(key)
+        self.assertEqual(retried['cycles'],1)
+        self.assertFalse(retried['retry_current_cycle'])
+        self.assertIn('retried after a provider connection reset',retried['activity'][-1]['text'].lower())
 
     def test_questions_and_permissions_wait_for_real_answer(self):
         key=self.create();self.snap['active']=True
@@ -160,6 +178,54 @@ class AgentTaskTests(unittest.TestCase):
         key=self.create();self.finish_turn(assistant('a1','Evidence\n'+MARKER))
         self.assertEqual(self.manager.get(key)['status'],'completed')
         self.assertIn('Agent-reported',self.manager.get(key)['completion'])
+
+    def test_completed_assignment_can_rerun_from_saved_task_state(self):
+        key=self.create(enable_thinking=False)
+        self.finish_turn(assistant('a1','Evidence\n'+MARKER))
+        completed=self.manager.get(key)
+        rerun=self.manager.rerun(key)
+        self.assertEqual(rerun['status'],'queued')
+        self.assertEqual(rerun['cycles'],0)
+        self.assertEqual(rerun['run_count'],2)
+        self.assertFalse(rerun['enable_thinking'])
+        self.assertIsNone(rerun['completion'])
+        self.assertTrue(any('Agent-reported completion' in item['text'] for item in rerun['activity']))
+        self.assertIn('Rerun queued',rerun['activity'][-1]['text'])
+        self.manager.tick()
+        self.assertEqual(self.client.create.call_count,2)
+        self.assertEqual(self.client.prompt.call_count,2)
+        self.assertIn(self.values['goal'],self.client.prompt.call_args.args[1])
+        self.assertEqual(self.manager.get(key)['status'],'running')
+
+    def test_only_completed_assignments_can_rerun(self):
+        key=self.create()
+        with self.assertRaisesRegex(ValueError,'Only completed assignments'):
+            self.manager.rerun(key)
+
+    def test_waiting_input_task_does_not_starve_a_queued_rerun(self):
+        waiting=self.create()
+        self.manager.jobs[waiting].update(status='waiting_input')
+        self.manager.save(self.manager.jobs[waiting])
+        completed=self.manager.create(self.values,self.owner)
+        self.manager.jobs[completed['id']].update(status='completed',completion='Done')
+        self.manager.save(self.manager.jobs[completed['id']])
+        self.manager.rerun(completed['id'])
+        self.manager.tick()
+        self.assertEqual(self.manager.get(waiting)['status'],'waiting_input')
+        self.assertEqual(self.manager.get(completed['id'])['status'],'running')
+        self.assertEqual(self.client.create.call_count,2)
+
+    def test_completion_marker_with_future_plan_or_placeholder_does_not_finish(self):
+        key=self.create()
+        self.finish_turn(assistant('a1','I will inspect the files and implement the project.\n'
+                                   '[Complete full runnable solution]\n'+MARKER))
+        current=self.manager.get(key)
+        self.assertEqual(current['status'],'running')
+        self.assertIsNone(current.get('completion'))
+        self.assertEqual(self.client.prompt.call_count,2)
+        self.assertIn('continue the assigned goal',self.client.prompt.call_args.args[1].lower())
+        self.assertTrue(any('ignored a completion marker' in item['text'].lower()
+                            for item in current['activity']))
 
     def test_pause_cannot_falsely_acknowledge_failed_interrupt(self):
         key=self.create();self.client.interrupt.side_effect=RuntimeError('offline')
@@ -387,6 +453,26 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(response.json['summary'], job['summary'])
         self.assertEqual(response.json['completion'], job['completion'])
         self.assertEqual(response.json['verification'], job['verification'])
+
+    def test_live_agent_snapshot_falls_back_to_saved_messages_when_live_is_empty(self):
+        self.login()
+        saved_messages = [{
+            'id': 'assistant-saved', 'type': 'assistant',
+            'content': [{'type': 'text', 'text': 'The saved agent response.'}],
+        }]
+        job = {
+            'id': 'task-saved-messages', 'owner': 'admin', 'shared_with': [],
+            'session_id': 'session-saved-messages', 'status': 'waiting_input',
+            'summary': '', 'activity': [], 'messages': saved_messages,
+        }
+        self.manager.get.return_value = job
+        self.manager.client.live_messages.return_value = []
+
+        response = self.client.get('/api/agent-tasks/task-saved-messages/live-messages')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['messages'], saved_messages)
+        self.assertEqual(response.json['source'], 'saved')
 
     def test_start_is_blocked_during_model_validation(self):
         self.login()

@@ -1,4 +1,6 @@
 
+-- Model-test reports are private JSON files in data/model-test-runs, not SQL rows;
+-- first-time setup creates that directory with owner-only access.
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

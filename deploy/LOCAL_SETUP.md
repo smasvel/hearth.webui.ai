@@ -32,6 +32,10 @@ Hearth and its three proxies use PostgreSQL 18 in Docker Compose, bound to
 `127.0.0.1:55432`. `.env` supplies `DATABASE_URL`; `.env.postgres` holds the Compose
 credentials.
 
+Model-test history is kept separately as private JSON files in
+`data/model-test-runs`; it is not part of the PostgreSQL DDL. Include that
+directory in backups when preserving test reports matters.
+
 ```bash
 docker compose --env-file .env.postgres ps
 .venv/bin/python tools/run_tests.py --browser
