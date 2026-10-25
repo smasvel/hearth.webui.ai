@@ -52,6 +52,7 @@ python3 -m venv .venv
 if [[ $install_browser -eq 1 ]]; then
   .venv/bin/python -m playwright install chromium
 fi
-# The Python setup step applies the canonical SQL schema, migrates any legacy backend
-# settings, and persists the encrypted application session key before enabling service.
+# The Python setup step applies the canonical SQL schema, creates private local
+# model-test report storage, migrates legacy backend settings, and saves the encrypted
+# application session key before enabling service.
 .venv/bin/python tools/first_time_setup.py "${setup_args[@]}"

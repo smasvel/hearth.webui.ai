@@ -32,6 +32,18 @@ def fingerprint(message):
     return hashlib.sha256(json.dumps([text_of(message), parts], sort_keys=True).encode()).hexdigest()
 
 
+def is_premature_completion(message):
+    """Reject a completion marker attached to a plan, placeholder, or future intent."""
+    text = text_of(message).lower()
+    unfinished_phrases = (
+        'i will resume by', 'i will inspect', 'i will list the files',
+        'first, i will', 'first i will', 'next, i will', 'next i will',
+        'i will proceed to write', 'will proceed to implement',
+        '[complete full runnable solution', '[todo', '[placeholder',
+    )
+    return any(phrase in text for phrase in unfinished_phrases)
+
+
 def is_provider_transport_error(error):
     """Recognize transient provider socket failures from exceptions or OpenCode payloads."""
     if isinstance(error, dict):
@@ -48,6 +60,7 @@ class Manager:
         self.prepare_model = prepare_model or (lambda job: None)
         self.lock = threading.RLock()
         self.dispatch_lock = threading.RLock()
+        self.processing: set[str] = set()
         self.jobs = {job['id']: job for job in agent_store.list_tasks()}
         self.thread = None
         self.lease = None
@@ -89,8 +102,21 @@ class Manager:
                 logging.error('Legacy shared agent workspace was left unmigrated because its owner cannot be determined safely.')
         self.jobs = {job['id']: job for job in agent_store.list_tasks()}
         for job in self.jobs.values():
+            changed = False
             if job.get('project') != 'PostgreSQL private workspace':
                 job['project'] = 'PostgreSQL private workspace'
+                changed = True
+            for message in job.get('messages', []):
+                raw_time = message.get('time')
+                if isinstance(raw_time, dict):
+                    fallback_time = raw_time.get('completed') or raw_time.get('streamed') or raw_time.get('created')
+                else:
+                    fallback_time = raw_time
+                for part in message.get('content', []):
+                    if part.get('type') == 'tool' and part.get('time') is None and fallback_time is not None:
+                        part['time'] = fallback_time
+                        changed = True
+            if changed:
                 agent_store.save_task(job)
         for project in legacy_projects:
             try: shutil.rmtree(project)
@@ -204,9 +230,20 @@ class Manager:
         shell_mode = values.get('shell_mode', 'auto' if values.get('auto_commands') is True else 'ask')
         if shell_mode not in ('ask', 'auto'):
             raise ValueError('Choose whether shell commands should ask or run automatically.')
+        result_label = str(values.get('result_label', '')).strip()
+        result_platform = str(values.get('result_platform', 'web')).strip().lower()
+        if len(result_label) > 120:
+            raise ValueError('Result label must be at most 120 characters.')
+        if result_platform not in ('web', 'document', 'general'):
+            raise ValueError('Choose a supported result platform.')
+        enable_thinking = values.get('enable_thinking', True)
+        if type(enable_thinking) is not bool:
+            raise ValueError('Choose whether model thinking is enabled.')
         return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
                 'verification_timeout': timeout, 'criteria': criteria,
-                'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode}
+                'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode,
+                'enable_thinking': enable_thinking, 'result_label': result_label,
+                'result_platform': result_platform}
 
     def create(self, values, owner):
         assignment = self._normalize_assignment(values)
@@ -216,7 +253,7 @@ class Manager:
                 raise ValueError('The agent queue already has 20 active assignments.')
             job = {'id': uuid.uuid4().hex, 'owner': owner, **assignment,
                 'project': 'PostgreSQL private workspace', 'auto_commands': assignment['shell_mode'] == 'auto',
-                'cycles': 0, 'started': False, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
+                'cycles': 0, 'run_count': 1, 'started': False, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
                 'pending_prompt': None, 'handled_message': None, 'errors': 0, 'stalls': 0}
             self.note(job, 'Assignment queued. Project files are stored in this account’s private PostgreSQL workspace.')
@@ -225,6 +262,12 @@ class Manager:
             return copy.deepcopy(job)
 
     def create_schedule(self, values, owner):
+        task_id = str(values.get('task_id', '')).strip()
+        task = self.get(task_id) if task_id else None
+        if not task or task.get('owner') != owner:
+            raise ValueError('Choose an existing assignment that you own.')
+        if task.get('status') not in ACTIVE | {'completed'}:
+            raise ValueError('Choose an active or completed assignment.')
         interval = values.get('interval_seconds')
         if type(interval) is not int or not 300 <= interval <= 31536000:
             raise ValueError('Schedule interval must be between 5 minutes and 365 days.')
@@ -255,12 +298,9 @@ class Manager:
             first_run = next_local.timestamp()
         else:
             first_run = time.time() + interval
-        comment = str(values.get('comment', '')).strip()
-        if len(comment) > 10000:
-            raise ValueError('Schedule comments can be at most 10,000 characters.')
-        assignment = self._normalize_assignment(values)
-        schedule = {'id': uuid.uuid4().hex, 'owner': owner, 'assignment': assignment,
-                    'comment': comment, 'interval_seconds': interval, 'interval_value': value,
+        schedule = {'id': uuid.uuid4().hex, 'owner': owner,
+                    'task_id': task_id, 'task_title': task['title'],
+                    'interval_seconds': interval, 'interval_value': value,
                     'interval_unit': unit, 'run_time': run_time or None,
                     'timezone': timezone_name, 'enabled': True,
                     'created_at': time.time(), 'next_run_at': first_run,
@@ -328,17 +368,36 @@ class Manager:
             agent_store.save_schedule(schedule)
             return
         try:
-            assignment = dict(schedule['assignment'])
-            if schedule.get('comment'):
-                assignment['goal'] += '\n\nScheduled agent comment:\n'+schedule['comment']
-            assignment['goal'] += '\n\nScheduled occurrence (UTC): '+datetime.fromtimestamp(scheduled_at, timezone.utc).isoformat()
-            job = self.create(assignment, schedule['owner'])
-            job['schedule_id'] = schedule['id']
-            job['scheduled_run_at'] = scheduled_at
-            with self.lock:
-                self.jobs[job['id']].update(schedule_id=schedule['id'], scheduled_run_at=scheduled_at)
-                self.save(self.jobs[job['id']])
-            schedule['last_task_id'] = job['id']
+            selected_task_id = (schedule.get('task_id') or schedule.get('project_task_id')
+                                or schedule.get('last_task_id'))
+            if selected_task_id:
+                job = self.get(selected_task_id)
+                if not job or job.get('owner') != schedule['owner']:
+                    schedule['enabled'] = False
+                    schedule['last_error'] = 'The scheduled assignment was deleted or is no longer owned by this account.'
+                    agent_store.save_schedule(schedule)
+                    return
+                if job.get('status') != 'completed':
+                    schedule['last_error'] = f"Run skipped because the selected assignment is {job.get('status', 'unavailable')}. It will be checked again at the next interval."
+                    agent_store.save_schedule(schedule)
+                    return
+                job = self.rerun(job['id'], schedule_id=schedule['id'], scheduled_at=scheduled_at)
+                schedule['task_id'] = job['id']
+                schedule['task_title'] = job['title']
+                schedule['last_task_id'] = job['id']
+            else:
+                # Keep schedules created by older Hearth versions working.
+                assignment = dict(schedule['assignment'])
+                if schedule.get('comment'):
+                    assignment['goal'] += '\n\nScheduled agent comment:\n'+schedule['comment']
+                assignment['goal'] += '\n\nScheduled occurrence (UTC): '+datetime.fromtimestamp(scheduled_at, timezone.utc).isoformat()
+                job = self.create(assignment, schedule['owner'])
+                job['schedule_id'] = schedule['id']
+                job['scheduled_run_at'] = scheduled_at
+                with self.lock:
+                    self.jobs[job['id']].update(schedule_id=schedule['id'], scheduled_run_at=scheduled_at)
+                    self.save(self.jobs[job['id']])
+                schedule['last_task_id'] = job['id']
             schedule['last_run_at'] = now
             schedule['last_error'] = None
         except Exception as exc:
@@ -419,8 +478,48 @@ class Manager:
                 job.update(session_id=None, resume_session=False, verification_id=None,
                            verification_admitted=False, model_prepared=False)
                 job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex,
-                    'text': 'Continue the existing assignment from the current project files in /workspace. Preserve completed work, inspect the current project state, and continue any unfinished work. Previous agent summary:\n'+str(job.get('summary', ''))}
+                    'text': 'Continue the existing assignment from the current project files in /home/node/agents/project. Preserve completed work, inspect the current project state, and continue any unfinished work. Previous agent summary:\n'+str(job.get('summary', ''))}
                 self.note(job, f"Model changed from {old_model.get('providerID')}/{old_model.get('id')} to {model['providerID']}/{model['id']}; continuation will use the latest workspace checkpoint.")
+                self.save(job)
+                return copy.deepcopy(job)
+
+    def rerun(self, key, *, schedule_id=None, scheduled_at=None):
+        """Queue another run of a completed assignment from its saved workspace."""
+        with self.dispatch_lock:
+            with self.lock:
+                job = self.jobs[key]
+                if job.get('status') != 'completed':
+                    raise ValueError('Only completed assignments can be run again.')
+                if key in self.processing:
+                    raise ValueError('The completed assignment is still saving its project. Try again shortly.')
+                if sum(item.get('status') in ACTIVE for item in self.jobs.values()) >= 20:
+                    raise ValueError('The agent queue already has 20 active assignments.')
+                snapshot = copy.deepcopy(job)
+            cleanup = getattr(type(self.client), 'cleanup', None)
+            if cleanup:
+                cleanup(self.client, snapshot)
+            with self.lock:
+                job = self.jobs[key]
+                if job.get('status') != 'completed':
+                    raise ValueError('Only completed assignments can be run again.')
+                job.update(
+                    status='queued', cycles=0, started=False, errors=0, stalls=0,
+                    idle_polls=0, next_retry=0, awaiting_since=0, error=None,
+                    completion=None, finished_at=None, summary='', fingerprint=None,
+                    handled_message=None, session_id=None, resume_session=False,
+                    model_prepared=False, verification=None, verification_id=None,
+                    verification_started=0, verification_admitted=False,
+                    pending_prompt=None, steering=[],
+                    forms=[], permissions=[], messages=[], transport_retries=0,
+                    retry_current_cycle=False,
+                )
+                if schedule_id:
+                    job.update(schedule_id=schedule_id, scheduled_run_at=scheduled_at)
+                else:
+                    job.pop('scheduled_run_at', None)
+                job['run_count'] = max(1, int(job.get('run_count', 1))) + 1
+                self.note(job, 'Scheduled run queued from the saved assignment.' if schedule_id else
+                          'Rerun queued from the completed assignment using its latest saved project files.')
                 self.save(job)
                 return copy.deepcopy(job)
 
@@ -481,7 +580,8 @@ class Manager:
             with self.lock:
                 if job['status'] not in WORKING:
                     return
-                if job['cycles'] >= job['max_cycles']:
+                retrying_cycle = bool(job.get('retry_current_cycle'))
+                if job['cycles'] >= job['max_cycles'] and not retrying_cycle:
                     job.update(status='blocked', error='Cycle budget reached. Resume to grant 50 more cycles.')
                     self.save(job)
                     return
@@ -495,10 +595,12 @@ class Manager:
                 pending = copy.deepcopy(job['pending_prompt'])
             self.client.prompt(job['session_id'], pending['text'], pending['id'])
             with self.lock:
-                job.update(pending_prompt=None, started=True, status='running', errors=0, transport_retries=0,
-                           error=None, next_retry=0, idle_polls=0,
-                           awaiting_since=time.time(), cycles=job['cycles']+1)
-                self.note(job, f'Agent work cycle {job["cycles"]} dispatched.')
+                job.update(pending_prompt=None, started=True, status='running', errors=0,
+                           transport_retries=job.get('transport_retries', 0) if retrying_cycle else 0,
+                           retry_current_cycle=False, error=None, next_retry=0, idle_polls=0,
+                           awaiting_since=time.time(), cycles=job['cycles'] if retrying_cycle else job['cycles']+1)
+                self.note(job, (f'Agent work cycle {job["cycles"]} retried after a provider connection reset.'
+                                if retrying_cycle else f'Agent work cycle {job["cycles"]} dispatched.'))
                 self.save(job)
 
     def _verify(self, job):
@@ -543,9 +645,14 @@ class Manager:
     def tick(self):
         self._run_due_schedule()
         with self.lock:
-            job = next((j for j in sorted(self.jobs.values(), key=lambda x: (x['status'] == 'queued', x['created_at'])) if j['status'] in ACTIVE), None)
+            # A task waiting for user input consumes no worker lane. Leaving it at
+            # the head of this single-lane supervisor would starve every queued task
+            # (including an explicit rerun) until the user answered it.
+            job = next((j for j in sorted(self.jobs.values(), key=lambda x: (x['status'] == 'queued', x['created_at']))
+                        if j['status'] in ACTIVE and j['status'] != 'waiting_input'), None)
             if not job or time.time() < job.get('next_retry', 0):
                 return
+            self.processing.add(job['id'])
         try:
             if job['status'] in ('pausing', 'stopping'):
                 with self.dispatch_lock:
@@ -578,7 +685,7 @@ class Manager:
                                 checkpoint = job.get('summary', '')
                                 job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex,
                                     'text': 'This assignment resumed in a fresh container because its previous container was unavailable. '
-                                    'Continue the existing goal from the current project files in /workspace. Preserve completed work, inspect '
+                                    'Continue the existing goal from the current project files in /home/node/agents/project. Preserve completed work, inspect '
                                     'the current project state, and continue any unfinished work. Previous agent summary:\n'+checkpoint}
                                 self.note(job, 'A new container session was created from the latest synchronized project checkpoint.')
                             self.save(job)
@@ -616,12 +723,11 @@ class Manager:
             with self.lock:
                 if job['status'] not in WORKING:
                     return
-                if is_provider_transport_error(job.get('error', '')):
-                    job.update(error=None, transport_retries=0)
                 # Bound the UI/persistence copy, while the complete history stays in OpenCode.
                 recent = []
                 for message in reversed(snap['messages'][:50]):
                     parts = []
+                    raw_time = message.get('time') or message.get('createdAt')
                     for part in message.get('content', []):
                         if part.get('type') == 'text':
                             parts.append({'type': 'text', 'text': part.get('text', '')[-8000:]})
@@ -632,10 +738,12 @@ class Manager:
                                                if isinstance(item, dict) and item.get('type') == 'text')
                             parts.append({'type': 'tool', 'name': part.get('name'),
                                 'status': state.get('status'),
+                                'time': ((raw_time.get('completed') or raw_time.get('streamed') or raw_time.get('created'))
+                                         if isinstance(raw_time, dict) else raw_time),
                                 'input': json.dumps(state.get('input') or {})[:2000],
                                 'output': output[-8000:]})
                     recent.append({'id': message['id'], 'type': message.get('type'),
-                                   'time': message.get('time') or message.get('createdAt'), 'content': parts})
+                                   'time': raw_time, 'content': parts})
                 job.update(messages=recent, forms=snap['forms'], permissions=snap['permissions'])
                 if snap['forms'] or snap['permissions']:
                     job['status'] = 'waiting_input'
@@ -672,16 +780,21 @@ class Manager:
                             return
                         if latest.get('error'):
                             if is_provider_transport_error(latest['error']):
+                                retries = job.get('transport_retries', 0) + 1
                                 job['handled_message'] = latest['id']
                                 job['pending_prompt'] = {
                                     'id': 'msg_'+uuid.uuid4().hex,
                                     'text': 'The previous model response failed because the provider connection closed unexpectedly. '
                                     'Retry the current assignment from the existing workspace, preserve completed work, and continue the goal.'}
-                                job.update(awaiting_since=0, errors=0, error=None)
-                                self.note(job, 'Provider connection closed during the response; retrying the assignment automatically.')
+                                job.update(awaiting_since=0, errors=0, error=str(latest['error'])[:1200],
+                                           transport_retries=retries, retry_current_cycle=True,
+                                           next_retry=time.time()+min(60, 5*2**min(retries-1, 4)))
+                                if retries == 1 or retries % 5 == 0:
+                                    self.note(job, 'Provider connection closed during the response; retrying the same work cycle automatically.')
                                 self.save(job)
                                 return
                             raise RuntimeError(str(latest['error']))
+                        job.update(error=None, transport_retries=0)
                         job['handled_message'] = latest['id']
                         fp = fingerprint(latest)
                         job['stalls'] = job['stalls']+1 if fp == job.get('fingerprint') else 0
@@ -689,7 +802,10 @@ class Manager:
                         text = text_of(latest).strip()
                         job['summary'] = text[-8000:]
                         if latest.get('finish') == 'stop' and text.splitlines() and text.splitlines()[-1].strip() == MARKER:
-                            if job['verification_command']:
+                            if is_premature_completion(latest):
+                                self.note(job, 'Ignored a completion marker attached to a plan or placeholder; continuing the assignment.')
+                                self.save(job)
+                            elif job['verification_command']:
                                 job['status'] = 'verifying'
                             else:
                                 job.update(status='completed', completion='Agent-reported completion; no independent command was supplied.', finished_at=time.time())
@@ -707,7 +823,9 @@ class Manager:
             elif initial:
                 workspace_directory = getattr(type(self.client), 'workspace_directory', None)
                 project_directory = workspace_directory(self.client, job) if workspace_directory else job['project']
-                self._send(job, SYSTEM+'\n\nAssigned agent: '+job['assignee']+'\nProject directory: '+project_directory+'\nVerification command: '+(job['verification_command'] or 'Choose appropriate verification and report evidence.'))
+                scheduled_note = ('\nScheduled occurrence (UTC): '+datetime.fromtimestamp(
+                    job['scheduled_run_at'], timezone.utc).isoformat()) if job.get('scheduled_run_at') else ''
+                self._send(job, SYSTEM+'\n\nAssigned agent: '+job['assignee']+'\nProject directory: '+project_directory+'\nVerification command: '+(job['verification_command'] or 'Choose appropriate verification and report evidence.')+scheduled_note)
             else:
                 self._send(job, 'Continue the assigned goal. Inspect the current state and remaining todos, implement the next step, and verify. '
                     'Do not repeat completed work or answered questions. If a concrete blocker needs user input, ask through the question tool. '
@@ -749,18 +867,22 @@ class Manager:
         finally:
             if job is not None:
                 try:
-                    sync = getattr(type(self.client), 'sync', None)
-                    if sync:
-                        sync(self.client, job)
-                except Exception as exc:
+                    try:
+                        sync = getattr(type(self.client), 'sync', None)
+                        if sync:
+                            sync(self.client, job)
+                    except Exception as exc:
+                        with self.lock:
+                            self.note(job, 'Project synchronization issue: '+str(exc)[:400])
+                            self.save(job)
+                    if job['status'] in ('completed', 'stopped'):
+                        cleanup = getattr(type(self.client), 'cleanup', None)
+                        if cleanup:
+                            try: cleanup(self.client, job)
+                            except Exception: logging.exception('Could not clean up completed agent container')
+                finally:
                     with self.lock:
-                        self.note(job, 'Project synchronization issue: '+str(exc)[:400])
-                        self.save(job)
-                if job['status'] in ('completed', 'stopped'):
-                    cleanup = getattr(type(self.client), 'cleanup', None)
-                    if cleanup:
-                        try: cleanup(self.client, job)
-                        except Exception: logging.exception('Could not clean up completed agent container')
+                        self.processing.discard(job['id'])
 
     def start_worker(self, available=lambda: True):
         if self.thread and self.thread.is_alive():

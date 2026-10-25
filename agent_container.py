@@ -5,6 +5,7 @@ with the host. Project files are copied as safe regular files; the task containe
 never receives a host project bind mount, Docker socket, or app credentials.
 """
 import copy
+import errno
 import io
 import json
 import logging
@@ -13,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import tarfile
 import threading
@@ -120,7 +122,23 @@ class _ModelProxy:
             return self.info['socket_path']
         path = Path(self.info['socket_path'])
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.unlink(missing_ok=True)
+        if path.exists():
+            # A running Hearth process may already own this relay socket. Never unlink
+            # its filesystem entry: doing so leaves its listener alive but unreachable,
+            # which makes container requests fail with ECONNRESET. Reuse a live socket;
+            # remove only stale socket paths left after a process shutdown.
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(1)
+                probe.connect(str(path))
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED, errno.ENOTSOCK):
+                    raise RuntimeError('Could not safely check the existing agent model relay socket.') from exc
+                path.unlink(missing_ok=True)
+            else:
+                return str(path)
+            finally:
+                probe.close()
         server_type = type('ThreadedUnixHTTPServer', (ThreadingMixIn, UnixStreamServer),
                            {'daemon_threads': True, 'allow_reuse_address': True})
         self.server = server_type(str(path), _ModelProxyHandler)
@@ -296,6 +314,27 @@ class ContainerOpenCode(OpenCode):
         return config, provider, proxy_info
 
     def _agent_config(self, original, provider_id, model_id, provider):
+        # This provider option is understood by compatible chat-template providers
+        # such as Lemonade. Preserve other provider options and custom extraBody keys.
+        extra_body = provider['options'].get('extraBody')
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        else:
+            extra_body = dict(extra_body)
+        template_kwargs = extra_body.get('chat_template_kwargs')
+        if not isinstance(template_kwargs, dict):
+            template_kwargs = {}
+        else:
+            template_kwargs = dict(template_kwargs)
+        enable_thinking = original.get('enable_thinking', True)
+        # Lemonade's current llama.cpp path uses the top-level request control to
+        # reach native reasoning settings; retain the template option for providers
+        # that consume Qwen-style chat-template kwargs.
+        if provider_id == 'lemonade':
+            extra_body['enable_thinking'] = enable_thinking
+        extra_body['chat_template_kwargs'] = {**template_kwargs,
+            'enable_thinking': enable_thinking}
+        provider['options']['extraBody'] = extra_body
         provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
         return {'$schema': 'https://opencode.ai/config.json', 'model': f'{provider_id}/{model_id}',
                 'provider': {provider_id: provider},
@@ -335,7 +374,8 @@ class ContainerOpenCode(OpenCode):
             raise ValueError('HEARTH_AGENT_CPU_LIMIT must be between 0.5 and 64.')
         if not re.fullmatch(r'[1-9][0-9]{1,4}', pids) or not 64 <= int(pids) <= 4096:
             raise ValueError('HEARTH_AGENT_PID_LIMIT must be between 64 and 4096.')
-        startup = ('umask 0002; printf "%s" "$HEARTH_OPENCODE_CONFIG" > "$OPENCODE_CONFIG"; '
+        startup = ('umask 0002; mkdir -p "$HOME/agents/project"; '
+                   'printf "%s" "$HEARTH_OPENCODE_CONFIG" > "$OPENCODE_CONFIG"; '
                    'socat TCP-LISTEN:4097,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/relay/model.sock & '
                    'exec opencode serve --hostname 0.0.0.0 --port 4096')
         self._docker('run', '--detach', '--name', name, '--label', 'hearth.agent-task='+info['task_id'],
@@ -344,9 +384,10 @@ class ContainerOpenCode(OpenCode):
             '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'FOWNER',
             '--cap-add', 'FSETID', '--cap-add', 'SETGID', '--cap-add', 'SETUID', '--cap-add', 'SYS_CHROOT',
             '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:rw,nosuid,nodev,size=2g',
-            '--env', 'OPENCODE_CONFIG=/tmp/opencode.json',
+            '--env', 'HOME=/home/node', '--env', 'OPENCODE_CONFIG=/home/node/agents/opencode.json',
             '--env', 'HEARTH_OPENCODE_CONFIG='+json.dumps(info['opencode_config'], separators=(',', ':')),
             '--env', 'OPENCODE_SERVER_USERNAME=opencode', '--env', 'OPENCODE_SERVER_PASSWORD='+password,
+            '--mount', f'type=bind,src={task_dir},dst=/home/node/agents',
             '--mount', f'type=bind,src={task_dir},dst=/relay,readonly',
             '--entrypoint', '/bin/sh', IMAGE, '-lc', startup, timeout=180)
         port = ''
@@ -380,6 +421,7 @@ class ContainerOpenCode(OpenCode):
         task_dir = self.runtime_directory/task_id
         task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         task_dir.chmod(0o700)
+        (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
         proxy_path = task_dir/'model.sock'
         original, provider, proxy_info = self._host_provider(job['model']['providerID'], job['model']['id'], proxy_path)
         proxy = self._make_proxy(name, proxy_info)
@@ -387,12 +429,12 @@ class ContainerOpenCode(OpenCode):
         info = {'container': name, 'task_id': task_id, 'password': secrets.token_urlsafe(32),
                 'owner': job['owner'], 'model': job['model'], 'model_proxy': proxy.info,
                 'opencode_config': config,
-                'last_sync': 0, 'manifest': []}
+                'last_sync': 0, 'manifest': [], 'project_directory': '/home/node/agents/project'}
         self._write_runtime(name, info)
         self._start_container(name, info, task_dir, job)
         session = _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
         data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
-                'model': job['model'], 'location': {'directory': '/workspace'},
+                'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
         self._sync_to_container(name, job['owner'])
@@ -418,13 +460,19 @@ class ContainerOpenCode(OpenCode):
         return recreated
 
     def _permissions(self, job):
-        permissions = [{'action': '*', 'resource': '*', 'effect': 'ask'}]
-        for action in ('read', 'glob', 'grep', 'edit', 'write', 'patch', 'todowrite', 'question'):
-            permissions.append({'action': action, 'resource': '*', 'effect': 'allow'})
+        # OpenCode 2.1.2 applies last matching rule and evaluates multi-file
+        # operations across all resources. Keep explicit denials last.
+        permissions = [
+            {'action': 'external_directory', 'resource': '/home/node/agents/project/*', 'effect': 'allow'},
+            {'action': '*', 'resource': '*', 'effect': 'allow'}]
+        permissions.append({'action': 'shell', 'resource': '*',
+                            'effect': 'allow' if job.get('auto_commands') else 'ask'})
         permissions += [
-            {'action': 'shell', 'resource': '*', 'effect': 'allow' if job.get('auto_commands') else 'ask'},
-            {'action': 'external_directory', 'resource': '*', 'effect': 'ask'},
-            {'action': 'doom_loop', 'resource': '*', 'effect': 'ask'},
+            {'action': 'read', 'resource': '.env', 'effect': 'deny'},
+            {'action': 'read', 'resource': '.env.*', 'effect': 'deny'},
+            {'action': 'edit', 'resource': '.env', 'effect': 'deny'},
+            {'action': 'edit', 'resource': '.env.*', 'effect': 'deny'},
+            {'action': 'external_directory', 'resource': '*', 'effect': 'deny'},
             {'action': 'subagent', 'resource': '*', 'effect': 'deny'}]
         return permissions
 
@@ -446,7 +494,7 @@ class ContainerOpenCode(OpenCode):
 
     @staticmethod
     def workspace_directory(_client, _job):
-        return '/workspace'
+        return '/home/node/agents/project'
 
     def prompt(self, session, text, message_id):
         if SESSION_SEPARATOR not in str(session): return super().prompt(session, text, message_id)
@@ -478,7 +526,7 @@ class ContainerOpenCode(OpenCode):
         name, raw, info = self._split(session); return self._endpoint(name, info).stop_verification(raw, message_id)
 
     def _sync_to_container(self, name, owner):
-        process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', '/workspace', '-xf', '-'],
+        process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', '/home/node/agents/project', '-xf', '-'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         total = 0
         try:
@@ -512,7 +560,7 @@ class ContainerOpenCode(OpenCode):
         now = time.time()
         if now-info.get('last_sync', 0) < 10 and job.get('status') not in ('completed', 'stopped'):
             return
-        tar_args = ['docker', 'exec', name, 'tar', '-C', '/workspace']
+        tar_args = ['docker', 'exec', name, 'tar', '-C', '/home/node/agents/project']
         for part in sorted(SKIP_PARTS):
             tar_args.append('--exclude='+part)
         tar_args.extend(['-cf', '-', '.'])

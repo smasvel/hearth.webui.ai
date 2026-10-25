@@ -16,6 +16,7 @@
         <nav class="console-tabs">
           {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
           <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+          <a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>
           <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
           <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
@@ -73,9 +74,9 @@
               Enable model thinking/reasoning (Qwen3-style <code class="inline-code">enable_thinking</code>)
             </label>
             <p class="hint">
-              Applied per-request (Lemonade's own model-load API silently ignores this setting,
-              confirmed live) — covers both Hearth's own chat and OpenCode's config
-              (<code class="inline-code">extraBody</code>). Turning this off skips the model's
+              This is the default for Lemonade models. A model-specific choice on the Models page
+              overrides it for Hearth chat. Applied per-request (Lemonade's own model-load API
+              silently ignores this setting, confirmed live); OpenCode uses this global default. Turning this off skips the model's
               reasoning phase but does <strong>not</strong> meaningfully speed up a response
               dominated by prompt-processing time on a large context — it only removes visibility
               into what the model is doing. Ignored by models/templates that don't support it.

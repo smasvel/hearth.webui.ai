@@ -97,13 +97,10 @@ class OpenCode:
             raise RuntimeError('OpenCode did not load the Hearth worker agent. Reload its configuration.')
 
     def create(self, job):
-        permissions = [{'action': '*', 'resource': '*', 'effect': 'ask'}]
-        for action in ('read', 'glob', 'grep', 'edit', 'write', 'patch', 'todowrite', 'question'):
-            permissions.append({'action': action, 'resource': '*', 'effect': 'allow'})
-        permissions += [
+        permissions = [
+            {'action': '*', 'resource': '*', 'effect': 'allow'},
             {'action': 'shell', 'resource': '*', 'effect': 'allow' if job.get('auto_commands') else 'ask'},
             {'action': 'external_directory', 'resource': '*', 'effect': 'ask'},
-            {'action': 'doom_loop', 'resource': '*', 'effect': 'ask'},
             {'action': 'subagent', 'resource': '*', 'effect': 'deny'}]
         return self.call('POST', '/api/session', {'title': 'Hearth: '+job['title'], 'agent': AGENT,
             'model': job['model'], 'location': {'directory': job['project']}, 'permissions': permissions})['data']['id']

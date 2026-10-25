@@ -21,6 +21,7 @@ with contextlib.ExitStack() as stack:
  snap={'active':True,'forms':[],'permissions':[],'inbox':[],'messages':[]}
  fake.snapshot.side_effect=lambda _:json.loads(json.dumps(snap))
  manager=Manager(Path(directory)/'tasks',fake)
+ manager.thread=Mock();manager.thread.is_alive.return_value=True
  stack.enter_context(patch.object(app,'_agent_tasks',manager))
  stack.enter_context(patch.object(app._model_test_registry,'list',return_value=[]))
  stack.enter_context(patch.object(app.api_list_models,'__wrapped__',return_value=Mock(get_json=lambda:{'models':[{'id':model['id'],'backend':model['providerID'],'state':'loaded'}]})))
@@ -77,7 +78,7 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#agent-reset-cycles')).to_be_visible()
   page.locator('#agent-reset-cycles').click()
   expect(page.locator('#agent-status')).to_contain_text('0/50 cycles')
-  page.close();page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+  page.close();page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));page.on('dialog',lambda dialog:dialog.accept())
   page.goto(f'http://127.0.0.1:{server.server_port}/agents/{key}',wait_until='domcontentloaded')
   expect(page.locator('#agent-status')).to_contain_text('paused')
   expect(page.locator('#agent-status')).to_contain_text('0/50 cycles')
@@ -90,6 +91,7 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#agent-result-heading')).to_have_text('Completed result')
   expect(page.locator('#agent-result')).to_contain_text('Verified result')
   expect(page.locator('#agent-result')).to_contain_text('Verified by the assigned command')
+  expect(page.get_by_role('heading',name='Conversation and tool logs')).to_be_visible()
   current=manager.jobs[key]
   current['activity']=[{'time':time.time()-60,'text':'Older activity event'},
                        {'time':time.time(),'text':'Newest activity event'}]
@@ -98,6 +100,22 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#agent-activity-feed .agent-activity-item span').first).to_have_text('Newest activity event')
   full_activity=page.locator('#agent-activity').text_content()
   assert full_activity.index('Newest activity event') < full_activity.index('Older activity event')
+  current['activity'].append({'time':time.time(),'text':'Activity added after page load'})
+  current['messages'].append({'id':'a_late_browser','type':'assistant','time':time.time(),
+                              'content':[{'type':'text','text':'Transcript added after page load'}]})
+  manager.save(current)
+  expect(page.locator('#agent-activity-feed')).to_contain_text('Activity added after page load',timeout=7000)
+  expect(page.locator('#agent-messages')).to_contain_text('Transcript added after page load',timeout=7000)
+  expect(page.get_by_role('button',name='Run again')).to_be_visible()
+  page.get_by_role('button',name='Run again').click()
+  expect(page.locator('#agent-status')).to_contain_text('queued')
+  manager.tick()
+  rerun_job=manager.get(key)
+  assert rerun_job['status']=='running',rerun_job
+  assert fake.create.call_count==2
+  page.reload(wait_until='domcontentloaded')
+  expect(page.locator('#agent-status')).to_contain_text('running')
+  expect(page.locator('#agent-activity')).to_contain_text('Rerun queued')
   assert page.locator('#agent-title img').count()==0
   assert not errors,errors
   page.screenshot(path='/tmp/hearth-agents-ui.png',full_page=True)

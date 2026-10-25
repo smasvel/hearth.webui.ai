@@ -63,7 +63,10 @@ with contextlib.ExitStack() as stack:
   page.on('pageerror',lambda error:errors.append(str(error)))
   page.on('dialog',lambda dialog:dialog.accept())
   page.goto(f'http://127.0.0.1:{server.server_port}/models')
+  expect(page.locator('#model-tests')).to_have_count(0)
+  expect(page.locator('#model-groups')).to_be_visible()
   page.get_by_role('button',name='Test tools',exact=True).click()
+  expect(page).to_have_url(__import__('re').compile(r'.*/model-tests$'))
   expect(page.locator('#tests-status')).to_contain_text('completed',timeout=12000)
   expect(page.locator('#tests-status')).to_contain_text('3 passed · 0 failed')
   expect(page.locator('#tests-repairs')).to_contain_text('Applied and verified')
@@ -74,13 +77,23 @@ with contextlib.ExitStack() as stack:
   assert downloaded.status==200 and len(downloaded.json()['results'])==6
   assert page.locator('#tests-results').get_by_text('Blocked',exact=True).count()==1
   page.reload();expect(page.locator('#tests-status')).to_contain_text('completed')
+  page.goto(f'http://127.0.0.1:{server.server_port}/models')
   page.get_by_role('button',name='Reset repair',exact=True).click()
+  expect(page).to_have_url(__import__('re').compile(r'.*/model-tests$'))
   expect(page.locator('#tests-status')).to_contain_text('Repair profile reset')
   assert values[('fastflowlm','test-fixture')] is None
+  old_report_id = page.locator('#tests-history').input_value()
   mode['wait']=True
-  page.get_by_role('button',name='Test all chat models',exact=True).click()
+  page.get_by_label('Model to test').select_option(index=1)
+  page.get_by_role('button',name='Run tests for selected model').click()
   expect(page.locator('#tests-cancel')).to_be_enabled()
   expect(page.locator('#tests-status')).to_contain_text('waiting-check')
+  expect(page.locator('#tests-delete-history option')).to_have_count(1)
+  page.get_by_role('button',name='Delete selected report').click()
+  expect(page.locator('#tests-delete-status')).to_contain_text('Older report deleted. The active model test continues.')
+  expect(page.locator('#tests-status')).to_contain_text('waiting-check')
+  expect(page.locator('#tests-history option')).to_have_count(1)
+  assert context.request.get(f'http://127.0.0.1:{server.server_port}/api/model-tests/{old_report_id}').status == 404
   page.locator('#tests-cancel').click()
   expect(page.locator('#tests-status')).to_contain_text('cancelled',timeout=10000)
   assert not errors,errors

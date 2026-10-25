@@ -3,9 +3,10 @@
   const el = id => document.getElementById(id);
   const activeStates = new Set(["loading", "running", "repairing", "cancelling"]);
   let job = null, running = false, starting = false, timer = null;
-  async function api(path, body) {
-    const response = await fetch(path, body === undefined ? {} : {
-      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  async function api(path, body, method) {
+    method = method || (body === undefined ? "GET" : "POST");
+    const response = await fetch(path, body === undefined ? {method} : {
+      method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
@@ -20,13 +21,20 @@
   function render() {
     const wasRunning = running;
     running = !!job && activeStates.has(job.status);
-    el("tests-all").disabled = running || starting;
+    el("tests-run").disabled = running || starting || !el("tests-model").value;
     el("tests-auto-repair").disabled = running;
     el("tests-history").disabled = running;
     el("tests-cancel").disabled = !running || job.status === "cancelling";
+    el("tests-delete").disabled = !el("tests-delete-history").value;
     if (wasRunning !== running) document.dispatchEvent(new Event("model-tests-state"));
     if (wasRunning && !running) document.dispatchEvent(new Event("model-tests-finished"));
-    if (!job) return;
+    if (!job) {
+      el("tests-download").hidden = true;
+      el("tests-table").hidden = true;
+      el("tests-results").replaceChildren();
+      el("tests-repairs").textContent = "";
+      return;
+    }
     const selected = [...el("tests-history").options].find(o => o.value === job.id);
     if (selected) selected.textContent = `${new Date(job.started_at * 1000).toLocaleString()} · ${job.status} · ${job.targets.length} model(s)`;
     const latest = new Map();
@@ -98,23 +106,40 @@
       option.textContent = `${new Date(item.started_at * 1000).toLocaleString()} · ${item.status} · ${item.targets.length} model(s)`;
       list.appendChild(option);
     }
+    const deleteList = el("tests-delete-history");
+    const previousDeleteId = deleteList.value;
+    deleteList.replaceChildren();
+    const deletable = jobs.filter(item => !activeStates.has(item.status));
+    for (const item of deletable) {
+      const option = document.createElement("option"); option.value = item.id;
+      option.textContent = `${new Date(item.started_at * 1000).toLocaleString()} · ${item.status} · ${item.targets.length} model(s)`;
+      deleteList.appendChild(option);
+    }
+    if (deletable.some(item => item.id === previousDeleteId)) deleteList.value = previousDeleteId;
+    el("tests-delete").disabled = !deleteList.value;
+    if (!deletable.length) {
+      const option = document.createElement("option"); option.value = "";
+      option.textContent = jobs.length ? "No older completed reports" : "No saved reports";
+      deleteList.appendChild(option);
+      el("tests-delete").disabled = true;
+    }
     job = jobs.find(j => j.id === selectId) || jobs.find(j => activeStates.has(j.status)) || jobs[0] || null;
     if (job) { list.value = job.id; job = await api(`/api/model-tests/${encodeURIComponent(job.id)}`); }
     render(); schedule();
   }
   async function start(models) {
     if (running || starting) return;
-    if (!confirm(`Run the complete test suite for ${models.length} model(s)?\n\nLoading a local model unloads other local chat models. The last tested local model stays loaded. The suite includes long OpenCode workflows and simulated question answers. Tests can take many minutes per model. No generated tools will be executed.`)) return;
+    if (!confirm(`Run the complete test suite for ${models.map(m => m.id).join(", ")}?\n\nLoading a local model unloads other local chat models. The tested local model stays loaded. The suite includes long OpenCode workflows and simulated question answers. Tests can take many minutes. No generated tools will be executed.`)) return;
     starting = true;
     document.dispatchEvent(new Event("model-tests-state"));
-    el("tests-all").disabled = true;
+    el("tests-run").disabled = true;
     try {
       job = await api("/api/model-tests", {models: models.map(m => ({backend: m.backend, id: m.id})),
         auto_repair: el("tests-auto-repair").checked});
       render(); schedule(); await history(job.id);
       el("model-tests").scrollIntoView({behavior: "smooth", block: "start"});
-    } catch (error) { el("tests-status").textContent = error.message; el("tests-all").disabled = running || starting; }
-    finally { starting = false; el("tests-all").disabled = running; document.dispatchEvent(new Event("model-tests-state")); }
+    } catch (error) { el("tests-status").textContent = error.message; el("tests-run").disabled = running || starting; }
+    finally { starting = false; el("tests-run").disabled = running || !el("tests-model").value; document.dispatchEvent(new Event("model-tests-state")); }
   }
   async function reset(model) {
     if (running || !confirm(`Reset the automatic compatibility repair for ${model.id}?`)) return;
@@ -122,14 +147,41 @@
       el("tests-status").textContent = `Repair profile reset for ${model.id}.`; }
     catch (error) { el("tests-status").textContent = error.message; }
   }
-  el("tests-all").addEventListener("click", async () => {
+  async function loadModels(preferred) {
     try {
       const {models} = await api("/api/models");
       const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "sglang", "kobold"]);
       const media = new Set(["embedding", "embeddings", "transcription", "tts", "image", "video"]);
-      const targets = models.filter(m => supported.has(m.backend) && !media.has(m.type) && m.loadable !== false);
-      if (!targets.length) throw new Error("No loadable chat models are available.");
-      await start([...new Map(targets.map(m => [JSON.stringify([m.backend, m.id]), m])).values()]);
+      const targets = [...new Map(models.filter(m => supported.has(m.backend) && !media.has(m.type) && m.loadable !== false)
+        .map(m => [JSON.stringify([m.backend, m.id]), m])).values()];
+      const select = el("tests-model"); select.replaceChildren();
+      const placeholder = document.createElement("option"); placeholder.value = "";
+      placeholder.textContent = targets.length ? "Choose an installed chat model" : "No loadable chat models available";
+      select.appendChild(placeholder);
+      for (const model of targets) {
+        const option = document.createElement("option");
+        option.value = JSON.stringify({backend: model.backend, id: model.id});
+        option.textContent = `${model.backend} · ${model.name || model.id}`;
+        select.appendChild(option);
+      }
+      if (preferred) {
+        const key = JSON.stringify({backend: preferred.backend, id: preferred.id});
+        if ([...select.options].some(option => option.value === key)) select.value = key;
+      }
+      el("tests-run").disabled = running || starting || !select.value;
+    } catch (error) { el("tests-status").textContent = `Could not load installed models: ${error.message}`; }
+  }
+  el("tests-model").addEventListener("change", () => {
+    el("tests-run").disabled = running || starting || !el("tests-model").value;
+  });
+  el("tests-run").addEventListener("click", async () => {
+    try {
+      const selected = JSON.parse(el("tests-model").value || "null");
+      if (!selected) throw new Error("Choose an installed chat model first.");
+      const {models} = await api("/api/models");
+      const model = models.find(item => item.backend === selected.backend && item.id === selected.id);
+      if (!model) throw new Error("That model is no longer available.");
+      await start([model]);
     } catch (error) { el("tests-status").textContent = error.message; }
   });
   el("tests-cancel").addEventListener("click", async () => {
@@ -143,6 +195,39 @@
     try { job = await api(`/api/model-tests/${encodeURIComponent(event.target.value)}`); render(); schedule(); }
     catch (error) { el("tests-status").textContent = error.message; }
   });
+  el("tests-delete-history").addEventListener("change", event => {
+    el("tests-delete").disabled = !event.target.value;
+  });
+  el("tests-delete").addEventListener("click", async () => {
+    const deletedId = el("tests-delete-history").value;
+    if (!deletedId) return;
+    const report = [...el("tests-delete-history").options].find(option => option.value === deletedId);
+    if (!confirm(`Delete ${report?.textContent || "this saved test report"} and its results? This cannot be undone.`)) return;
+    try {
+      await api(`/api/model-tests/${encodeURIComponent(deletedId)}`, undefined, "DELETE");
+      el("tests-delete-status").textContent = running ? "Older report deleted. The active model test continues." : "Saved report deleted.";
+      await history(job?.id === deletedId ? undefined : job?.id);
+    } catch (error) { el("tests-delete-status").textContent = error.message; }
+  });
   window.hearthModelTests = {start, reset, isRunning: () => running || starting};
-  history().catch(error => { el("tests-status").textContent = `Could not load test history: ${error.message}`; });
+  Promise.all([history(), loadModels()]).then(async () => {
+    const params = new URLSearchParams(window.location.search);
+    const backend = params.get("backend"), modelId = params.get("model");
+    if (!backend || !modelId) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    try {
+      const selectedKey = JSON.stringify({backend, id: modelId});
+      if ([...el("tests-model").options].some(option => option.value === selectedKey)) {
+        el("tests-model").value = selectedKey;
+        el("tests-run").disabled = running || starting;
+      }
+      const {models} = await api("/api/models");
+      const model = models.find(item => item.backend === backend && item.id === modelId);
+      if (!model) throw new Error("That model is no longer available.");
+      if (params.get("action") === "reset" && running) el("tests-status").textContent = "A test run is active. Wait for it to finish before resetting a repair profile.";
+      else if (params.get("action") === "reset") await reset(model);
+      else if (running) el("tests-status").textContent = "A test run is already active; showing its progress instead.";
+      else await start([model]);
+    } catch (error) { el("tests-status").textContent = error.message; }
+  }).catch(error => { el("tests-status").textContent = `Could not load test history: ${error.message}`; });
 })();
