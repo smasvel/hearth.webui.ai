@@ -1,24 +1,16 @@
-# Hearth — Self-Hosted OpenAI-Compatible Web UI for Local AI and Agent Workflows
+# Hearth: A Home for Your Local AI
 
-*Local AI, kept at home, accessible anywhere in the world through a free Tailscale connection.*
+*Chat with local models, test how they work, and follow coding agents from one self-hosted workspace.*
 
-**Hearth is a free, self-hosted AI WebUI for personal AI chat, local LLM testing,
-and agentic coding workflows.** Use one browser interface to manage local models,
-evaluate tool calling, supervise OpenCode agents, and keep a searchable conversation
-history with cross-chat memory. Run your own AI assistant on your hardware, with
-CPU, GPU, or AMD Ryzen AI NPU inference through supported model backends.
+Hearth brings your local AI tools together in one browser app. Chat with models
+running on your own hardware, compare how they handle coding tasks, and follow
+OpenCode agents as they work. Conversations, settings, and agent projects are kept
+in your own PostgreSQL-backed installation.
 
-Looking for the **best OpenAI-compatible web UI** or a self-hosted ChatGPT-style
-interface for local models? Hearth combines browser chat for local inference with
-an **OpenAI-compatible API gateway** for coding clients, plus model management,
-web research, persistent coding agents, and PostgreSQL-backed chat history. It is
-designed for people who want an OpenAI-style workflow while choosing their own
-supported local inference backends and hardware.
-
-Hearth brings together a **local AI chat interface**, **LLM tool-calling test suite**,
-**agent task dashboard**, and **personal AI workspace**. It is useful for trying a
-new model, checking whether a small language model follows a coding workflow, or
-using local AI for everyday questions, research, voice conversations, and learning.
+Choose from supported CPU, GPU, and AMD Ryzen AI NPU backends. Hearth also includes
+an OpenAI-compatible gateway for coding clients, model search and downloads, web
+research, voice tools, and cross-chat memory. Add Tailscale when you want private
+remote access to your home setup.
 
 [Get started](#first-time-setup) · [Explore features](#what-you-can-do-with-hearth) ·
 [Test models](#local-llm-testing-and-tool-calling-evaluation) ·
