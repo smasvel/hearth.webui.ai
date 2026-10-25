@@ -392,6 +392,25 @@ availability depends on which supporting components you configure.
 
 ## First-time setup
 
+### Install from GitHub Releases
+
+Published releases include separate **Windows**, **macOS**, and **Linux** install
+bundles in the GitHub **Releases** tab. They contain Hearth and a guided setup
+script. Install Python 3.12 or newer and Docker Desktop/Engine first, then extract
+the matching bundle and run `deploy/install-release.ps1` on Windows or
+`bash deploy/install-release.sh` on macOS/Linux. Setup installs Hearth's Python
+dependencies, prepares PostgreSQL, and asks which backend endpoint to configure.
+Linux setup also builds the isolated coding-agent container; agent execution is
+Linux-only. You can enter a different URL or API key during setup. The selected
+inference runtime and its model weights are installed separately; they are not
+bundled with Hearth.
+
+After setup, run `deploy/start-hearth.ps1` on Windows or
+`bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443`; the
+first visit prompts you to create the administrator account. These release bundles
+start Hearth manually when requested. For an Ubuntu setup that installs system
+dependencies and configures automatic startup, use the installer below.
+
 Follow [the first-time installation guide](deploy/FIRST_TIME_INSTALL.md). On Ubuntu,
 from the project directory:
 

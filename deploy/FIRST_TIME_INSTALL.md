@@ -1,4 +1,25 @@
-# First-time installation (Ubuntu)
+# First-time installation
+
+## Windows, macOS, and Linux release bundles
+
+Published GitHub releases include platform-labelled bundles for Windows, macOS,
+and Linux. These bundles install Hearth from source and ask which supported model
+backend endpoint to configure. Install Python 3.12+ and Docker Desktop/Engine
+before running the bundle's installer. On Windows run
+`deploy/install-release.ps1`; on macOS and Linux run
+`bash deploy/install-release.sh`. The installer prepares Hearth's Python
+environment and PostgreSQL database, then stores the selected endpoint and
+optional API key in Settings. Linux setup also builds the isolated coding-agent
+image; agent execution is Linux-only. The model runtime and model weights are
+separate downloads and must be installed and started independently.
+
+After setup, start the app with `deploy/start-hearth.ps1` on Windows or
+`bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
+create the administrator account on first visit. These launchers run Hearth in
+the foreground; close the terminal to stop the app. Docker keeps PostgreSQL
+running in the background.
+
+## One-command Ubuntu installation
 
 Run these commands from the Hearth project directory. This installs the web app,
 PostgreSQL, and isolated agent build image; model runtimes and model downloads are

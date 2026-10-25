@@ -79,6 +79,8 @@ def _run(args: list[str], timeout: int = 60) -> str:
 
 # ---- service control (system unit via polkit) --------------------------------------
 def _systemctl(*args: str, timeout: int = 60) -> str:
+    if os.name == "nt":
+        raise FastFlowLMError("FastFlowLM service management is available on Linux only.")
     try:
         r = subprocess.run(["systemctl", *args, SERVICE_NAME], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:

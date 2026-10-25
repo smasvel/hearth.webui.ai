@@ -23,6 +23,7 @@ data/
 .playwright-mcp/
 .pytest_cache/
 scratchpad_test/
+release-packages/
 
 # Local backups and database exports
 backups/
