@@ -33,20 +33,25 @@ def normalize(arguments, schema, requested=None):
             question['options'] = sorted(options, key=lambda option:
                 0 if isinstance(option, dict) and isinstance(option.get('label'), str)
                 and option['label'].rstrip().lower().endswith('(recommended)') else 1)
-        # Restore an explicitly supplied order only when every value already matches.
-        # Never replace a generated label, description, question, or selection mode.
+        # Reconcile only an unambiguous latest-turn payload whose question text,
+        # header, and full option set match. The supplied selection mode is part of
+        # that contract too; never replace generated labels, descriptions, or content.
         matches = []
         for supplied in (requested or {}).get('questions', []):
             if not isinstance(supplied, dict) or not isinstance(supplied.get('options'), list):
                 continue
-            if {k: v for k, v in question.items() if k != 'options'} != {
-                    k: v for k, v in supplied.items() if k != 'options'}:
+            without_choices = lambda value: {k: v for k, v in value.items()
+                                              if k not in ('options', 'multiple')}
+            if without_choices(question) != without_choices(supplied):
                 continue
             encode = lambda value: json.dumps(value, sort_keys=True)
             if isinstance(options, list) and Counter(map(encode, options)) == Counter(map(encode, supplied['options'])):
-                matches.append(supplied['options'])
+                matches.append(supplied)
         if len(matches) == 1:
-            question['options'] = copy.deepcopy(matches[0])
+            supplied = matches[0]
+            question['options'] = copy.deepcopy(supplied['options'])
+            if isinstance(supplied.get('multiple'), bool):
+                question['multiple'] = supplied['multiple']
     return result
 
 

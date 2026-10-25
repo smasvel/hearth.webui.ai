@@ -18,7 +18,7 @@ def main():
         scripts = (
             'check_first_admin_ui.py', 'check_admin_ui.py', 'check_model_tests_ui.py',
             'check_agents_ui.py', 'check_model_resource_warnings_ui.py',
-            'check_agent_model_default_ui.py',
+            'check_agent_model_default_ui.py', 'check_admin_pages_ui.py',
         )
         browser_pool = ThreadPoolExecutor(max_workers=len(scripts)) if args.browser else None
         futures = {}

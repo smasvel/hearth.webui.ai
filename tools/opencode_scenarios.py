@@ -6,8 +6,8 @@ Schemas mirror the OpenCode requests captured by Hearth locally.
 import json
 
 
-def tool(name, properties, required=None):
-    return {'type': 'function', 'function': {'name': name, 'description': name,
+def tool(name, properties, required=None, description=None):
+    return {'type': 'function', 'function': {'name': name, 'description': description or name,
         'parameters': {'type': 'object', 'properties': properties,
                        'required': list(properties) if required is None else required}}}
 
@@ -19,20 +19,25 @@ QUESTION = tool('question', {'questions': {'type': 'array', 'items': {
         'options': {'type': 'array', 'items': {'type': 'object',
             'properties': {'label': STRING, 'description': STRING}, 'required': ['label', 'description']}},
         'multiple': {'type': 'boolean'}}, 'required': ['question', 'header', 'options']}}})
+QUESTION['function']['description'] = 'Ask the user a structured question with selectable options when a decision needs clarification.'
 TOOLS = [QUESTION,
     tool('task', {'description': STRING, 'prompt': STRING, 'subagent_type': STRING, 'task_id': STRING},
-         ['description', 'prompt', 'subagent_type']),
-    tool('glob', {'pattern': STRING, 'path': STRING}, ['pattern']),
-    tool('grep', {'pattern': STRING, 'path': STRING, 'include': STRING}, ['pattern']),
-    tool('read', {'filePath': STRING, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}}, ['filePath']),
+         ['description', 'prompt', 'subagent_type'], 'Delegate a focused investigation or task to a named subagent.'),
+    tool('glob', {'pattern': STRING, 'path': STRING}, ['pattern'], 'List project files matching a glob pattern.'),
+    tool('grep', {'pattern': STRING, 'path': STRING, 'include': STRING}, ['pattern'], 'Search project files for matching text.'),
+    tool('read', {'filePath': STRING, 'offset': {'type': 'integer'}, 'limit': {'type': 'integer'}}, ['filePath'],
+         'Read the contents of one project file.'),
     tool('edit', {'filePath': STRING, 'oldString': STRING, 'newString': STRING,
-                  'replaceAll': {'type': 'boolean'}}, ['filePath', 'oldString', 'newString']),
-    tool('write', {'filePath': STRING, 'content': STRING}),
-    tool('bash', {'command': STRING, 'workdir': STRING, 'timeout': {'type': 'integer'}}, ['command']),
+                  'replaceAll': {'type': 'boolean'}}, ['filePath', 'oldString', 'newString'],
+         'Replace exact text in a project file.'),
+    tool('write', {'filePath': STRING, 'content': STRING}, description='Create or replace a project file.'),
+    tool('bash', {'command': STRING, 'workdir': STRING, 'timeout': {'type': 'integer'}}, ['command'],
+         'Run a shell command in the project workspace.'),
     tool('todowrite', {'todos': {'type': 'array', 'items': {'type': 'object',
         'properties': {'content': STRING, 'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed', 'cancelled']},
                        'priority': {'type': 'string', 'enum': ['high', 'medium', 'low']}},
-        'required': ['content', 'status', 'priority']}}})]
+        'required': ['content', 'status', 'priority']}}},
+         description='Create or update the task checklist for the current project request.')]
 ROOT = '/workspace/atlas'
 
 
@@ -148,7 +153,9 @@ def scenarios():
             'are finished; the user already selected PostgreSQL; all implementation todos are complete except '
             'verification. Tests have NOT run yet. Resume from this checkpoint without repeating questions '
             'or edits. Next call bash with command pytest -q and workdir /workspace/atlas.'),
-        {'name': 'finish', 'instruction': 'Report the verified result and how many tests passed, without more tool calls.',
+        {'name': 'finish', 'instruction': 'The verified command output was exactly "4 passed. Exit code: 0". '
+            'Report exactly that four tests passed. Do not state any other test count. '
+            'Do not call more tools.',
          'expected': [], 'passed_tests': 4},
     ]))
     return workflows
@@ -162,16 +169,30 @@ def run_workflows(check, stream, only=None):
             continue
         messages = [{'role': 'system', 'content':
             'You are testing an OpenCode coding workflow in /workspace/atlas. '
-            'Follow the next requested step using the offered tools. Tool results and user answers are authoritative. '
-            'Never repeat an answered question, invent tool results, or declare success before verification.'},
-            {'role': 'user', 'content': 'Implement invoice totals across the project, add tests, recover from failures, and finish after verification.'}]
+            'The most recent user message is the only request for the current step; earlier user messages are setup context. '
+            'When it names a specific offered tool and exact arguments, call that tool with those arguments '
+            'without exploring or substituting a different tool. Tool results and user answers are authoritative. '
+            'Never repeat an answered question, invent tool results, or declare success before verification.'}]
         blocked = None
         for index, step in enumerate(steps, 1):
             name = prefix + step['name']
             messages.append({'role': 'user', 'content': step['instruction']})
+            if workflow == 'parallel-read' and step['name'] == 'read-both':
+                call_options = {}
+            else:
+                call_options = {'parallel_tool_calls': False}
+                # The core contract suite separately checks automatic tool choice.
+                # Workflow replay is about exact arguments and continuation state;
+                # name the expected function so unrelated exploratory calls cannot
+                # derail a deterministic multi-step fixture.
+                if len(step['expected']) == 1:
+                    call_options['tool_choice'] = {
+                        'type': 'function',
+                        'function': {'name': step['expected'][0][0]},
+                    }
             outcome = check(name, '', stream, expected=step['expected'], contains=step.get('contains'),
                 passed_tests=step.get('passed_tests'),
-                messages=messages, tools=TOOLS, max_tokens=1024,
+                messages=messages, tools=TOOLS, max_tokens=1024, **call_options,
                 workflow=workflow, step=index, blocked_by=blocked, _workflow=True)
             if outcome is None:
                 continue

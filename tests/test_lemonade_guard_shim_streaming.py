@@ -9,6 +9,7 @@ declares no tools), matching flm_tool_shim.py's tee().
 import json
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import lemonade_guard_shim as shim
@@ -76,6 +77,18 @@ class _StallingUpstream:
         self._gate.set()
 
 
+class _FakeJSONUpstream:
+    ok = True
+    status_code = 200
+    headers = {"content-type": "application/json"}
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+
 class StreamedResponseTests(unittest.TestCase):
     """Drive the real view through Flask's test client, recording pull/yield ordering."""
 
@@ -100,6 +113,41 @@ class StreamedResponseTests(unittest.TestCase):
         if isinstance(upstream, _FakeUpstream):
             self.assertEqual(upstream.chunk_size, 1)
         return events
+
+    def test_nonstream_tagged_tool_call_becomes_structured_call(self):
+        body = {
+            "model": "fixture", "stream": False,
+            "tools": [{"type": "function", "function": {
+                "name": "todowrite",
+                "parameters": {"type": "object", "properties": {
+                    "todos": {"type": "array", "items": {"type": "object"}}
+                }},
+            }}],
+        }
+        content = ("<tool_call>\n<function=todowrite>\n<parameter=todos>\n"
+                   '[{"content":"Ship the fix","status":"completed","priority":"high"}]\n'
+                   "</parameter>\n</function>\n</tool_call>")
+        payload = {"choices": [{"message": {"role": "assistant", "content": content},
+                                 "finish_reason": "stop"}]}
+        upstream = _FakeJSONUpstream(payload)
+        with patch.object(shim, "model_test_profiles"), \
+                patch.object(shim, "_prepare_agent_request", side_effect=lambda b: b), \
+                patch.object(shim, "_is_npu_model", return_value=False), \
+                patch.object(shim, "_unload_before_implicit_load"), \
+                patch.object(shim, "_record_chat_metric"), \
+                patch.object(shim.live_report, "start", return_value=1), \
+                patch.object(shim.live_report, "update"), \
+                patch.object(shim.live_report, "finish"), \
+                patch.object(shim, "_post_chat_with_utf8_recovery", return_value=(upstream, 0)):
+            shim.model_test_profiles.apply.side_effect = lambda b, *_a: b
+            response = shim.app.test_client().post("/v1/chat/completions", json=body)
+        result = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(result["choices"][0]["message"]["content"])
+        self.assertEqual(result["choices"][0]["finish_reason"], "tool_calls")
+        arguments = result["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        self.assertEqual(json.loads(arguments), {"todos": [{
+            "content": "Ship the fix", "status": "completed", "priority": "high"}]})
 
     def test_no_tools_streams_lines_without_buffering_the_response(self):
         lines = [sse({"reasoning_content": "think"}), sse({"content": "answer"}),
@@ -135,6 +183,56 @@ class StreamedResponseTests(unittest.TestCase):
         after = [raw for kind, raw in events if kind == "out"]
         self.assertEqual(sum(b"reasoning_content" in raw for raw in after), 1)
         self.assertEqual(b"".join(after).count(b"answer"), 1)
+
+    def test_tagged_textual_tool_call_becomes_structured_stream_call(self):
+        body = {"model": "fixture", "stream": True, "tools": [{"type": "function", "function": {
+            "name": "read", "parameters": {"type": "object", "properties": {
+                "filePath": {"type": "string"}}, "required": ["filePath"]}}}]}
+        content = ("<tool_call>\n<function=read>\n<parameter=filePath>\n"
+                   "/workspace/atlas/README.md\n</parameter>\n</function>\n</tool_call>")
+        lines = [sse({"content": content}), sse({}, finish="stop"), b"data: [DONE]"]
+        events = self._collect(body, lines)
+        output = b"".join(raw for kind, raw in events if kind == "out")
+        self.assertNotIn(b"<tool_call>", output)
+        parsed = [json.loads(line[6:]) for line in output.splitlines()
+                  if line.startswith(b"data: ") and line != b"data: [DONE]"]
+        calls = [call for event in parsed for choice in event.get("choices", [])
+                 for call in (choice.get("delta") or {}).get("tool_calls", [])]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["function"]["name"], "read")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]),
+                         {"filePath": "/workspace/atlas/README.md"})
+
+    def test_tagged_textual_tool_call_becomes_structured_completion_call(self):
+        body = {"model": "fixture", "stream": False, "tools": [{"type": "function", "function": {
+            "name": "todowrite", "parameters": {"type": "object", "properties": {
+                "todos": {"type": "array", "items": {"type": "object"}}}, "required": ["todos"]}}}]}
+        todos = [{"content": "Implement atlas totals", "status": "in_progress", "priority": "high"}]
+        content = ("<tool_call>\n<function=todowrite>\n<parameter=todos>\n"
+                   + json.dumps(todos) + "\n</parameter>\n</function>\n</tool_call>")
+        payload = {"choices": [{"message": {"role": "assistant", "content": content},
+                                 "finish_reason": "stop"}]}
+        upstream = SimpleNamespace(ok=True, status_code=200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(payload).encode(), json=lambda: payload)
+        with patch.object(shim, "model_test_profiles") as profiles, \
+                patch.object(shim, "_prepare_agent_request", side_effect=lambda b: b), \
+                patch.object(shim, "_is_npu_model", return_value=False), \
+                patch.object(shim, "_unload_before_implicit_load"), \
+                patch.object(shim, "_record_chat_metric"), \
+                patch.object(shim.live_report, "start", return_value=1), \
+                patch.object(shim.live_report, "update"), \
+                patch.object(shim.live_report, "finish"), \
+                patch.object(shim, "_post_chat_with_utf8_recovery", return_value=(upstream, 0)):
+            profiles.apply.side_effect = lambda b, *_a: b
+            response = shim.app.test_client().post("/v1/chat/completions", json=body)
+        self.assertEqual(response.status_code, 200)
+        message = response.json["choices"][0]["message"]
+        self.assertIsNone(message["content"])
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "todowrite")
+        arguments = json.loads(message["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(arguments["todos"], todos)
+        self.assertEqual(response.json["choices"][0]["finish_reason"], "tool_calls")
 
     def test_tools_forward_sse_comments_live(self):
         lines = [b": ping", sse({"content": "answer"}),

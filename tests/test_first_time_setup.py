@@ -82,8 +82,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         save_secret.assert_called_once_with('legacy-session-secret')
         migrate_settings.assert_called_once_with()
         self.assertNotIn('FLASK_SECRET_KEY', env_path.read_text())
-        self.assertTrue(reports.is_dir())
-        self.assertEqual(reports.stat().st_mode & 0o777, 0o700)
+        self.assertFalse(reports.exists())
 
     def test_canonical_ddl_creates_runtime_settings_and_app_secrets(self):
         schema = (Path(__file__).resolve().parents[1] / 'database_schema.sql').read_text()

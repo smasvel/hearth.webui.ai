@@ -86,23 +86,24 @@ def has_sqlite_data():
 
 
 def initialize_application_storage():
-    """Apply the canonical DDL and prepare private report storage before launch."""
+    """Apply the canonical PostgreSQL DDL and private application migrations."""
     import database
     import agent_store
+    import model_metadata_store
+    import model_resource_warnings
     import secret_store
     import settings_store
     import users_store
 
     database.init_schema()
-    # Model validation reports are JSON files rather than database rows. Keep the
-    # report directory private because reports include model responses and errors.
-    model_test_reports = database.DATA_DIR / 'model-test-runs'
-    model_test_reports.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(model_test_reports, 0o700)
     users_store.init_db()
     agent_store.init_db()
     settings_store.init_db()
-
+    model_metadata_store.init_db()
+    model_resource_warnings.init_db()
+    model_metadata_store.import_test_runs(database.DATA_DIR / 'model-test-runs')
+    model_metadata_store.migrate_registry_file('kobold', Path.home() / '.config/koboldcpp/models.json')
+    model_metadata_store.migrate_registry_file('vllm', Path.home() / '.config/vllm/models.json')
     # Persist the Flask signing key before deleting any legacy file copy. New installs
     # generate it here; direct app starts retain the same idempotent startup fallback.
     env_path = ROOT / '.env'

@@ -234,7 +234,7 @@ class Manager:
         result_platform = str(values.get('result_platform', 'web')).strip().lower()
         if len(result_label) > 120:
             raise ValueError('Result label must be at most 120 characters.')
-        if result_platform not in ('web', 'document', 'general'):
+        if result_platform not in ('web', 'report', 'document', 'general'):
             raise ValueError('Choose a supported result platform.')
         enable_thinking = values.get('enable_thinking', True)
         if type(enable_thinking) is not bool:
@@ -265,9 +265,20 @@ class Manager:
         task_id = str(values.get('task_id', '')).strip()
         task = self.get(task_id) if task_id else None
         if not task or task.get('owner') != owner:
-            raise ValueError('Choose an existing assignment that you own.')
+            raise ValueError('Choose an existing assignment you own or can manage.')
         if task.get('status') not in ACTIVE | {'completed'}:
             raise ValueError('Choose an active or completed assignment.')
+        timing = self._normalize_schedule_timing(values)
+        schedule = {'id': uuid.uuid4().hex, 'owner': owner,
+                    'task_id': task_id, 'task_title': task['title'],
+                    **{key: value for key, value in timing.items() if key != 'first_run'},
+                    'enabled': True, 'created_at': time.time(), 'next_run_at': timing['first_run'],
+                    'last_run_at': None, 'last_task_id': None, 'last_error': None}
+        agent_store.save_schedule(schedule)
+        return schedule
+
+    @staticmethod
+    def _normalize_schedule_timing(values):
         interval = values.get('interval_seconds')
         if type(interval) is not int or not 300 <= interval <= 31536000:
             raise ValueError('Schedule interval must be between 5 minutes and 365 days.')
@@ -298,15 +309,9 @@ class Manager:
             first_run = next_local.timestamp()
         else:
             first_run = time.time() + interval
-        schedule = {'id': uuid.uuid4().hex, 'owner': owner,
-                    'task_id': task_id, 'task_title': task['title'],
-                    'interval_seconds': interval, 'interval_value': value,
-                    'interval_unit': unit, 'run_time': run_time or None,
-                    'timezone': timezone_name, 'enabled': True,
-                    'created_at': time.time(), 'next_run_at': first_run,
-                    'last_run_at': None, 'last_task_id': None, 'last_error': None}
-        agent_store.save_schedule(schedule)
-        return schedule
+        return {'interval_seconds': interval, 'interval_value': value,
+                'interval_unit': unit, 'run_time': run_time or None,
+                'timezone': timezone_name, 'first_run': first_run}
 
     def list_schedules(self, owner):
         return agent_store.list_schedules(owner)
@@ -327,6 +332,21 @@ class Manager:
                 schedule['next_run_at'] = next_local.timestamp()
             else:
                 schedule['next_run_at'] = time.time()+schedule['interval_seconds']
+        agent_store.save_schedule(schedule)
+        return schedule
+
+    def update_schedule(self, schedule_id, owner, values):
+        schedule = next((x for x in agent_store.list_schedules(owner) if x['id'] == schedule_id), None)
+        if not schedule:
+            return None
+        timing = self._normalize_schedule_timing(values)
+        task = self.get(schedule.get('task_id'))
+        if not task or task.get('owner') != owner:
+            return None
+        schedule.update({key: value for key, value in timing.items() if key != 'first_run'})
+        schedule['task_title'] = task['title']
+        schedule['next_run_at'] = timing['first_run']
+        schedule['last_error'] = None
         agent_store.save_schedule(schedule)
         return schedule
 

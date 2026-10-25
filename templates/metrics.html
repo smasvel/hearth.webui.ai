@@ -21,6 +21,7 @@
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
           <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
           <a class="console-tab active" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('live_logs_page') }}">Live logs</a>
           <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
           <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
         </nav>
@@ -70,22 +71,6 @@
                 <tbody id="model-report"></tbody>
               </table>
             </div>
-          </div>
-          <div class="console-card span-all">
-            <h2>Live developer logs <span id="live-count" class="hint"></span>
-              <span id="npu-status" class="metric-npu-status"></span>
-            </h2>
-            <p class="hint">Timestamped request lifecycle logs, updated every second and retained for two days —
-              Hearth chat, plus any named client (including market_analysis) going through Lemonade or FastFlowLM.
-              Active rows update token counts and throughput in place; completed and failed rows remain available
-              for diagnosis.
-              Streaming tokens right now are visible for Hearth chat, plus OpenCode/Continue
-              traffic through Lemonade or FastFlowLM (their LAN-facing shims report it directly). LM Studio/vLLM/
-              KoboldCPP LAN traffic still has no per-token visibility at the proxy layer, see Help. Each row also
-              shows whether it's actually running on the NPU — Lemonade serves several non-NPU recipes too
-              (llamacpp/GGUF, whisper, embeddings), so a model's name alone isn't a reliable signal (confirmed
-              live: a Lemonade model literally named "...-Coder-NPU" turned out to be a plain GGUF/llamacpp model).</p>
-            <div id="live-feed" class="metric-live-feed metric-dev-log" aria-live="polite"></div>
           </div>
           <div class="console-card span-all">
             <h2>Requests over time <span id="series-tokens" class="hint"></span></h2>

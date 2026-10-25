@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+import database
+import model_metadata_store
 import model_test_profiles as profiles
 from tools.test_flm_model import Cancelled, run_suite
 
@@ -14,11 +16,16 @@ ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
 
 
 class Registry:
-    def __init__(self, directory):
-        self.directory = Path(directory)
+    def __init__(self, directory=None):
+        self.database_backed = directory is None
+        self.directory = Path(directory) if directory is not None else None
         self.lock = threading.RLock()
         self.jobs = {}
         self.cancels = {}
+        if self.database_backed:
+            model_metadata_store.import_test_runs(database.DATA_DIR / 'model-test-runs')
+            self._refresh_from_disk()
+            return
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.directory, 0o700)
         paths = sorted(self.directory.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -27,6 +34,8 @@ class Registry:
         for path in paths[:30]:
             try:
                 job = json.loads(path.read_text())
+                repairs_changed = self._refresh_repair_counts(job)
+                interrupted = False
                 if job['status'] in ACTIVE:
                     try:
                         pid = job.get('owner_pid')
@@ -35,27 +44,106 @@ class Registry:
                         os.kill(pid, 0)
                     except (ProcessLookupError, PermissionError):
                         job.update(status='interrupted', finished_at=time.time(), error='Hearth restarted; start a new run to continue.')
+                        interrupted = True
                         self.save(job)
                 self.jobs[job['id']] = job
+                if repairs_changed and not interrupted:
+                    self.save(job)
             except (ValueError, KeyError, OSError):
                 continue
 
+    @staticmethod
+    def _refresh_repair_counts(job):
+        """Correct saved repair summaries that counted blocked workflow steps."""
+        changed = False
+        for repair in job.get('repairs', []):
+            attempts = [result for result in job.get('results', [])
+                        if result.get('backend') == repair.get('backend')
+                        and result.get('model') == repair.get('model')]
+            if not any(result.get('attempt') == 2 for result in attempts):
+                continue
+            failed_by_attempt = {
+                attempt: {(result['name'], bool(result.get('stream', False)))
+                          for result in attempts
+                          if result.get('attempt') == attempt
+                          and not result.get('passed') and not result.get('skipped')}
+                for attempt in (1, 2)
+            }
+            committed = repair.get('outcome') == 'Applied and verified'
+            fixed = len(failed_by_attempt[1] - failed_by_attempt[2]) if committed else 0
+            remaining = len(failed_by_attempt[2])
+            if repair.get('fixed') != fixed or repair.get('remaining') != remaining:
+                repair['fixed'], repair['remaining'] = fixed, remaining
+                changed = True
+        return changed
+
     def save(self, job):
+        if self.database_backed:
+            model_metadata_store.save_test_run(job)
+            return
         path = self.directory / (job['id'] + '.json')
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(job, indent=2))
         temporary.replace(path)
 
+    def _refresh_from_disk(self):
+        """Merge recent saved jobs so the UI sees runs owned by another Hearth process."""
+        if self.database_backed:
+            present = {}
+            for job in model_metadata_store.list_test_runs():
+                repairs_changed = self._refresh_repair_counts(job)
+                if job.get('status') in ACTIVE:
+                    try:
+                        pid = job.get('owner_pid')
+                        if not isinstance(pid, int) or pid <= 0:
+                            raise ProcessLookupError()
+                        os.kill(pid, 0)
+                    except (ProcessLookupError, PermissionError):
+                        job.update(status='interrupted', finished_at=time.time(),
+                                   error='Hearth process ended; start a new run to continue.')
+                        repairs_changed = True
+                present[job['id']] = job
+                if repairs_changed:
+                    self.save(job)
+            self.jobs = present
+            return
+        paths = sorted(self.directory.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:30]
+        present = set()
+        for path in paths:
+            try:
+                job = json.loads(path.read_text())
+                job_id = job['id']
+                present.add(job_id)
+                if job.get('status') in ACTIVE:
+                    try:
+                        pid = job.get('owner_pid')
+                        if not isinstance(pid, int) or pid <= 0:
+                            raise ProcessLookupError()
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        job.update(status='interrupted', finished_at=time.time(),
+                                   error='Hearth process ended; start a new run to continue.')
+                        self.save(job)
+                self.jobs[job_id] = job
+            except (ValueError, KeyError, OSError):
+                continue
+        for job_id in list(self.jobs):
+            if job_id not in present:
+                self.jobs.pop(job_id, None)
+
     def list(self):
         with self.lock:
+            self._refresh_from_disk()
             return copy.deepcopy(sorted(self.jobs.values(), key=lambda j: j['started_at'], reverse=True)[:30])
 
     def get(self, job_id):
         with self.lock:
+            self._refresh_from_disk()
             return copy.deepcopy(self.jobs.get(job_id))
 
     def cancel(self, job_id):
         with self.lock:
+            self._refresh_from_disk()
             job = self.jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
@@ -70,6 +158,7 @@ class Registry:
     def delete(self, job_id):
         """Delete one saved run; active runs must finish or be cancelled first."""
         with self.lock:
+            self._refresh_from_disk()
             job = self.jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
@@ -77,11 +166,15 @@ class Registry:
                 raise ValueError('Cancel the active run and wait for it to finish before deleting its report.')
             self.jobs.pop(job_id)
             self.cancels.pop(job_id, None)
-            (self.directory / (job_id + '.json')).unlink(missing_ok=True)
+            if self.database_backed:
+                model_metadata_store.delete_test_run(job_id)
+            else:
+                (self.directory / (job_id + '.json')).unlink(missing_ok=True)
             return True
 
     def start(self, targets, repair, load, connection, context, *, background=True):
         with self.lock:
+            self._refresh_from_disk()
             if any(j['status'] in ACTIVE for j in self.jobs.values()):
                 raise ValueError('A model test run is already active. Wait or cancel it first.')
             job = {'id': uuid.uuid4().hex, 'status': 'loading', 'owner_pid': os.getpid(), 'started_at': time.time(),
@@ -94,7 +187,8 @@ class Registry:
             for old in sorted(self.jobs.values(), key=lambda j: j['started_at'], reverse=True)[30:]:
                 self.jobs.pop(old['id'], None)
                 self.cancels.pop(old['id'], None)
-                (self.directory / (old['id'] + '.json')).unlink(missing_ok=True)
+                if not self.database_backed:
+                    (self.directory / (old['id'] + '.json')).unlink(missing_ok=True)
         def update(**values):
             with self.lock:
                 job.update(values)
@@ -118,7 +212,11 @@ class Registry:
                         results = run_suite(served_model, url, context=window, headers=headers,
                             cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case), guarded=backend == 'fastflowlm',
                             profile=lambda body: profiles.apply(body, backend))
-                        failures = {(r['name'], r.get('stream', False)) for r in results if not r['passed']}
+                        # A failed workflow step marks its dependents as skipped. Those
+                        # blocked steps are visible in the report, but are not checks
+                        # that a compatibility repair can fix or should count against.
+                        failures = {(r['name'], r.get('stream', False)) for r in results
+                                    if not r['passed'] and not r.get('skipped')}
                         if repair and failures:
                             if any(r.get('backend_unavailable') for r in results):
                                 with self.lock:
@@ -139,7 +237,8 @@ class Registry:
                                     cancel=cancel, on_result=lambda r: record(r, 2), on_case=lambda case: update(current_check=case),
                                     guarded=backend == 'fastflowlm', profile=lambda body: profiles.apply_recipe(body, profiles.RECIPE))
                                 # Keep a recipe only when at least one original assertion now passes.
-                                remaining = {(r['name'], r.get('stream', False)) for r in retried if not r['passed']}
+                                remaining = {(r['name'], r.get('stream', False)) for r in retried
+                                             if not r['passed'] and not r.get('skipped')}
                                 committed = len(retried) == len(results) and remaining < failures
                                 if committed:
                                     profiles.set_profile(backend, served_model, profiles.RECIPE)

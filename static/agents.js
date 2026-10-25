@@ -5,6 +5,7 @@
   const initialTaskId=app?.dataset.taskId || '';
   let selected = null, task = null, pendingSignature = '', timer;
   let rerunAcceptedAt = 0;
+  let editingScheduleId = null;
   let agentEventSource=null, agentEventTaskId=null;
   const selectedShareUsers = new Map();
   let shareTaskId = null, shareSearchTimer;
@@ -49,8 +50,7 @@
         agentEventSource?.close();agentEventSource=null;agentEventTaskId=null;
       }
     }
-    const owner = !task.shared;
-    if (el('agent-sharing')) el('agent-sharing').hidden = !owner;
+    if (el('agent-sharing')) el('agent-sharing').hidden = false;
     if(el('agent-model-change'))el('agent-model-change').hidden=!['pausing','paused','blocked','interrupted'].includes(task.status);
     for (const id of ['agent-pause','agent-resume','agent-stop','agent-delete','agent-send-instructions']) if(el(id))el(id).hidden = false;
     if(el('agent-rerun'))el('agent-rerun').hidden=task.status!=='completed';
@@ -65,7 +65,7 @@
     const liveIndicator=el('agent-live-indicator');
     if(liveIndicator)liveIndicator.hidden=!['queued','running','verifying','waiting_input'].includes(task.status);
     if(el('agent-target'))el('agent-target').textContent = `${task.shared ? 'Shared project' : task.project} · ${task.model.providerID}/${task.model.id}`;
-    if (owner && shareTaskId !== task.id) {
+    if (shareTaskId !== task.id) {
       shareTaskId = task.id;
       selectedShareUsers.clear();
       renderShareSelection();
@@ -90,11 +90,13 @@
     if(el('agent-download'))el('agent-download').hidden = task.status !== 'completed';
     const resultHeading=el('agent-result-heading');
     if(resultHeading)resultHeading.textContent=task.completion?'Completed result':task.summary?'Latest agent response':task.error?'No result returned':'Agent response';
-    if(el('agent-result-meta'))el('agent-result-meta').textContent=[task.result_label,({web:'Web page · HTML',document:'Document',general:'General result'})[task.result_platform||'general']].filter(Boolean).join(' · ');
+    if(el('agent-result-meta'))el('agent-result-meta').textContent=[task.result_label,({web:'Web page · HTML',report:'JSON results · HTML view',document:'Document',general:'General result'})[task.result_platform||'general']].filter(Boolean).join(' · ');
+    if(el('agent-result-view-heading'))el('agent-result-view-heading').textContent=task.result_label || 'Results';
     const previewWrap=el('agent-html-preview-wrap'), preview=el('agent-html-preview');
     if(previewWrap&&preview){
-      const showPreview=task.result_platform==='web' && task.status==='completed';
+      const showPreview=['web','report'].includes(task.result_platform) && task.status==='completed';
       previewWrap.hidden=!showPreview;
+      preview.title=`${task.result_label || 'Results'} HTML view`;
       const src=showPreview?`/api/agent-tasks/${encodeURIComponent(task.id)}/preview`:'';
       if(preview.dataset.src!==src){preview.dataset.src=src;preview.src=src || 'about:blank';}
     }
@@ -313,6 +315,22 @@
         node('p',`${schedule.enabled ? 'Enabled' : 'Paused'} · every ${schedule.interval_value} ${schedule.interval_unit}${timeLabel} · next run ${localDate(schedule.next_run_at)}`,card).className='model-meta';
         if(schedule.last_run_at) node('p',`Last run ${localDate(schedule.last_run_at)}${schedule.last_task_id ? ` · assignment ${schedule.last_task_id.slice(0,8)}` : ''}`,card).className='model-meta';
         if(schedule.last_error) node('p',schedule.last_error,card).className='test-result-fail';
+        button('Edit schedule',card,()=>{
+          const form=el('agent-schedule-form'), details=document.querySelector('.agent-schedule-create');
+          if(!form)return;
+          editingScheduleId=schedule.id;
+          if(details)details.open=true;
+          form.elements.task_id.disabled=true;
+          form.elements.task_id.value=schedule.task_id;
+          form.elements.interval_value.value=schedule.interval_value;
+          form.elements.interval_unit.value=schedule.interval_unit;
+          form.elements.run_time.value=schedule.run_time || '';
+          form.elements.timezone.value=schedule.timezone || browserTimezone;
+          intervalSelect?.dispatchEvent(new Event('change'));
+          el('agent-schedule-create').textContent='Save schedule';
+          el('agent-schedule-cancel').hidden=false;
+          form.scrollIntoView({behavior:'smooth',block:'center'});
+        });
         button(schedule.enabled ? 'Pause schedule' : 'Resume schedule',card,async()=>{
           try { await api(`/api/agent-schedules/${schedule.id}`,{enabled:!schedule.enabled},'PATCH'); await refreshSchedules(); }
           catch(error) { el('agent-schedule-status').textContent=error.message; }
@@ -330,7 +348,7 @@
     const select=el('agent-schedule-project'); if(!select)return;
     try {
       const {tasks}=await api('/api/agent-tasks');
-      const eligible=tasks.filter(item=>!item.shared && ['queued','running','waiting_input','verifying','completed'].includes(item.status));
+      const eligible=tasks.filter(item=>['queued','running','waiting_input','verifying','paused','blocked','interrupted','completed','stopped'].includes(item.status));
       for(const task of eligible) {
         const option=document.createElement('option'); option.value=task.id; option.textContent=`${task.title} · ${friendlyStatus(task.status)}`; select.append(option);
       }
@@ -342,7 +360,7 @@
   el('agent-schedule-form')?.addEventListener('submit',async event=>{
     event.preventDefault();
     const form=event.currentTarget, values=Object.fromEntries(new FormData(form));
-    values.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    values.timezone=values.timezone || browserTimezone;
     const multiplier={minutes:60,hours:3600,days:86400,weeks:604800}[values.interval_unit];
     values.interval_value=Number(values.interval_value); values.interval_seconds=values.interval_value*multiplier;
     if(!Number.isInteger(values.interval_seconds) || values.interval_seconds<300 || values.interval_seconds>31536000) {
@@ -350,11 +368,23 @@
     }
     const submit=el('agent-schedule-create'); submit.disabled=true;
     try {
-      const created=await api('/api/agent-schedules',values);
-      el('agent-schedule-status').textContent=`Schedule created. First run: ${localDate(created.next_run_at)}.`;
-      form.reset(); if(timezoneInput)timezoneInput.value=browserTimezone; await refreshSchedules();
+      const updated=editingScheduleId;
+      const saved=updated
+        ? await api(`/api/agent-schedules/${updated}`,values,'PUT')
+        : await api('/api/agent-schedules',values);
+      el('agent-schedule-status').textContent=`Schedule ${updated?'updated':'created'}. Next run: ${localDate(saved.next_run_at)}.`;
+      editingScheduleId=null; form.reset(); if(timezoneInput)timezoneInput.value=browserTimezone;
+      form.elements.task_id.disabled=false;
+      el('agent-schedule-create').textContent='Create schedule'; el('agent-schedule-cancel').hidden=true;
+      await refreshSchedules();
     } catch(error) { el('agent-schedule-status').textContent=error.message; }
     finally { submit.disabled=false; }
+  });
+  el('agent-schedule-cancel')?.addEventListener('click',()=>{
+    const form=el('agent-schedule-form'); editingScheduleId=null; form?.reset();
+    if(form)form.elements.task_id.disabled=false;
+    if(timezoneInput)timezoneInput.value=browserTimezone;
+    el('agent-schedule-create').textContent='Create schedule'; el('agent-schedule-cancel').hidden=true;
   });
   const browserTimezone=Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const timezoneInput=document.querySelector('#agent-schedule-form [name="timezone"]');

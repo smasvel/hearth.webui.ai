@@ -1,6 +1,6 @@
 
--- Model-test reports are private JSON files in data/model-test-runs, not SQL rows;
--- first-time setup creates that directory with owner-only access.
+-- Hearth-managed model registries, test reports, and reviewed resource metadata are
+-- stored in PostgreSQL; backend model assets remain in their runtime-managed locations.
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -101,8 +101,44 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS model_registry (
+    backend TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (backend, model_id)
+);
+COMMENT ON TABLE model_registry IS
+    'Hearth-managed downloaded-model registry metadata, keyed by backend and model ID.';
+COMMENT ON COLUMN model_registry.payload IS
+    'Backend-specific model metadata such as local model path, context length, or dtype.';
+CREATE TABLE IF NOT EXISTS model_test_runs (
+    id TEXT PRIMARY KEY,
+    started_at DOUBLE PRECISION NOT NULL,
+    payload TEXT NOT NULL
+);
+COMMENT ON TABLE model_test_runs IS
+    'Persisted model evaluation reports and active run state; downloadable reports are serialized from this table.';
+CREATE INDEX IF NOT EXISTS idx_model_test_runs_started ON model_test_runs(started_at DESC);
+CREATE TABLE IF NOT EXISTS model_resource_warnings (
+    backend TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (backend, model_id)
+);
+COMMENT ON TABLE model_resource_warnings IS
+    'Reviewed model and backend resource observations used to annotate the model inventory.';
+CREATE TABLE IF NOT EXISTS model_metadata_migrations (
+    key TEXT PRIMARY KEY,
+    migrated_at DOUBLE PRECISION NOT NULL
+);
+COMMENT ON TABLE model_metadata_migrations IS
+    'One-time import markers for legacy model metadata files.';
 COMMENT ON TABLE settings IS
-    'Admin-editable settings; provider API-key values are stored as versioned authenticated ciphertext.';
+    'Admin settings, backend credentials, and per-model compatibility profiles; provider API-key values are stored as versioned authenticated ciphertext.';
 
 
 CREATE TABLE IF NOT EXISTS browse_history (

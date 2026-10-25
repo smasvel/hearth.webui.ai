@@ -158,7 +158,7 @@ def finish(
         _persist_finished(entry)
 
 
-def snapshot() -> list[dict]:
+def snapshot(limit: int = 100) -> list[dict]:
     now = time.monotonic()
     with _lock:
         cutoff = time.time() - _RECENT_KEEP_SECONDS
@@ -189,8 +189,6 @@ def snapshot() -> list[dict]:
             "status": e["status"],
             "status_code": e.get("status_code"),
             "error_detail": e.get("error_detail"),
-            "request_content": e.get("request_content"),
-            "response_content": e.get("response_content") or None,
             "response_truncated": e.get("response_truncated", False),
         })
     # Developer logs read like a conventional event stream: newest displayed timestamp
@@ -200,7 +198,34 @@ def snapshot() -> list[dict]:
         key=lambda r: r.get("finished_at") or r.get("started_at") or 0,
         reverse=True,
     )
-    return out
+    return out[:max(1, min(int(limit), 500))]
+
+
+def trace(request_id: int) -> dict | None:
+    """Load one request's saved trace on demand instead of shipping thousands per poll."""
+    with _lock:
+        entry = next((row for row in _active.values() if row.get("id") == request_id), None)
+        if entry is None:
+            entry = next((row for row in reversed(_recent) if row.get("id") == request_id), None)
+        if entry is not None:
+            return {
+                "request_content": entry.get("request_content"),
+                "response_content": entry.get("response_content") or None,
+                "response_truncated": entry.get("response_truncated", False),
+            }
+    with database.connect() as conn:
+        row = conn.execute("SELECT payload FROM developer_traces WHERE id = %s", (request_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        entry = json.loads(row["payload"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return {
+        "request_content": entry.get("request_content"),
+        "response_content": entry.get("response_content") or None,
+        "response_truncated": entry.get("response_truncated", False),
+    }
 
 
 def npu_busy() -> bool:

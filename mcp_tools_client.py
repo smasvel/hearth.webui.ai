@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import sys
 from pathlib import Path
@@ -69,6 +70,40 @@ _loop_thread: threading.Thread | None = None
 _sessions: dict[str, ClientSession] = {}
 _openai_tools_cache: list[dict] | None = None
 _init_lock = threading.Lock()
+
+# Keep Hearth chat's fixed tool overhead small enough for local 8K models. These
+# cover ordinary browser navigation, inspection, waiting, and form interaction;
+# advanced automation tools remain available to OpenCode through its own config.
+_CHAT_TOOL_NAMES = {
+    "browser_navigate", "navigate",
+    "browser_navigate_back", "navigate_back",
+    "browser_tabs", "browse_tabs", "browser_snapshot", "browse_tab",
+    "browser_find", "find", "browser_wait_for", "wait_for",
+    "browser_click", "click", "browser_type", "type",
+    "browser_fill_form", "fill_form", "browser_select_option", "select_option",
+    "execute_python",
+}
+CHAT_TOOL_RESULT_LIMIT = 1400
+CHAT_BROWSER_INSPECTION_LIMIT = 6000
+
+
+def select_chat_tools(tools: list[dict]) -> list[dict]:
+    """Return the compact, user-facing MCP tool set for Hearth chat."""
+    selected = [tool for tool in tools
+                if (tool.get("function") or {}).get("name", "").split("__", 1)[-1]
+                in _CHAT_TOOL_NAMES]
+    # Retain forward compatibility if an installed MCP server renames its tools.
+    return selected or tools
+
+
+def compact_chat_tool_result(result: str, limit: int = CHAT_TOOL_RESULT_LIMIT) -> str:
+    """Bound browser output retained in the model context without losing both ends."""
+    if len(result) <= limit:
+        return result
+    marker = "\n[… middle of browser result omitted to fit model context …]\n"
+    remaining = max(0, limit - len(marker))
+    head = (remaining * 3) // 4
+    return result[:head] + marker + result[-(remaining - head):]
 
 
 def _run_loop_forever(ready: threading.Event) -> None:
@@ -200,6 +235,47 @@ async def _call(server_name: str, tool_name: str, arguments: dict) -> str:
     return text
 
 
+async def _inspect_open_tabs() -> str:
+    """Wait for pages/popups, then select and snapshot every open browser tab."""
+    wait_result = await _call("playwright", "browser_wait_for", {"time": 2})
+    tabs = await _call("playwright", "browser_tabs", {"action": "list"})
+    if tabs.startswith(("Error:", "Tool error:")):
+        return f"Page settling wait: {wait_result}\nCould not list open pages: {tabs}"
+    tab_lines = [line for line in tabs.splitlines() if re.match(r"\s*-\s*\d+:", line)]
+    if not tab_lines:
+        snapshot = await _call("playwright", "browser_snapshot", {"depth": 4})
+        return f"Open-page inspection (current page):\n{snapshot}"
+
+    sections = ["Open pages discovered (including popup tabs):", tabs]
+    for line in tab_lines:
+        match = re.match(r"\s*-\s*(\d+):", line)
+        if not match:
+            continue
+        index = int(match.group(1))
+        selected = await _call("playwright", "browser_tabs", {"action": "select", "index": index})
+        if selected.startswith(("Error:", "Tool error:")):
+            sections.append(f"\n{line}\nCould not select tab {index}: {selected}")
+            continue
+        page_wait = await _call("playwright", "browser_wait_for", {"time": 2})
+        snapshot = await _call("playwright", "browser_snapshot", {"depth": 4})
+        if len(snapshot) > 850:
+            snapshot = snapshot[:620] + "\n[… page snapshot shortened …]\n" + snapshot[-190:]
+        sections.append(f"\n{line}\nPage settled: {page_wait}\nPage snapshot:\n{snapshot}")
+    return "\n".join(sections)
+
+
+async def _browser_action_and_inspect(tool_name: str, arguments: dict) -> str:
+    """Run a page-changing action, settle, and inspect all tabs including popups."""
+    action = await _call("playwright", tool_name, arguments)
+    if action.startswith(("Error:", "Tool error:")):
+        return action
+    inspection = await _inspect_open_tabs()
+    if inspection.startswith(("Error:", "Tool error:")):
+        return f"{action}\nPage inspection failed: {inspection}"
+    return (f"{action}\n\nPage-load confirmation: waited after the action and inspected "
+            "every open tab, including popups.\n\n" + inspection)
+
+
 def call_tool(qualified_name: str, arguments: dict | str) -> str:
     """Synchronous, thread-safe. `qualified_name` is "server__toolname" as produced by
     ensure_started()'s tool list. `arguments` may be a dict or a JSON string (chat
@@ -216,7 +292,13 @@ def call_tool(qualified_name: str, arguments: dict | str) -> str:
         return f"Error: unknown tool '{qualified_name}' (missing server prefix)."
     server_name, tool_name = qualified_name.split("__", 1)
     assert _loop is not None
-    future = asyncio.run_coroutine_threadsafe(_call(server_name, tool_name, arguments), _loop)
+    if server_name == "playwright" and tool_name in {
+            "browser_navigate", "browser_navigate_back", "browser_click", "browser_type",
+            "browser_fill_form", "browser_select_option", "browser_wait_for", "browser_tabs"}:
+        operation = _browser_action_and_inspect(tool_name, arguments)
+    else:
+        operation = _call(server_name, tool_name, arguments)
+    future = asyncio.run_coroutine_threadsafe(operation, _loop)
     try:
         result = future.result(timeout=120)
         # Browser actions initiated by a model bypass page_scraper.fetch_pages(), the

@@ -32,9 +32,9 @@ Hearth and its three proxies use PostgreSQL 18 in Docker Compose, bound to
 `127.0.0.1:55432`. `.env` supplies `DATABASE_URL`; `.env.postgres` holds the Compose
 credentials.
 
-Model-test history is kept separately as private JSON files in
-`data/model-test-runs`; it is not part of the PostgreSQL DDL. Include that
-directory in backups when preserving test reports matters.
+Model-test history, backend model registries, and reviewed model resource notes are
+stored in PostgreSQL and included in database backups. Existing report and registry
+JSON files are imported into PostgreSQL and removed during the one-time startup migration.
 
 ```bash
 docker compose --env-file .env.postgres ps

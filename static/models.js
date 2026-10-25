@@ -206,7 +206,7 @@
     }
     if (!managedAutomatically && !unavailable && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       actions.appendChild(btn("Test tools", "", () => {
-        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}`);
+        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=test-tools`);
       }, isBusy));
       actions.appendChild(btn("Reset repair", "", () => {
         window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=reset`);

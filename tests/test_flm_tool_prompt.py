@@ -40,11 +40,20 @@ class ToolPromptTests(unittest.TestCase):
         self.assertIs(_ensure_no_thinking({**body, 'enable_thinking': True})['messages'], body['messages'])
 
     def test_native_qwen38_does_not_duplicate_schemas(self):
-        for model in ('qwen3.8-mtp:27b', 'flm/qwen3.8-mtp:27b', 'minicpm-v-4.7:1b', 'flm/minicpm-v-4.7:1b'):
+        for model in ('qwen3.8-mtp:27b', 'flm/qwen3.8-mtp:27b'):
             body = {'model': model, 'tools': [{'type': 'function'}],
                     'messages': [{'role': 'system', 'content': 'Keep this instruction.'},
                                  {'role': 'user', 'content': 'hi'}]}
             self.assertIs(_inject_tools_block(body), body)
+
+    def test_minicpm_gets_model_specific_tool_reminder_without_schema_duplication(self):
+        body = {'model': 'flm/minicpm-v-4.7:1b', 'tools': [{'type': 'function'}],
+                'messages': [{'role': 'system', 'content': 'Keep this instruction.'},
+                             {'role': 'user', 'content': 'hi'}]}
+        result = _inject_tools_block(body)
+        self.assertIn('FastFlowLM MiniCPM tool contract', result['messages'][0]['content'])
+        self.assertIn('Keep this instruction.', result['messages'][0]['content'])
+        self.assertEqual(result['tools'], body['tools'])
 
     def test_legacy_model_still_gets_tool_instructions(self):
         body = {'model': 'qwen3.6-moe:35b-a3b', 'tools': [{'type': 'function'}],

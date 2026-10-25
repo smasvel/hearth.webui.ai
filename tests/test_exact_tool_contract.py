@@ -67,3 +67,39 @@ class ExactToolContractTests(unittest.TestCase):
         self.assertEqual(calls[0]['id'], 'real-call')
         self.assertEqual(finishes, ['tool_calls'])
         self.assertEqual(usage['completion_tokens'], 44)
+
+    def test_named_choice_repairs_wrong_or_missing_call_from_exact_request(self):
+        b = body()
+        b['tool_choice'] = {'type': 'function', 'function': {'name': 'edit'}}
+        wrong = payload(ARGS)
+        wrong['choices'][0]['message']['tool_calls'][0]['function']['name'] = 'glob'
+        self.assertTrue(contract.enforce_named_choice_completion(wrong, b))
+        call = wrong['choices'][0]['message']['tool_calls'][0]
+        self.assertEqual(call['function']['name'], 'edit')
+        self.assertEqual(json.loads(call['function']['arguments']), ARGS)
+        self.assertEqual(wrong['choices'][0]['finish_reason'], 'tool_calls')
+
+        missing = {'choices': [{'message': {'content': 'I will edit that now.'}, 'finish_reason': 'stop'}]}
+        self.assertTrue(contract.enforce_named_choice_completion(missing, b))
+        self.assertEqual(missing['choices'][0]['message']['tool_calls'][0]['function']['name'], 'edit')
+        self.assertIsNone(missing['choices'][0]['message']['content'])
+
+    def test_named_choice_does_not_create_call_without_exact_matching_request(self):
+        b = body()
+        b['tool_choice'] = {'type': 'function', 'function': {'name': 'read'}}
+        p = {'choices': [{'message': {'content': 'Read the file.'}, 'finish_reason': 'stop'}]}
+        before = copy.deepcopy(p)
+        self.assertFalse(contract.enforce_named_choice_completion(p, b))
+        self.assertEqual(p, before)
+
+    def test_named_choice_stream_repairs_response(self):
+        b = body()
+        b['tool_choice'] = {'type': 'function', 'function': {'name': 'edit'}}
+        event = {'id': 'chatcmpl-1', 'object': 'chat.completion.chunk', 'model': 'test',
+                 'choices': [{'index': 0, 'delta': {'content': 'I will edit it.'}, 'finish_reason': 'stop'}]}
+        lines = [b'data: ' + json.dumps(event).encode() + b'\n', b'data: [DONE]\n']
+        repaired = contract.enforce_named_choice_sse(lines, b)
+        calls, _, finishes, _ = decode(Mock(content=b''.join(repaired)), True)
+        self.assertEqual(calls[0]['name'], 'edit')
+        self.assertEqual(calls[0]['arguments'], ARGS)
+        self.assertEqual(finishes, ['tool_calls'])

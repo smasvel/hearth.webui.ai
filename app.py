@@ -1,6 +1,7 @@
 import datetime
 import concurrent.futures
 import functools
+import html
 import ipaddress
 import json
 import os
@@ -53,6 +54,7 @@ import memory_store
 import npu_request_lock
 import resource_guard
 import model_resource_warnings
+import model_metadata_store
 import security_scan
 import settings_store
 import secret_store
@@ -68,7 +70,11 @@ memory_store.init_db()
 users_store.init_db()
 agent_store.init_db()
 settings_store.init_db()
+model_metadata_store.init_db()
 settings_store.migrate_legacy_environment()
+model_resource_warnings.init_db()
+kobold.initialize_registry()
+vllm.initialize_registry()
 quiz_store.init_db()
 metrics_store.init_db()
 caddy_metrics.start_tailer()  # ingest LAN (OpenCode/VSCode) hits from Caddy's access log
@@ -1268,6 +1274,20 @@ def api_browse_history():
     ))
 
 
+@app.delete("/api/browse-history/<int:visit_id>")
+@admin_required
+def api_browse_history_delete(visit_id):
+    if not browse_history_store.delete_visit(visit_id):
+        return jsonify({"error": "History entry not found."}), 404
+    return jsonify({"deleted": True})
+
+
+@app.delete("/api/browse-history")
+@admin_required
+def api_browse_history_clear():
+    return jsonify({"deleted": browse_history_store.clear_history()})
+
+
 @app.get("/dmv")
 @login_required
 def dmv_page():
@@ -1378,6 +1398,13 @@ def metrics_page():
     return render_template("metrics.html", username=session.get("username"))
 
 
+@app.get("/live-logs")
+@admin_required
+def live_logs_page():
+    """Dedicated live request diagnostics feed."""
+    return render_template("live_logs.html", username=session.get("username"))
+
+
 def _metrics_hours() -> float | None:
     try:
         hours = float(request.args.get("hours", 24))
@@ -1428,7 +1455,20 @@ def api_metrics_live():
     they're the only LAN-facing processes that actually read each SSE chunk as it arrives.
     LM Studio/vLLM/KoboldCPP LAN traffic still can't appear here — no shim sits inline for
     those, so nothing on this app's side ever sees their streaming bodies (see live_requests.py)."""
-    return jsonify({"rows": live_requests.snapshot()})
+    try:
+        limit = int(request.args.get("limit", 100))
+    except ValueError:
+        limit = 100
+    return jsonify({"rows": live_requests.snapshot(limit=limit)})
+
+
+@app.get("/api/metrics/live/<int:request_id>/trace")
+@admin_required
+def api_metrics_live_trace(request_id):
+    trace = live_requests.trace(request_id)
+    if trace is None:
+        return jsonify({"error": "Request trace not found."}), 404
+    return jsonify(trace)
 
 
 @app.post("/api/metrics/requests/<int:request_id>/coding-review")
@@ -1832,7 +1872,7 @@ def api_set_model_thinking():
 
 
 _model_test_context = threading.local()
-_model_test_registry = model_tests.Registry(database.DATA_DIR / 'model-test-runs')
+_model_test_registry = model_tests.Registry()
 _agent_container_client = agent_container.ContainerOpenCode(database.DATA_DIR / 'agent-runtime')
 _agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks', client=_agent_container_client,
     prepare_model=lambda job: _prepare_agent_model(job))
@@ -1956,6 +1996,28 @@ def _agent_task_owned_by_current_user(job):
     return bool(job) and job.get('owner') == session.get('user_id')
 
 
+def _agent_schedules_visible_to_current_user():
+    visible_tasks = {job['id']: job for job in _agent_tasks.list()
+                     if _agent_task_visible_to_current_user(job)}
+    owners = {job['owner'] for job in visible_tasks.values()}
+    schedules = []
+    for owner_id in owners:
+        for schedule in agent_store.list_schedules(owner_id):
+            task_id = schedule.get('task_id') or schedule.get('project_task_id')
+            if task_id in visible_tasks:
+                schedules.append(schedule)
+    return schedules
+
+
+def _agent_schedule_visible_to_current_user(schedule_id):
+    return next((schedule for schedule in _agent_schedules_visible_to_current_user()
+                 if schedule['id'] == schedule_id), None)
+
+
+def _public_agent_schedule(schedule):
+    return {key: value for key, value in schedule.items() if key != 'owner'}
+
+
 @app.get('/api/agent-tasks/models')
 @agent_workflow_required
 def api_agent_models():
@@ -2021,7 +2083,6 @@ def api_agent_tasks_get(task_id):
         return jsonify({'error': 'Assignment not found.'}), 404
     if not _agent_task_owned_by_current_user(job):
         job.pop('owner', None)
-        job.pop('shared_with', None)
         job['shared'] = True
     return jsonify(job)
 
@@ -2178,14 +2239,57 @@ def api_agent_tasks_preview(task_id):
     job = _agent_tasks.get(task_id)
     if not _agent_task_visible_to_current_user(job):
         return jsonify({'error': 'Assignment not found.'}), 404
-    if job.get('result_platform', 'general') != 'web':
+    platform = job.get('result_platform', 'general')
+    if platform not in ('web', 'report'):
         return jsonify({'error': 'This assignment is not configured for an HTML result.'}), 409
+    if platform == 'report' and job.get('status') != 'completed':
+        return jsonify({'error': 'The accepted agent result is not available until the assignment completes.'}), 409
     files = agent_store.list_workspace_files(job['owner'])
-    entry = next((item for item in files if not item['is_dir'] and item['path'] in
-                  ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
-    if not entry:
-        return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
-    response = Response(bytes(entry['content']), mimetype='text/html')
+    if platform == 'web':
+        entry = next((item for item in files if not item['is_dir'] and item['path'] in
+                      ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
+        if not entry:
+            return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
+        content = bytes(entry['content'])
+    else:
+        json_files = [item for item in files if not item['is_dir'] and item['path'].lower().endswith('.json')]
+        preferred = {'results.json': 0, 'result.json': 1, 'report.json': 2, 'scan.json': 3}
+        json_files.sort(key=lambda item: (
+            preferred.get(Path(item['path']).name.lower(), 10),
+            -float(item.get('updated_at') or 0), item['path'].lower()))
+        report = None
+        report_name = None
+        report_found = False
+        for item in json_files:
+            if len(item['content']) > 10 * 1024 * 1024:
+                continue
+            try:
+                report = json.loads(bytes(item['content']).decode('utf-8'))
+                report_name = item['path']
+                report_found = True
+                break
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+        if not report_found:
+            final_text = str(job.get('summary') or job.get('completion') or '').strip()
+            if not final_text:
+                return jsonify({'error': 'No saved JSON report or accepted final response is available.'}), 404
+            try:
+                report = json.loads(final_text)
+            except json.JSONDecodeError:
+                report = {'final_response': final_text}
+            report_name = 'Accepted agent final response'
+        label = html.escape(str(job.get('result_label') or 'Results'))
+        heading = html.escape(report_name or 'Results')
+        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        content = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
+                   "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                   f"<title>{label}</title><style>body{{font:15px system-ui,sans-serif;margin:24px;color:#202124}}"
+                   "h1{font-size:1.35rem}p{color:#555}pre{white-space:pre-wrap;overflow-wrap:anywhere;"
+                   "padding:16px;background:#f4f5f7;border-radius:8px}</style>"
+                   f"<h1>{label}</h1><p>{heading} · accepted agent result</p>"
+                   f"<pre>{html.escape(rendered)}</pre></html>").encode('utf-8')
+    response = Response(content, mimetype='text/html')
     response.headers['Content-Security-Policy'] = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; sandbox"
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Cache-Control'] = 'no-store'
@@ -2308,7 +2412,7 @@ def api_agent_share_targets():
 @agent_workflow_required
 def api_agent_task_shares(task_id):
     job = _agent_tasks.get(task_id)
-    if not _agent_task_owned_by_current_user(job):
+    if not _agent_task_visible_to_current_user(job):
         return jsonify({'error': 'Assignment not found.'}), 404
     body = request.get_json(silent=True)
     user_ids = body.get('user_ids') if isinstance(body, dict) else None
@@ -2323,7 +2427,7 @@ def api_agent_task_shares(task_id):
     )}
     with _agent_tasks.lock:
         current = _agent_tasks.jobs.get(task_id)
-        if not current or current.get('owner') != session['user_id']:
+        if not _agent_task_visible_to_current_user(current):
             return jsonify({'error': 'Assignment not found.'}), 404
         current['shared_with'] = user_ids
         _agent_tasks.save(current)
@@ -2333,7 +2437,8 @@ def api_agent_task_shares(task_id):
 @app.get('/api/agent-schedules')
 @agent_workflow_required
 def api_agent_schedules_list():
-    return jsonify({'schedules': _agent_tasks.list_schedules(session['user_id'])})
+    return jsonify({'schedules': [_public_agent_schedule(item)
+                                  for item in _agent_schedules_visible_to_current_user()]})
 
 
 @app.post('/api/agent-schedules')
@@ -2345,7 +2450,10 @@ def api_agent_schedules_create():
     if not isinstance(body, dict):
         return jsonify({'error': 'A schedule configuration is required.'}), 400
     try:
-        return jsonify(_agent_tasks.create_schedule(body, session['user_id'])), 201
+        task = _agent_tasks.get(str(body.get('task_id', '')).strip())
+        if not _agent_task_visible_to_current_user(task):
+            return jsonify({'error': 'Assignment not found.'}), 404
+        return jsonify(_public_agent_schedule(_agent_tasks.create_schedule(body, task['owner']))), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
@@ -2356,16 +2464,38 @@ def api_agent_schedules_create():
 @agent_workflow_required
 def api_agent_schedules_update(schedule_id):
     body = request.get_json(silent=True)
-    if not isinstance(body, dict) or type(body.get('enabled')) is not bool:
+    if not isinstance(body, dict):
+        return jsonify({'error': 'A schedule update is required.'}), 400
+    visible = _agent_schedule_visible_to_current_user(schedule_id)
+    if not visible:
+        return jsonify({'error': 'Schedule not found.'}), 404
+    if type(body.get('enabled')) is not bool:
         return jsonify({'error': 'enabled must be a boolean.'}), 400
-    schedule = _agent_tasks.set_schedule_enabled(schedule_id, session['user_id'], body['enabled'])
-    return (jsonify(schedule), 200) if schedule else (jsonify({'error': 'Schedule not found.'}), 404)
+    schedule = _agent_tasks.set_schedule_enabled(schedule_id, visible['owner'], body['enabled'])
+    return (jsonify(_public_agent_schedule(schedule)), 200) if schedule else (jsonify({'error': 'Schedule not found.'}), 404)
+
+
+@app.put('/api/agent-schedules/<schedule_id>')
+@agent_workflow_required
+def api_agent_schedules_edit(schedule_id):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'A schedule configuration is required.'}), 400
+    visible = _agent_schedule_visible_to_current_user(schedule_id)
+    if not visible:
+        return jsonify({'error': 'Schedule not found.'}), 404
+    try:
+        schedule = _agent_tasks.update_schedule(schedule_id, visible['owner'], body)
+        return (jsonify(_public_agent_schedule(schedule)), 200) if schedule else (jsonify({'error': 'Schedule not found.'}), 404)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @app.delete('/api/agent-schedules/<schedule_id>')
 @agent_workflow_required
 def api_agent_schedules_delete(schedule_id):
-    if not _agent_tasks.delete_schedule(schedule_id, session['user_id']):
+    visible = _agent_schedule_visible_to_current_user(schedule_id)
+    if not visible or not _agent_tasks.delete_schedule(schedule_id, visible['owner']):
         return jsonify({'error': 'Schedule not found.'}), 404
     return jsonify({'deleted': True})
 
@@ -2386,7 +2516,7 @@ def api_model_tests_start():
     requested = body.get('models')
     if not isinstance(requested, list) or not 1 <= len(requested) <= 128:
         return jsonify({'error': 'Select between 1 and 128 installed chat models.'}), 400
-    if not isinstance(body.get('auto_repair', True), bool):
+    if not isinstance(body.get('auto_repair', False), bool):
         return jsonify({'error': 'auto_repair must be a boolean.'}), 400
     inventory = {(m.get('backend'), m.get('id')): m for m in _test_model_inventory()}
     targets = []
@@ -2402,7 +2532,7 @@ def api_model_tests_start():
         seen.add(pair)
         targets.append({'backend': pair[0], 'id': pair[1]})
     try:
-        job = _model_test_registry.start(targets, body.get('auto_repair', True),
+        job = _model_test_registry.start(targets, body.get('auto_repair', False),
             _test_load_model, _test_connection, _test_context)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 409
@@ -4379,16 +4509,15 @@ def api_chat():
                 max_tokens=max_tokens, is_npu=is_npu,
             )
             # MCP tools (browser automation, persistent Python REPL - see mcp_tools_client.py)
-            # gated to backends this app has actually verified tool-call correctly on: KoboldCPP
-            # (with kobold.service's --jinja --jinja_tools fix) and FastFlowLM (via
-            # flm_tool_shim.py's hardening, not the raw engine - see below). Every other backend
-            # in this session's history has produced malformed/empty-argument tool calls at some
-            # point, so they're deliberately left out rather than offered and hoping for the best.
-            use_tools = backend in (kobold, fastflowlm, sglang)
+            # are available on every chat backend. Each backend has a guarded tool-call path
+            # where needed; withholding the tool schema makes the model claim it cannot browse
+            # even though Hearth's Playwright MCP server is installed and configured.
+            use_tools = backend in (kobold, fastflowlm, sglang, lemonade, lms)
             tools_list = None
             if use_tools:
                 try:
-                    tools_list = mcp_tools_client.ensure_started() or None
+                    available_tools = mcp_tools_client.ensure_started()
+                    tools_list = mcp_tools_client.select_chat_tools(available_tools) or None
                 except Exception as exc:
                     print(f"[webui-chat] MCP tools unavailable, continuing without: {exc}", flush=True)
                     tools_list = None
@@ -4417,6 +4546,12 @@ def api_chat():
                     extra_kwargs["tools"] = tools_list
 
                 loop_messages = list(messages)
+                if tools_list:
+                    loop_messages.insert(0, {"role": "system", "content":
+                        "For online lookups, use the offered Playwright tools and inspect their returned evidence. "
+                        "After page-changing actions, Hearth waits and inspects every open tab, including popups. "
+                        "Use tabs, snapshots, find, click, and back as needed to investigate; do not stop at a "
+                        "loading message or claim a page was checked without its returned snapshot."})
                 MAX_TOOL_ROUNDS = 6
                 tool_round = 0
                 while True:
@@ -4505,6 +4640,18 @@ def api_chat():
                             f"data: {json.dumps({'choices': [{'delta': {'content': marker}}]})}\n\n"
                         )
                         tool_result = mcp_tools_client.call_tool(tc_name, tc["function"]["arguments"])
+                        if backend is fastflowlm:
+                            result_limit = (
+                                mcp_tools_client.CHAT_BROWSER_INSPECTION_LIMIT
+                                if tc_name in {
+                                    "playwright__browser_navigate", "playwright__browser_navigate_back",
+                                    "playwright__browser_click", "playwright__browser_type",
+                                    "playwright__browser_fill_form", "playwright__browser_select_option",
+                                    "playwright__browser_wait_for", "playwright__browser_tabs",
+                                }
+                                else mcp_tools_client.CHAT_TOOL_RESULT_LIMIT
+                            )
+                            tool_result = mcp_tools_client.compact_chat_tool_result(tool_result, result_limit)
                         loop_messages.append({
                             "role": "tool",
                             "tool_call_id": tc.get("id") or f"call_{tool_round}_{tc_name}",

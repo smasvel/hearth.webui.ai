@@ -21,6 +21,7 @@
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
           <a class="console-tab active" href="{{ url_for('browse_history_page') }}">History</a>
           <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+          <a class="console-tab" href="{{ url_for('live_logs_page') }}">Live logs</a>
           <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
           <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
         </nav>
@@ -48,7 +49,9 @@
             <input id="history-search" class="panel-input" type="search"
                    placeholder="Search url, title, or the query that led there…" autocomplete="off" />
             <span id="history-count" class="toolbar-meta"></span>
+            <button id="history-clear-all" class="panel-btn" type="button">Delete all history</button>
           </div>
+          <p id="history-action-status" class="hint" role="status" aria-live="polite"></p>
 
           <table class="console-table">
             <thead>
@@ -58,6 +61,7 @@
                 <th>Triggered by (chat query)</th>
                 <th>Source</th>
                 <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="history-rows"></tbody>

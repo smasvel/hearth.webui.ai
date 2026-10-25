@@ -49,6 +49,7 @@ import live_report
 import npu_request_lock
 import generation_guard
 import lemonade_templates
+from flm_tool_shim import _repair_streamed_textual_tool_calls, _repair_textual_tool_calls
 
 LEMONADE_BASE = "http://127.0.0.1:13305"
 LISTEN_PORT = 13306
@@ -56,6 +57,22 @@ _UTF8_RETRY_LIMIT = 2
 
 app = Flask(__name__)
 _NPU_REQUEST_LOCK = threading.Lock()
+
+
+def _normalize_tool_choice(body: dict) -> dict:
+    """Translate OpenAI named-function forcing to required-only form for Lemonade."""
+    choice = body.get("tool_choice")
+    if not isinstance(choice, dict):
+        return body
+    function = choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else None
+    if choice.get("type") != "function" or not isinstance(name, str) or not name:
+        raise ValueError("tool_choice must name an offered function")
+    selected = [tool for tool in body.get("tools", [])
+                if tool.get("type") == "function" and (tool.get("function") or {}).get("name") == name]
+    if len(selected) != 1:
+        raise ValueError("tool_choice must name exactly one offered function")
+    return {**body, "tools": selected, "tool_choice": "required"}
 
 _HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length"}
 
@@ -558,6 +575,11 @@ def chat_completions():
     body = request.get_json(force=True, silent=True) or {}
     body = model_test_profiles.apply(body, "lemonade")
     body = _prepare_agent_request(body)
+    client_body = body
+    try:
+        body = _normalize_tool_choice(body)
+    except ValueError as exc:
+        return {"error": {"message": str(exc), "type": "invalid_request_error", "param": "tool_choice"}}, 400
     source = _source_from_headers(request.headers)
     model = body.get("model") or "unknown"
     client_ip = _client_ip(request.headers, request.remote_addr)
@@ -733,6 +755,12 @@ def chat_completions():
                     repaired = exact_tool_contract.repair_sse(repaired, body)
                     repaired = question_tool_compat.repair_sse(repaired, body)
                     repaired = exact_file_content.repair_sse(repaired, body)
+                    # Some Lemonade-served models emit their trained <tool_call> markup
+                    # as ordinary content. Convert only complete calls to offered tools.
+                    textual_calls = _repair_streamed_textual_tool_calls(repaired, body)
+                    if textual_calls is not None:
+                        repaired = textual_calls.splitlines(keepends=True)
+                    repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body)
                     yield from generation_guard.guard_sse_bytes(repaired)
                 reported_finish = True
             except GeneratorExit:
@@ -771,8 +799,20 @@ def chat_completions():
     try:
         upstream_json = upstream.json()
         guarded_completion = granite_tool_compat.repair_completion(upstream_json, body)
+        choices = upstream_json.get("choices") or []
+        if body.get("tools") and choices:
+            message = choices[0].get("message") or {}
+            if not message.get("tool_calls"):
+                clean, calls = _repair_textual_tool_calls(message.get("content") or "", body)
+                if calls:
+                    message["content"] = clean or None
+                    message["tool_calls"] = calls
+                    choices[0]["finish_reason"] = "tool_calls"
+                    guarded_completion = True
         guarded_completion = tool_argument_json.repair_completion(upstream_json) or guarded_completion
         guarded_completion = exact_tool_contract.repair_completion(upstream_json, body) or guarded_completion
+        guarded_completion = exact_tool_contract.enforce_named_choice_completion(
+            upstream_json, client_body) or guarded_completion
         guarded_completion = question_tool_compat.repair_completion(upstream_json, body) or guarded_completion
         guarded_completion = exact_file_content.repair_completion(upstream_json, body) or guarded_completion
         guarded_completion = generation_guard.guard_completion_payload(upstream_json) or guarded_completion

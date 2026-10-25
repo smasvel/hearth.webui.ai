@@ -36,9 +36,8 @@ machine.
 Downloads go straight to Hugging Face Hub — vLLM has no catalog of its own —
 via the `hf` CLI (ships with huggingface_hub, already a vLLM dependency) for
 the download step, and huggingface_hub's cache-scanning API for delete/size.
-A small local registry (~/.config/vllm/models.json) tracks which repos this
-app has explicitly downloaded/loaded (with their max_model_len/dtype), rather
-than trusting the raw shared HF cache wholesale — that cache is a general
+A PostgreSQL registry tracks which repos this app has explicitly downloaded/loaded
+(with their max_model_len/dtype), rather than trusting the raw shared HF cache wholesale — that cache is a general
 machine-wide directory any tool can write to, confirmed live it already held
 an unrelated broken repo from something else entirely (see README's vLLM
 section), so blindly listing everything in it would misrepresent stray
@@ -70,6 +69,7 @@ from pathlib import Path
 import psutil
 import requests
 import model_test_profiles
+import model_metadata_store
 
 import settings_store
 
@@ -82,7 +82,9 @@ HF_CLI = VENV_DIR / "bin" / "hf"
 SERVICE_NAME = "vllm.service"
 _CONFIG_DIR = Path.home() / ".config" / "vllm"
 _SERVICE_ENV_FILE = _CONFIG_DIR / "service.env"
-_REGISTRY_FILE = _CONFIG_DIR / "models.json"
+_LEGACY_REGISTRY_FILE = _CONFIG_DIR / "models.json"
+_registry_migrated = False
+_registry_migration_lock = threading.Lock()
 
 _DEFAULT_MAX_MODEL_LEN = 4096
 _DEFAULT_DTYPE = "bfloat16"
@@ -111,15 +113,21 @@ class VLLMError(RuntimeError):
 # --- local registry: which repos this app manages for vLLM ---------------
 
 def _load_registry() -> dict:
-    try:
-        return json.loads(_REGISTRY_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
+    global _registry_migrated
+    if not _registry_migrated:
+        with _registry_migration_lock:
+            if not _registry_migrated:
+                model_metadata_store.migrate_registry_file("vllm", _LEGACY_REGISTRY_FILE)
+                _registry_migrated = True
+    return model_metadata_store.registry("vllm")
+
+
+def initialize_registry() -> None:
+    _load_registry()
 
 
 def _save_registry(registry: dict) -> None:
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _REGISTRY_FILE.write_text(json.dumps(registry, indent=2))
+    model_metadata_store.save_registry("vllm", registry)
 
 
 def _register(model_id: str, max_model_len: int, dtype: str) -> None:
