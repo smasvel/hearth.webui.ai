@@ -164,7 +164,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.postgres_port <= 65535:
         parser.error('--postgres-port must be between 1 and 65535')
-    if os.geteuid() == 0:
+    if os.name != 'nt' and os.geteuid() == 0:
         parser.error('Run as your regular user, not sudo; use the host dependency installer for privileged packages.')
     if not shutil.which('docker'):
         raise RuntimeError('Run deploy/install-first-time.sh to install missing host dependencies first.')
