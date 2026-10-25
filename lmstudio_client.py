@@ -287,6 +287,7 @@ def chat_stream(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     frequency_penalty: float | None = 0.3,
+    tools: list[dict] | None = None,
 ):
     """Yield raw SSE 'data: ...' lines proxied from LM Studio's chat endpoint.
 
@@ -304,10 +305,17 @@ def chat_stream(
         payload["max_tokens"] = max_tokens
     if frequency_penalty:
         payload["frequency_penalty"] = frequency_penalty
+    if tools:
+        payload["tools"] = tools
+
+    # Tool-enabled chat must pass through Hearth's compatibility shim so model-native
+    # markup and named tool choices are normalized before the chat worker consumes them.
+    url = ("http://127.0.0.1:13307/v1/chat/completions" if tools
+           else f"{base_url()}/v1/chat/completions")
 
     try:
         with requests.post(
-            f"{base_url()}/v1/chat/completions",
+            url,
             json=model_test_profiles.apply(payload, "lmstudio"),
             headers=_auth_headers(),
             stream=True,

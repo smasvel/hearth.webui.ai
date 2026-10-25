@@ -58,19 +58,18 @@ def probe_media(data, suffix, still=False):
 
 
 def run(after_job, output):
+    client = session()
     if after_job:
         if len(after_job) != 32 or any(c not in '0123456789abcdef' for c in after_job):
             raise ValueError('Invalid chat matrix job ID')
-        path = ROOT / 'data/model-test-runs' / (after_job + '.json')
         while True:
-            job = json.loads(path.read_text())
+            job = api(client, '/api/model-tests/' + after_job)
             if job['status'] == 'completed':
                 break
             if job['status'] not in ('loading', 'running', 'repairing', 'cancelling'):
                 raise RuntimeError('Chat matrix did not complete: ' + job['status'])
             time.sleep(10)
     results = []
-    client = session()
     inventory = api(client, '/api/models')['models']
     targets = [m for m in inventory if m.get('type') in ('embeddings', 'transcription', 'tts', 'video')]
     checkpoint = Path(comfyui_client.COMFYUI_MODELS_DIR) / 'checkpoints' / comfyui_client.CHECKPOINT

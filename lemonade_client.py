@@ -1177,6 +1177,7 @@ def chat_stream(
     frequency_penalty: float | None = 0.3,
     chat_template_kwargs: dict | None = None,
     enable_thinking: bool | None = None,
+    tools: list[dict] | None = None,
 ):
     """Yield raw SSE 'data: ...' lines — identical contract to
     lmstudio_client.chat_stream(), since Lemonade's /v1/chat/completions is
@@ -1201,9 +1202,15 @@ def chat_stream(
         payload["chat_template_kwargs"] = chat_template_kwargs
     if enable_thinking is not None:
         payload["enable_thinking"] = enable_thinking
+    if tools:
+        payload["tools"] = tools
+    # Tool-enabled chat must pass through Hearth's guard shim, which repairs
+    # model-native tool markup and named choices before the chat worker consumes it.
+    url = ("http://127.0.0.1:13306/v1/chat/completions" if tools
+           else f"{base_url()}/v1/chat/completions")
     try:
         with requests.post(
-            f"{base_url()}/v1/chat/completions",
+            url,
             json=model_test_profiles.apply(payload, "lemonade"),
             headers=_auth_headers(),
             stream=True,

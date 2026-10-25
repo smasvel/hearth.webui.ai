@@ -29,9 +29,11 @@ def response_for(step, stream, serial):
 
 class WorkflowTests(unittest.TestCase):
     def test_verified_test_count_accepts_wording_but_rejects_wrong_or_negated_counts(self):
-        for text in ('4 passed', '4 tests passed', '4 tests passing (exit code 0)', 'Passed 4 tests.'):
+        for text in ('4 passed', '4 tests passed', '4 tests passing (exit code 0)', 'Passed 4 tests.',
+                     'All tests passed: **4 tests, exit code 0**.'):
             self.assertTrue(reports_passed_tests(text, 4), text)
         for text in ('14 passed', '3 tests passed', 'Not 4 passed', 'Never passed 4 tests',
+                     'Not all tests passed: **4 tests**', 'All tests passed: **3 tests**',
                      'Tests have not run', '4 tests failed', '4 passed; actually 3 passed', '4 passed, 1 failed'):
             self.assertFalse(reports_passed_tests(text, 4), text)
 
@@ -96,7 +98,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn('blocked_by', body)
             self.assertNotIn('workflow', body)
             self.assertNotIn('step', body)
+            if workflow == 'parallel-read' and step['name'] == 'read-both':
+                self.assertNotIn('tool_choice', body)
+            elif len(step['expected']) == 1:
+                self.assertEqual(body['tool_choice'], {
+                    'type': 'function', 'function': {'name': step['expected'][0][0]}})
+                self.assertFalse(body['parallel_tool_calls'])
             messages = body['messages']
+            if step['name'] == 'plan' and workflow == 'build':
+                self.assertEqual([message['role'] for message in messages], ['system', 'user'])
+                self.assertIn('Next call todowrite', messages[-1]['content'])
             ids = {call['id'] for m in messages for call in m.get('tool_calls', [])}
             for message in messages:
                 if message['role'] == 'tool':

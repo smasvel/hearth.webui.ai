@@ -84,3 +84,15 @@ def list_history(search: str | None = None, page: int = 1, per_page: int = 25) -
         "per_page": per_page,
         "entries": [dict(r) for r in rows],
     }
+
+
+def delete_visit(visit_id: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute("DELETE FROM browse_history WHERE id = %s RETURNING id", (visit_id,)).fetchone()
+    return row is not None
+
+
+def clear_history() -> int:
+    with _connect() as conn:
+        rows = conn.execute("DELETE FROM browse_history RETURNING id").fetchall()
+    return len(rows)

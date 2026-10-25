@@ -57,6 +57,16 @@ class RegistryTests(unittest.TestCase):
         restored = model_tests.Registry(self.directory).get(job['id'])
         self.assertEqual(restored, job)
 
+    def test_registry_refreshes_live_jobs_written_by_another_process(self):
+        job = {'id': 'b' * 32, 'status': 'running', 'owner_pid': os.getpid(),
+               'started_at': time.time(), 'finished_at': None, 'results': []}
+        Path(self.directory, job['id'] + '.json').write_text(json.dumps(job))
+        other_process_view = model_tests.Registry(self.directory)
+        self.assertEqual(other_process_view.get(job['id'])['status'], 'running')
+        job.update(status='completed', finished_at=time.time())
+        Path(self.directory, job['id'] + '.json').write_text(json.dumps(job))
+        self.assertEqual(other_process_view.get(job['id'])['status'], 'completed')
+
     def test_verified_repair_reruns_passes_too_and_persists(self):
         job, calls = self.run_job([[result('chat', True), result('tools', False)],
                                   [result('chat', True), result('tools', True)]])
@@ -95,6 +105,23 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(self.values[(TARGET['backend'], TARGET['id'])])
         self.assertIn('rolled back', job['repairs'][0]['outcome'])
 
+    def test_blocked_workflow_steps_do_not_count_as_repair_failures(self):
+        blocked = {**result('dependent', False), 'skipped': True, 'blocked_by': 'root'}
+        job, calls = self.run_job(
+            [[result('root', False), blocked], [result('root', True), blocked.copy()]],
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(job['repairs'][0]['fixed'], 1)
+        self.assertEqual(job['repairs'][0]['remaining'], 0)
+        self.assertEqual(self.values[(TARGET['backend'], TARGET['id'])], profiles.RECIPE)
+
+    def test_all_blocked_results_do_not_trigger_repair(self):
+        blocked = {**result('dependent', False), 'skipped': True, 'blocked_by': 'root'}
+        job, calls = self.run_job([[blocked]])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(job['repairs'], [])
+        self.assertFalse(self.values)
+
     def test_unavailable_backend_is_not_retried_with_a_prompt_recipe(self):
         failure = {**result('plain-chat', False), 'backend_unavailable': True}
         job, calls = self.run_job([[failure]])
@@ -114,6 +141,25 @@ class RegistryTests(unittest.TestCase):
         restored = model_tests.Registry(self.directory).get(job['id'])
         self.assertEqual(restored['status'], 'interrupted')
         self.assertIn('restarted', restored['error'])
+
+    def test_restart_corrects_saved_repair_counts_excluding_blocked_checks(self):
+        job_id = 'b' * 32
+        saved = {'id': job_id, 'status': 'completed', 'started_at': 1, 'targets': [TARGET],
+            'results': [
+                {**result('root', False), 'backend': TARGET['backend'], 'model': TARGET['id'], 'attempt': 1},
+                {**result('dependent', False), 'backend': TARGET['backend'], 'model': TARGET['id'], 'attempt': 1, 'skipped': True},
+                {**result('root', False), 'backend': TARGET['backend'], 'model': TARGET['id'], 'attempt': 2},
+                {**result('dependent', False), 'backend': TARGET['backend'], 'model': TARGET['id'], 'attempt': 2, 'skipped': True},
+            ],
+            'repairs': [{'backend': TARGET['backend'], 'model': TARGET['id'],
+                'outcome': 'No improvement; rolled back', 'fixed': 0, 'remaining': 2}],
+        }
+        path = Path(self.directory, job_id + '.json')
+        path.write_text(json.dumps(saved))
+        restored = model_tests.Registry(self.directory).get(job_id)
+        self.assertEqual(restored['repairs'][0]['remaining'], 1)
+        self.assertEqual(restored['repairs'][0]['fixed'], 0)
+        self.assertEqual(json.loads(path.read_text())['repairs'][0]['remaining'], 1)
 
     def test_delete_saved_run_removes_memory_and_report(self):
         job, _ = self.run_job([[result('chat', True)]], repair=False)
@@ -238,8 +284,11 @@ class ModelTestAPITests(unittest.TestCase):
         with patch.object(self.registry, 'start', return_value={'id':'test','status':'running'}) as start:
             response = self.client.post('/api/model-tests', json={'models':[TARGET], 'url':'http://evil'}, headers=self.headers)
             self.assertEqual(response.status_code, 202)
-            self.assertEqual(start.call_args.args[:2], ([TARGET], True))
+            self.assertEqual(start.call_args.args[:2], ([TARGET], False))
             self.assertIs(start.call_args.args[3], app._test_connection)
+            response = self.client.post('/api/model-tests', json={'models':[TARGET], 'auto_repair':True}, headers=self.headers)
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(start.call_args.args[:2], ([TARGET], True))
 
     def test_report_download_and_missing_run(self):
         self.login()

@@ -51,23 +51,31 @@ class QuestionCompatTests(unittest.TestCase):
         self.assertEqual(calls[0]['arguments'], desired)
         self.assertEqual(calls[0]['id'], 'original-id')
 
-    def test_explicit_order_does_not_repair_changed_or_missing_choices(self):
+    def test_explicit_payload_does_not_repair_changed_or_missing_options(self):
         desired = question('Which interface?', 'Interface', [('CLI', 'Terminal'), ('API', 'HTTP')])
         schema = QUESTION['function']['parameters']
-        for change in ('missing', 'description', 'selection'):
+        for change in ('missing', 'description'):
             generated = copy.deepcopy(desired)
             generated['questions'][0]['options'].reverse()
             if change == 'missing':
                 generated['questions'][0]['options'].pop()
             elif change == 'description':
                 generated['questions'][0]['options'][0]['description'] = 'Changed'
-            else:
-                generated['questions'][0]['multiple'] = True
             self.assertEqual(compat.normalize(generated, schema, desired), generated)
         body = {**BODY, 'messages': [{'role': 'user', 'content': json.dumps(desired) + json.dumps(desired)}]}
         self.assertIsNone(compat._requested(body, schema))
         body['messages'].append({'role': 'user', 'content': 'Ask a different question'})
         self.assertIsNone(compat._requested(body, schema))
+
+    def test_explicit_selection_mode_is_restored_when_question_and_options_match(self):
+        desired = question('Which features?', 'Features', [('API', 'HTTP endpoints'),
+            ('CLI', 'Terminal interface'), ('UI', 'Browser interface')], multiple=True)
+        generated = copy.deepcopy(desired)
+        generated['questions'][0]['multiple'] = False
+        body = {**BODY, 'messages': [{'role': 'user', 'content':
+            'Call question with exactly: ' + json.dumps(desired)}]}
+        requested = compat._requested(body, QUESTION['function']['parameters'])
+        self.assertEqual(compat.normalize(generated, QUESTION['function']['parameters'], requested), desired)
 
     def assert_question(self, args):
         q = args['questions'][0]

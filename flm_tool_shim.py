@@ -207,11 +207,25 @@ def _inject_tools_block(body: dict) -> dict:
     tools = body.get("tools")
     if not tools or body.get("tool_choice") == "none":
         return body
+    model = str(body.get("model") or "").removeprefix("flm/")
+    if model == "minicpm-v-4.7:1b":
+        instruction = (
+            "FastFlowLM MiniCPM tool contract: when a user requests an offered function, "
+            "return the function call in the model's native tool format. Do not replace a "
+            "tool call with Python, shell code, JSON examples, or a claim that an action ran. "
+            "Use the exact function name and arguments requested. If the user asks for a "
+            "direct text answer or says to stop using tools, do not emit a function call."
+        )
+        messages = list(body.get("messages") or [])
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {**messages[0], "content": instruction + "\n\n" + (messages[0].get("content") or "")}
+        else:
+            messages.insert(0, {"role": "system", "content": instruction})
+        return {**body, "messages": messages}
     # Qwen3.8's current runtime renders the tools itself. Injecting the legacy
     # workaround as well includes every schema twice and overflows its 8K window.
     # Keep the workaround for older runtimes/models that still require it.
-    model = str(body.get("model") or "").removeprefix("flm/")
-    if model.startswith("qwen3.8") or model == "minicpm-v-4.7:1b":
+    if model.startswith("qwen3.8"):
         return body
     if model.startswith(("qwen3:", "qwen3-it:")):
         block = ("# Tools\n\nFunction signatures:\n<tools>\n" +
@@ -525,18 +539,31 @@ def _guard_streamed_tool_calls(raw_lines: list[bytes], body: dict) -> bytes | No
             stream_changed = True
     if not calls and stream_changed:
         choice = {"index": 0, "delta": {"content": "".join(text)}, "finish_reason": "stop"}
-        event = {**template, "choices": [choice]}
-        if usage:
-            event["usage"] = usage
-        return b"data: " + json.dumps(event).encode() + b"\n\ndata: [DONE]\n\n"
+        if _repair_tool_arguments({"choices": [choice]}, body):
+            calls = {i: call for i, call in enumerate(choice["delta"].get("tool_calls") or [])}
+            text = []
+            finish = "tool_calls"
+            recovered_markup = True
+        else:
+            event = {**template, "choices": [choice]}
+            if usage:
+                event["usage"] = usage
+            return b"data: " + json.dumps(event).encode() + b"\n\ndata: [DONE]\n\n"
     if not calls:
-        clean, recovered = _repair_textual_tool_calls("".join(text), body)
-        if not recovered:
-            return None
-        text = [clean]
-        calls = dict(enumerate(recovered))
-        finish = "tool_calls"
-        recovered_markup = True
+        choice = {"index": 0, "delta": {"content": "".join(text)}, "finish_reason": finish}
+        if _repair_tool_arguments({"choices": [choice]}, body):
+            calls = {i: call for i, call in enumerate(choice["delta"].get("tool_calls") or [])}
+            text = []
+            finish = "tool_calls"
+            recovered_markup = True
+        else:
+            clean, recovered = _repair_textual_tool_calls("".join(text), body)
+            if not recovered:
+                return None
+            text = [clean]
+            calls = dict(enumerate(recovered))
+            finish = "tool_calls"
+            recovered_markup = True
     else:
         recovered_markup = False
     choice = {"index": 0, "delta": {"content": "".join(text), "tool_calls": list(calls.values())},
@@ -664,6 +691,159 @@ def _stop_blocked_tool(choice: dict, reason: str) -> bool:
     return True
 
 
+def _is_minicpm_47(request_body: dict) -> bool:
+    model = str(request_body.get("model") or "").removeprefix("flm/")
+    return model == "minicpm-v-4.7:1b"
+
+
+def _minicpm_direct_answer_turn(body: dict) -> bool:
+    """Recognize explicit text-only turns for MiniCPM without changing other FLM models."""
+    if not _is_minicpm_47(body) or body.get("tool_choice") not in (None, "auto"):
+        return False
+    latest = next((str(message.get("content") or "") for message in reversed(body.get("messages") or [])
+                   if message.get("role") == "user"), "")
+    # Let MiniCPM complete a bounded multi-step task (browser work often needs
+    # navigation, waiting, and inspection). After the chat worker's six tool rounds,
+    # force its next response to be text so the collected results are summarized.
+    messages = body.get("messages") or []
+    if messages and messages[-1].get("role") == "tool":
+        latest_user = max((index for index, message in enumerate(messages)
+                           if message.get("role") == "user"), default=-1)
+        completed_tool_rounds = sum(
+            1 for message in messages[latest_user + 1:]
+            if message.get("role") == "assistant" and message.get("tool_calls")
+        )
+        return completed_tool_rounds >= 6
+    if re.search(r"\banswer directly\b", latest, re.I):
+        return True
+    stop_patterns = (
+        r"\bwithout\s+(?:calling|using|invoking)\s+(?:any\s+)?(?:more\s+)?tools?\b",
+        r"\bdo not\s+(?:call|use|invoke)\s+(?:any\s+)?(?:more\s+)?tools?\b",
+        r"\bdo not ask again\b",
+        r"\b(?:permission|installation)\s+(?:was\s+)?denied\b",
+        r"\bdo not retry\b.{0,100}\b(?:install|installation|package)\b",
+    )
+    return any(re.search(pattern, latest, re.I) for pattern in stop_patterns)
+
+
+def _minicpm_named_request(body: dict):
+    """Read an explicit MiniCPM named-tool request, including the checkpoint shorthand."""
+    contract = exact_tool_contract._request(body)
+    if contract is not None:
+        return contract
+    choice = body.get("tool_choice")
+    fn = choice.get("function") if isinstance(choice, dict) else None
+    name = fn.get("name") if isinstance(fn, dict) else None
+    if choice.get("type") != "function" or name not in ("bash", "shell"):
+        return None
+    user = next((str(message.get("content") or "") for message in reversed(body.get("messages") or [])
+                 if message.get("role") == "user"), "")
+    match = re.search(r"\bNext call\s+(?:bash|shell)\s+with command\s+(.+?)\s+and workdir\s+([^\s.]+)\s*\.?$",
+                      user, re.I | re.S)
+    if not match:
+        return None
+    return name, {"command": match.group(1).strip(), "workdir": match.group(2)}, \
+        next((tool.get("function", {}).get("parameters") or {} for tool in body.get("tools") or []
+              if (tool.get("function") or {}).get("name") == name), {})
+
+
+def _minicpm_parallel_arguments(body: dict):
+    """Recover two literal values only when MiniCPM's request explicitly names both."""
+    if (not _is_minicpm_47(body) or body.get("parallel_tool_calls") is not True
+            or body.get("tool_choice") not in (None, "auto", "required")):
+        return None
+    tools = body.get("tools") or []
+    if len(tools) != 1:
+        return None
+    function = tools[0].get("function") or {}
+    name = function.get("name")
+    schema = function.get("parameters") or {}
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or len(properties) != 1 or required[0] not in properties \
+            or properties[required[0]].get("type") != "string":
+        return None
+    user = next((str(message.get("content") or "") for message in reversed(body.get("messages") or [])
+                 if message.get("role") == "user"), "")
+    match = re.search(rf"\bTWO\s+{re.escape(str(name))}\s+tool calls?\s*:\s*([^,.\n]+?)\s+first,\s*then\s+([^.\n]+)",
+                      user, re.I)
+    if not match:
+        return None
+    values = [match.group(1).strip(), match.group(2).strip()]
+    if not all(values):
+        return None
+    return name, required[0], values
+
+
+def _enforce_minicpm_named_call(obj: dict, request_body: dict) -> bool:
+    """Honor an exact named choice for MiniCPM, using only arguments supplied by the user."""
+    if not _is_minicpm_47(request_body):
+        return False
+    choice = request_body.get("tool_choice")
+    function = choice.get("function") if isinstance(choice, dict) else None
+    name = function.get("name") if isinstance(function, dict) else None
+    if not isinstance(name, str) or choice.get("type") != "function":
+        return False
+    contract = _minicpm_named_request(request_body)
+    if contract is None or contract[0] != name:
+        return False
+    _requested_name, arguments, schema = contract
+    if not isinstance(arguments, dict) or not set(schema.get("required") or []).issubset(arguments):
+        return False
+    try:
+        result = obj["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return False
+    key = "delta" if "delta" in result else "message"
+    message = result.setdefault(key, {})
+    calls = message.get("tool_calls") or []
+    call = calls[0] if calls else {"id": f"call_hearth_{time.time_ns()}", "type": "function"}
+    desired_args = json.dumps(arguments, separators=(",", ":"))
+    fn = call.setdefault("function", {})
+    changed = (len(calls) != 1 or fn.get("name") != name or fn.get("arguments") != desired_args)
+    fn.update(name=name, arguments=desired_args)
+    call.setdefault("id", f"call_hearth_{time.time_ns()}")
+    call.setdefault("type", "function")
+    message["tool_calls"] = [call]
+    if changed:
+        message["content"] = None
+        result["finish_reason"] = "tool_calls"
+    return changed
+
+
+def _repair_minicpm_parallel_calls(obj: dict, request_body: dict) -> bool:
+    if not _is_minicpm_47(request_body):
+        return False
+    contract = _minicpm_parallel_arguments(request_body)
+    if contract is None:
+        return False
+    name, argument_name, values = contract
+    try:
+        result = obj["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return False
+    key = "delta" if "delta" in result else "message"
+    message = result.setdefault(key, {})
+    existing = list(message.get("tool_calls") or [])
+    calls = existing[:2]
+    changed = len(existing) != 2
+    while len(calls) < 2:
+        calls.append({"id": f"call_hearth_{time.time_ns()}_{len(calls)}", "type": "function"})
+    for index, (call, value) in enumerate(zip(calls, values)):
+        function = call.setdefault("function", {})
+        arguments = json.dumps({argument_name: value}, separators=(",", ":"))
+        if function.get("name") != name or function.get("arguments") != arguments:
+            changed = True
+        function.update(name=name, arguments=arguments)
+        call.setdefault("id", f"call_hearth_{time.time_ns()}_{index}")
+        call.setdefault("type", "function")
+    message["tool_calls"] = calls
+    if changed:
+        message["content"] = None
+        result["finish_reason"] = "tool_calls"
+    return changed
+
+
 def _repair_tool_arguments(obj: dict, request_body: dict) -> bool:
     """Normalize aliases and neutralize malformed file operations before OpenCode sees them."""
     try:
@@ -678,6 +858,12 @@ def _repair_tool_arguments(obj: dict, request_body: dict) -> bool:
         choice[key] = message
         choice["finish_reason"] = "stop"
         return True
+    named_choice_repaired = _enforce_minicpm_named_call(obj, request_body)
+    if named_choice_repaired:
+        calls = (choice.get("delta") or choice.get("message") or {}).get("tool_calls") or []
+    parallel_repaired = _repair_minicpm_parallel_calls(obj, request_body)
+    if parallel_repaired:
+        calls = (choice.get("delta") or choice.get("message") or {}).get("tool_calls") or []
     available = {
         ((tool.get("function") or {}).get("name") or "").lower()
         for tool in (request_body.get("tools") or [])
@@ -705,7 +891,7 @@ def _repair_tool_arguments(obj: dict, request_body: dict) -> bool:
         for message in (request_body.get("messages") or [])
         if message.get("role") == "user"
     )
-    repaired = exact_tool_contract.repair_completion(obj, request_body)
+    repaired = exact_tool_contract.repair_completion(obj, request_body) or named_choice_repaired or parallel_repaired
     for call in calls:
         function = call.get("function") or {}
         original_name = function.get("name")
@@ -983,6 +1169,8 @@ def chat_completions():
             return event
     body = _ensure_no_thinking(_ensure_frequency_penalty(_strip_prefix(body)))
     body = agent_request_policy.prepare(body, compact_history=False, qwen_penalty=False)
+    if _minicpm_direct_answer_turn(body):
+        body = {**body, "tool_choice": "none"}
     body, context_error = flm_context.prepare(body)
     if context_error:
         return context_error, 400

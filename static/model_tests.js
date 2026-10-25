@@ -83,9 +83,22 @@
       tbody.appendChild(row);
     }
     el("tests-table").hidden = job.results.length === 0;
-    el("tests-repairs").textContent = job.repairs.map(r =>
-      `${r.model}: ${r.outcome}${r.fixed !== undefined ? ` (${r.fixed} fixed, ${r.remaining} remaining)` : ""}`
-    ).join(" · ");
+    el("tests-repairs").textContent = job.repairs.map(r => {
+      let fixed = r.fixed, remaining = r.remaining;
+      // Older reports included blocked dependent workflow steps in repair totals.
+      // Recalculate from the saved attempts so those historical summaries read true.
+      const attempts = job.results.filter(item => item.backend === r.backend && item.model === r.model);
+      const first = attempts.filter(item => item.attempt === 1 && !item.passed && !item.skipped);
+      const retry = attempts.filter(item => item.attempt === 2 && !item.passed && !item.skipped);
+      if (attempts.some(item => item.attempt === 2)) {
+        const key = item => JSON.stringify([item.name, !!item.stream]);
+        const before = new Set(first.map(key)), after = new Set(retry.map(key));
+        fixed = r.outcome === "Applied and verified"
+          ? [...before].filter(name => !after.has(name)).length : 0;
+        remaining = after.size;
+      }
+      return `${r.model}: ${r.outcome}${fixed !== undefined ? ` (${fixed} fixed, ${remaining} remaining)` : ""}`;
+    }).join(" · ");
   }
   function schedule() {
     clearTimeout(timer);
@@ -135,7 +148,7 @@
     el("tests-run").disabled = true;
     try {
       job = await api("/api/model-tests", {models: models.map(m => ({backend: m.backend, id: m.id})),
-        auto_repair: el("tests-auto-repair").checked});
+        auto_repair: el("tests-auto-repair").checked || new URLSearchParams(window.location.search).get("action") === "test-tools"});
       render(); schedule(); await history(job.id);
       el("model-tests").scrollIntoView({behavior: "smooth", block: "start"});
     } catch (error) { el("tests-status").textContent = error.message; el("tests-run").disabled = running || starting; }
@@ -227,7 +240,10 @@
       if (params.get("action") === "reset" && running) el("tests-status").textContent = "A test run is active. Wait for it to finish before resetting a repair profile.";
       else if (params.get("action") === "reset") await reset(model);
       else if (running) el("tests-status").textContent = "A test run is already active; showing its progress instead.";
-      else await start([model]);
+      else if (params.get("action") === "test-tools") {
+        el("tests-auto-repair").checked = true;
+        await start([model]);
+      } else await start([model]);
     } catch (error) { el("tests-status").textContent = error.message; }
   }).catch(error => { el("tests-status").textContent = `Could not load test history: ${error.message}`; });
 })();

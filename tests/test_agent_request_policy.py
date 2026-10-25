@@ -32,6 +32,13 @@ class ExplicitStopPolicyTests(unittest.TestCase):
         body = self.body("Reply with the status and then run pytest -q.")
         self.assertNotEqual(agent_request_policy.prepare(body).get("tool_choice"), "none")
 
+    def test_do_not_ask_again_does_not_hide_a_later_explicit_tool_request(self):
+        body = self.body(
+            "Use the returned user answer. Do not ask again. "
+            'Next call todowrite with exactly: {"todos": []}'
+        )
+        self.assertNotEqual(agent_request_policy.prepare(body).get("tool_choice"), "none")
+
     def test_policy_only_uses_latest_user_turn(self):
         body = self.body(
             "Please inspect the implementation and run its tests.",

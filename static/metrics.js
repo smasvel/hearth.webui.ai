@@ -376,6 +376,11 @@
     }
   }
 
+  if (el("live-feed")) {
+    loadLive();
+    return;
+  }
+
   function refreshAll() {
     load();
     loadRecent();
@@ -419,6 +424,5 @@
     "prompt_tokens", "completion_tokens", "total_tokens", "tokens_per_sec", "tops_used", "npu_percent", "is_npu",
     "status", "client_ip", "user_id", "coding_passed"], recentSort, () => { page = 1; loadRecent(); });
   refreshAll();
-  loadLive();
   setInterval(refreshAll, 15000); // KPIs/table: no need for anything faster
 })();

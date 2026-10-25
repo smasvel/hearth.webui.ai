@@ -55,7 +55,7 @@ import re
 _STOP_WITHOUT_TOOLS = re.compile(
     r"\b(?:do not|don't|dont|without)\b.{0,100}\b(?:call|use|invoke|run)\b.{0,30}\b(?:more|any|another|further)?\s*(?:tools?|tool calls?)\b"
     r"|\b(?:do not|don't|dont)\s+(?:call|use|invoke|run)\s+(?:any\s+)?(?:more\s+)?(?:tools?|tool calls?)\b"
-    r"|\b(?:do not|don't|dont)\s+ask\s+again\b.*$"
+    r"|\b(?:do not|don't|dont)\s+ask\s+again\b[^.!?]*(?:[.!?]|$)"
     r"|\b(?:reply|respond|answer|say)\b.{0,100}\b(?:and|then)\s+(?:stop|end the turn)\b",
     re.IGNORECASE | re.DOTALL,
 )

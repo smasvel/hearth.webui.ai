@@ -1,6 +1,5 @@
 import copy
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -41,5 +40,5 @@ class ResourceWarningTests(unittest.TestCase):
 
     def test_missing_catalog_does_not_break_the_models_inventory(self):
         models = [{'backend': 'lemonade', 'id': 'fixture'}]
-        with patch.object(warnings, 'CATALOG', Path('/does-not-exist/hearth-resource-warnings.json')):
+        with patch.object(warnings.model_metadata_store, 'resource_warnings', side_effect=RuntimeError('database unavailable')):
             self.assertEqual(warnings.annotate(models, {'lemonade'}), models)

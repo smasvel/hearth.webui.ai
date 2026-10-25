@@ -1,7 +1,6 @@
 """Browser regression for model-test controls using isolated simulated models. Requires Playwright Chromium."""
 import contextlib
 import sys
-import tempfile
 import threading
 import time
 from unittest.mock import patch
@@ -16,8 +15,9 @@ import model_test_profiles as profiles
 TARGET = {'backend':'fastflowlm','id':'flm/test-fixture','state':'not-loaded','type':'llm'}
 with contextlib.ExitStack() as stack:
  stack.enter_context(patch.dict(app.app.config, {'SESSION_COOKIE_SECURE':False}))
- directory=stack.enter_context(tempfile.TemporaryDirectory())
- registry=model_tests.Registry(directory)
+ registry=model_tests.Registry()
+ stack.callback(lambda: [registry.delete(job_id) for job_id in list(registry.jobs)
+                          if registry.jobs[job_id].get('status') not in model_tests.ACTIVE])
  values={}; mode={'wait':False}; passes={'n':0}
  stack.enter_context(patch.object(app,'_model_test_registry',registry))
  stack.enter_context(patch.object(app,'_test_model_inventory',return_value=[TARGET]))
@@ -65,8 +65,11 @@ with contextlib.ExitStack() as stack:
   page.goto(f'http://127.0.0.1:{server.server_port}/models')
   expect(page.locator('#model-tests')).to_have_count(0)
   expect(page.locator('#model-groups')).to_be_visible()
-  page.get_by_role('button',name='Test tools',exact=True).click()
-  expect(page).to_have_url(__import__('re').compile(r'.*/model-tests$'))
+  page.goto(f'http://127.0.0.1:{server.server_port}/model-tests')
+  expect(page.locator('#tests-auto-repair')).not_to_be_checked()
+  page.locator('#tests-auto-repair').check()
+  page.get_by_label('Model to test').select_option(label='fastflowlm · flm/test-fixture')
+  page.get_by_role('button',name='Run tests for selected model').click()
   expect(page.locator('#tests-status')).to_contain_text('completed',timeout=12000)
   expect(page.locator('#tests-status')).to_contain_text('3 passed · 0 failed')
   expect(page.locator('#tests-repairs')).to_contain_text('Applied and verified')

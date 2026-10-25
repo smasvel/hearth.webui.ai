@@ -47,11 +47,11 @@ all documented in their own sections below.
 | LLM evaluation | Individually selected model tests, typed argument checks, streamed and ordinary responses, repair progress, saved reports, and deletion of older reports during a run |
 | Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
-| Web research | Web search and page retrieval, with optional Chromium scraping |
+| Web research | Web search and page retrieval, optional Chromium scraping, and Playwright browser actions in Hearth chat |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
-| Performance monitoring | Request metrics, token usage, generation speed, and live request activity |
+| Performance monitoring | Request metrics, token usage, generation speed, and a dedicated live developer logs page |
 
 ## Search, download, and manage local AI models
 
@@ -144,14 +144,28 @@ itself. On **Models**, select **Test tools** on a loadable chat model to open th
 page and start that model's run. Follow the current check and elapsed time, cancel
 after the current request, reopen recent runs, download JSON reports, or delete
 older saved reports from the separate report-management selector, including while
-another model is being tested. The active report cannot be deleted.
+another model is being tested. The active report cannot be deleted. Automatic
+compatibility repair remains off for manually started runs unless you select it.
+The Lemonade gateway converts a named-function choice to a required call with only
+that function offered. When the request also provides exact arguments, Hearth
+returns that named call even if the model replies with prose or another function.
+For FastFlowLM's `minicpm-v-4.7:1b`, Hearth adds a model-specific tool-use reminder,
+honors exact named calls, and suppresses calls on clear direct-answer turns. These
+adjustments are limited to that model; it can perform up to six tool rounds for
+multi-step browser tasks, then Hearth requests a text-only summary of the results.
+Other FastFlowLM models keep their existing path.
 
 The local LLM test suite covers chat and streaming, tool selection, typed JSON
 arguments, parallel tool calls, file reads and edits, exact file content, error
 recovery, large inputs, and context overflow. OpenCode scenarios also exercise
 planning, multi-file workflows, questions and answers, permission decisions, and
 continuation after context compaction. Reports distinguish failed checks from
-steps blocked by an earlier failure.
+steps blocked by an earlier failure. Automatic repair compares only checks that
+actually ran; blocked dependent steps do not inflate failure or repair counts.
+Hearth converts supported model-native `<tool_call>` markup from Lemonade into
+structured calls only when the function is present in the request's tool schema.
+An instruction not to repeat a question does not suppress a later explicit tool action
+in the same turn.
 
 Use these results to compare model/backend configurations for your coding workflow.
 The tests supply simulated tool results; real project execution takes place in
@@ -306,10 +320,11 @@ needed by an AI coding agent. On **Model tests**, choose an installed chat model
 run it individually, monitor its progress, and inspect results by model and backend.
 From **Models**, **Test tools** opens the same page and starts that model's test run.
 Older completed reports can be deleted from the separate report selector even while
-another test is running; the active report remains protected. Reports are JSON files
-under `data/model-test-runs`, separate from the PostgreSQL tables. Back up this folder
-alongside PostgreSQL if you want to preserve test history, or delete individual
-reports from the UI.
+another test is running; the active report remains protected. Test reports, per-model
+compatibility profiles, backend model registries, and reviewed resource notes are stored
+in PostgreSQL. Reports can still be downloaded as JSON. First-time setup or the next
+application startup imports existing reports and KoboldCPP/vLLM registries, then removes
+their legacy JSON files.
 
 The evaluation workflows cover:
 
@@ -382,6 +397,19 @@ Yes. Hearth provides browser-based assistant chat with local models, saved histo
 memory retrieval, and optional search, voice, and generation integrations. Feature
 availability depends on which supporting components you configure.
 
+Hearth chat can also call its configured Playwright browser and persistent Python MCP
+tools when using KoboldCPP, FastFlowLM, SGLang, Lemonade, or LM Studio. Tool-enabled
+requests pass through Hearth's backend compatibility shims; the browser MCP server
+starts on first use. Chat offers a focused set of Playwright navigation, inspection,
+and interaction tools to keep prompt overhead manageable on local models. FastFlowLM
+chat also trims oversized browser results before carrying them into the next model
+round. After navigation and page-changing actions, Hearth waits for client-side
+content, lists every open tab (including popups), selects each tab, and captures a
+snapshot before returning an explicit confirmation. The model can continue by
+inspecting snapshots, finding text, clicking, or navigating back. A model must choose
+a Playwright tool for browser actions—having the browser configured does not make
+every ordinary chat message browse automatically.
+
 ## Requirements
 
 - Python 3.10+ and venv support.
@@ -420,9 +448,9 @@ bash deploy/install-first-time.sh
 
 This single installer adds missing Ubuntu packages with sudo, prepares the Docker
 agent image and Python environment, installs requirements and Chromium, starts
-PostgreSQL in Docker Compose, loads the application DDL (including agent schedule
-tables), creates the private local model-test report directory, and generates
-private database credentials. On the first page
+PostgreSQL in Docker Compose, loads the application DDL (including agent schedules
+and model metadata tables), imports any legacy model metadata into PostgreSQL, removes
+its old JSON storage, and generates private database credentials. On the first page
 visit, Hearth asks you to choose the administrator username and password, then
 stores the account in PostgreSQL. The username can be changed on the setup form.
 The installer enables the systemd user service and lingering, so Hearth and its recurring schedule worker
@@ -520,6 +548,12 @@ similarity of 0.35. Short conversational facts may score below repeated question
 so both the similarity threshold and retrieval window matter. Deleting a
 conversation or account also deletes its associated memory chunks.
 
+### Browse history
+
+Administrators can open **Browse history** to search and page through visited URLs.
+Delete an individual visit from its row, or use **Delete all history** to clear the
+entire browser visit log. Both actions require confirmation.
+
 ## Voice, translation, images, and video
 
 - **Voice:** microphone transcription, spoken replies, and hands-free conversation
@@ -568,9 +602,12 @@ including from other administrators. An owner can explicitly share an assignment
 with registered users who have Agent access enabled. Shared users receive the same
 task controls as the owner: they can steer the agent, answer prompts, pause or
 continue work, change its model when it can be resumed, rerun completed work, and
-delete the assignment. Only the owner can change the share list. The owner can
-revoke access at any time from the assignment's **Share assignment access** panel.
-Sharing grants assignment access, including its task files and project download.
+delete the assignment, and manage who else can access it. Anyone with assignment
+access can update the share list from the **Share assignment access** panel; the
+owner retains ownership of the assignment.
+Shared users can also create, edit, pause, resume, and delete recurring schedules
+for assignments shared with them. Sharing grants assignment access, including its
+task files and project download.
 
 Create an agent from **New agent** by giving the task a name and describing the result
 you want in everyday language. Optional model and control settings are grouped under
@@ -628,7 +665,9 @@ time using the browser timezone shown in the form, and keep that wall-clock time
 across daylight-saving changes. Hearth skips an occurrence if the selected
 assignment is still active or needs review, then checks it again at the next
 interval. You can pause, resume, or delete a schedule without deleting its
-assignment. Schedules run only while Hearth is running, and disabling the
+assignment, and edit its repeat interval, local run time, or timezone from the
+**Schedules** page. Shared users can manage schedules linked to assignments shared
+with them. Schedules run only while Hearth is running, and disabling the
 assignment owner's Agent access prevents scheduled runs from starting.
 
 Each assignment runs its own Docker container with OpenCode, Python 3, Java (JDK and
@@ -658,10 +697,13 @@ commands. Auto mode allows actions without an explicit deny, including shell
 commands; file tools stay within the mounted project, and `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
 decision. Completed projects can be downloaded as a `.tar.gz` archive.
-New assignments can also set a result label and output platform. For web-page
+The assignment's latest response and labeled HTML result appear at the top of its
+execution page, before task details, controls, activity, and conversation logs. New
+assignments can also set a result label and output platform. For web-page
 results, Hearth previews a completed `index.html` (or `dist/index.html` or
-`build/index.html`) in a sandboxed frame; the same label and platform appear above
-the result text.
+`build/index.html`) in a sandboxed frame. Choose **JSON results (HTML view)** to render
+a saved JSON artifact or the accepted agent final response in a separate labeled,
+sandboxed report view. The result label and output type appear above the response.
 Stopped assignments can be deleted; active assignments must first be stopped or
 paused.
 
@@ -673,8 +715,13 @@ budget limits remain visible for review.
 ## Metrics and diagnostics
 
 Open **Metrics** to inspect request activity, latency, generated tokens, throughput,
-backend/client breakdowns, and supported NPU statistics. Recent-request filters and
-live activity help diagnose slow responses or identify which client is generating.
+backend/client breakdowns, and supported NPU statistics. Open **Live logs** for
+timestamped request lifecycle details, streaming progress, errors, and request/response
+traces. The feed refreshes about once per second, shows the latest 100 requests, and
+loads request/response text only when a trace is opened. Completed rows remain available
+for two days.
+Streaming token detail is available for Hearth chat and OpenCode/Continue traffic through
+Lemonade or FastFlowLM; other LAN backends do not expose per-token proxy visibility.
 Available measurements depend on the backend and configured proxy instrumentation.
 
 For coding clients, send a stable attribution header such as:
@@ -755,9 +802,11 @@ Run the application checks through the isolated PostgreSQL test runner:
 .venv/bin/python tools/run_tests.py --browser
 ```
 
-With `--browser`, the unit suite and all six Playwright suites run concurrently. Each
+With `--browser`, the unit suite and all seven Playwright suites run concurrently. Each
 browser suite receives its own temporary PostgreSQL schema, and all schemas are removed
-when the run finishes.
+when the run finishes. Admin browser coverage visits every standalone page, opens a Live
+logs request trace, checks Browse history search and both deletion actions, and verifies
+that ordinary users cannot open admin-only pages or APIs.
 
 For installation details, see [the setup guide](deploy/FIRST_TIME_INSTALL.md).
 For model-specific test evidence, see [saved failure reviews](reports/saved-failure-review-2026-10-19.md).

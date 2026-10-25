@@ -1,6 +1,5 @@
 """Isolated resource-warning layout and filtering checks. No models are loaded."""
 import contextlib
-import json
 from pathlib import Path
 import sys
 import threading
@@ -10,14 +9,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import model_resource_warnings
+import model_metadata_store
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 
 
 with contextlib.ExitStack() as stack:
-    catalog = json.loads(model_resource_warnings.CATALOG.read_text())
-    models = [{'backend': e['backend'], 'id': e['model'], 'state': 'not-loaded', 'type': 'llm'}
-              for e in catalog['models']]
+    catalog = model_metadata_store.resource_warnings()
+    models = [{'backend': backend, 'id': item['model'], 'state': 'not-loaded', 'type': 'llm'}
+              for (backend, _), item in catalog.items()]
     models.append({'backend': 'lmstudio', 'id': 'qwen/qwen3.5-4b', 'state': 'not-loaded', 'type': 'llm'})
     for backend, client in {'lmstudio': app.lms, 'lemonade': app.lemonade, 'vllm': app.vllm,
                             'kobold': app.kobold, 'fastflowlm': app.fastflowlm, 'sglang': app.sglang}.items():

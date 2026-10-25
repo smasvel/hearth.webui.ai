@@ -1652,6 +1652,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .history-badge[data-source="shopping"]   { color: var(--warn); border-color: rgba(224, 176, 77, 0.4); background: rgba(224, 176, 77, 0.09); }
 .history-badge[data-source="pasted-url"] { color: #c792ea; border-color: rgba(199, 146, 234, 0.4); background: rgba(199, 146, 234, 0.09); }
 .history-badge[data-source="unknown"]    { color: var(--text-dim); border-color: var(--border); }
+.history-delete-row { padding: 5px 9px; }
 
 .status-dot {
   display: inline-block;

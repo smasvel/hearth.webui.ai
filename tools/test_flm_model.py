@@ -12,7 +12,6 @@ try:
 except ImportError:  # Direct CLI invocation.
     from opencode_scenarios import run_workflows
 
-
 def function(name, properties, required=None):
     return {'type': 'function', 'function': {'name': name, 'description': name,
             'parameters': {'type': 'object', 'properties': properties,
@@ -60,9 +59,15 @@ class Cancelled(Exception):
 
 def reports_passed_tests(text, expected):
     """Accept common phrasings of a verified count without accepting a wrong count."""
-    matches = list(re.finditer(r'\b(\d+)\s+(?:tests?\s+)?pass(?:ed|ing)\b|\bpassed\s+(\d+)\s+tests?\b', text, re.I))
+    patterns = (
+        r'\b(\d+)\s+(?:tests?\s+)?pass(?:ed|ing)\b',
+        r'\bpassed\s+(\d+)\s+tests?\b',
+        # Also accept common summaries such as "All tests passed: 4 tests, exit code 0".
+        r'\btests?\s+passed\b[^0-9]{0,20}(\d+)\s+tests?\b',
+    )
+    matches = [match for pattern in patterns for match in re.finditer(pattern, text, re.I)]
     return bool(matches) and not re.search(r'\b[1-9]\d*\s+(?:tests?\s+)?fail(?:ed|ing)\b', text, re.I) and all(
-        int(match.group(1) or match.group(2)) == expected
+        int(match.group(1)) == expected
         and not re.search(r'\b(?:not|never|no)\s+(?:all\s+)?$', text[:match.start()], re.I)
         for match in matches)
 

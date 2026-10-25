@@ -10,6 +10,8 @@
   const prevBtn = document.getElementById("history-prev");
   const nextBtn = document.getElementById("history-next");
   const pageLabel = document.getElementById("history-page-label");
+  const clearAllBtn = document.getElementById("history-clear-all");
+  const actionStatus = document.getElementById("history-action-status");
 
   const PER_PAGE = 25;
   let page = 1;
@@ -78,7 +80,28 @@
         <td>${esc(e.query || "—")}</td>
         <td><span class="history-badge" data-source="${esc(source)}">${esc(source)}</span></td>
         <td><span class="status-dot ${e.ok ? "ok" : "fail"}"></span>${e.ok ? "ok" : "failed"}</td>
+        <td></td>
       `;
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "panel-btn history-delete-row";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.setAttribute("aria-label", `Delete history entry for ${title}`);
+      deleteBtn.addEventListener("click", async () => {
+        if (!window.confirm("Delete this browser history entry?")) return;
+        deleteBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/browse-history/${encodeURIComponent(e.id)}`, {method: "DELETE"});
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+          actionStatus.textContent = "History entry deleted.";
+          load();
+        } catch (err) {
+          actionStatus.textContent = `Could not delete history entry: ${err.message}`;
+          deleteBtn.disabled = false;
+        }
+      });
+      tr.lastElementChild.appendChild(deleteBtn);
       rowsEl.appendChild(tr);
     }
   }
@@ -89,6 +112,22 @@
   });
   prevBtn.addEventListener("click", () => { if (page > 1) { page--; load(); } });
   nextBtn.addEventListener("click", () => { if (page < totalPages) { page++; load(); } });
+  clearAllBtn.addEventListener("click", async () => {
+    if (!window.confirm("Delete all AI Browser History entries? This cannot be undone.")) return;
+    clearAllBtn.disabled = true;
+    try {
+      const res = await fetch("/api/browse-history", {method: "DELETE"});
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+      page = 1;
+      searchEl.value = "";
+      actionStatus.textContent = `Deleted ${result.deleted} history entr${result.deleted === 1 ? "y" : "ies"}.`;
+      load();
+    } catch (err) {
+      actionStatus.textContent = `Could not clear history: ${err.message}`;
+      clearAllBtn.disabled = false;
+    }
+  });
 
   load();
 })();

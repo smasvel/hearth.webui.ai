@@ -23,18 +23,22 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import psutil
 import requests
 import model_test_profiles
+import model_metadata_store
 
 import settings_store
 
 SERVICE_NAME = "kobold.service"
 _CONFIG_DIR = Path.home() / ".config" / "koboldcpp"
 _SERVICE_ENV_FILE = _CONFIG_DIR / "service.env"
-_REGISTRY_FILE = _CONFIG_DIR / "models.json"
+_LEGACY_REGISTRY_FILE = _CONFIG_DIR / "models.json"
+_registry_migrated = False
+_registry_migration_lock = threading.Lock()
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:5001"
 _DEFAULT_CONTEXT = 8192
@@ -63,15 +67,21 @@ def _auth_headers() -> dict:
 
 # ---- model id <-> gguf path registry ----------------------------------------------
 def _load_registry() -> dict:
-    try:
-        return json.loads(_REGISTRY_FILE.read_text())
-    except (OSError, ValueError):
-        return {}
+    global _registry_migrated
+    if not _registry_migrated:
+        with _registry_migration_lock:
+            if not _registry_migrated:
+                model_metadata_store.migrate_registry_file("kobold", _LEGACY_REGISTRY_FILE)
+                _registry_migrated = True
+    return model_metadata_store.registry("kobold")
+
+
+def initialize_registry() -> None:
+    _load_registry()
 
 
 def _save_registry(reg: dict) -> None:
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _REGISTRY_FILE.write_text(json.dumps(reg, indent=2))
+    model_metadata_store.save_registry("kobold", reg)
 
 
 def _id_for_path(gguf_path: str) -> str:

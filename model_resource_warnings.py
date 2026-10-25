@@ -1,23 +1,32 @@
-"""Attach reviewed local resource incidents to the matching backend and model."""
+"""Attach reviewed resource observations stored in PostgreSQL to matching models."""
+import base64
 import json
-from pathlib import Path
+import zlib
 
-CATALOG = Path(__file__).with_name('model_resource_warnings.json')
+import model_metadata_store
+
+# Compressed reviewed seed data. It is loaded into PostgreSQL on startup; the database is
+# the runtime source of truth and can retain edits independently of this built-in baseline.
+_DEFAULT_CATALOG_Z = (
+    "eNrFWtty20YSfc9XzGofaNcSEC4ESUHlBymxtapIvsp5SaVUQ2BIYoWbcRHNTaUq/7D7L/u+n5Iv2dM9A5KSKJmy4lqXSxIx9+7Tp08P+Ot3QuxV6jpRCxVfymYvFHue4w0t17Hc8V6fmuuoKBU1vFdRUcUqFkUumnlSi0xG8yRXhwIfmqJKIpmKYlKr6lo2SZHXfZEXjUiTayXaWs6UrSfMililNWb8GZ+E+JV/4vlERlcqj2mpqaybaVos0oyHcDMP48Y02/+0ULlvj62sKUNvNFn3SuVE9/p7MpuL90fn4r//EfK6SGKxmKtcZCorqqXA7ht0aNYD6zbLZLWkoa/OzkWlcDic1ffssThJjmmqvlgkzRxNpZINt/2Nm/DxqhYyj0VdZErUC1mWST6zxRGvOy0qoa5VtYzlEoZQeiNFM1eVQM9a5AqT6Y0dimheFOgjRZ3JNEUXPre93ii8Fas8UisDshH3tOHvenFw4TnhYBj6Y8sZhI6z18dZi7biCfY+LOtGZeIfeJDDe7AVrGvTTAk6oKv6HKmq5Cnf5OlSvDOG90bH1uu3Hz2xkLVIC0m4SAwuzHD8rmvgwBbfAwxthh5uhj4Htjf2a/H924/wAexVwDa6JfDsYYCmBU4uorSIrrhHn71w0vmOzN0Xnj+2h+fdM7I5N9h7v/V3sMrowjkInWHoBU+1yh2DmFOHtOnRrU0P/K17Fke5hoMZK2QjXCf0h6Ez5h4wHR5hwuAEBzTn+4V/m+N+VRTNFDA/sJImVIOHYmhrlByJEx4uXg6OxenFau/r/boH9qiLHVu8rdSUEH8T2Fuj8lCkSoI1qqLIOHxWwZKCZJhbvj4ghhfuCHYNPe+prv9gTmzgr81hwRzW6QVjYQP5A8a3bzu+cxv6XkBtA8f2A3cL9smKN2D0CASkGJVjc1v8//qn0x9Oj6zX6NFURW75dmCdkfFzUJflO8fWkX9snZx8fLUFGHSAKTZKS5GNTvCZrICHSdpWqt6KmK4XFliRKCiFxtzNKra4mCt0p6QSFfk0mbUVu54oVJswyQEo8rzmZdfDBODtuEYLvCjjjoEZYwgEHsWpiKAmRVklSFvNEv1g2crSiCQbc+bIlKxxmEzlDdMcZbPKJMGvx9/owh2GgKDv7oa/Opel3TnS4jkrO5b04B5c7u7aLW74qU2vZL7yE1v2+ioM37WqVWFYt5MMfCFeVlVR/aBo9bOibsRENQsFK/PZOBfiL8/dmY6pt7czHT/eJh9rOs1ZKjP5fVmKYx0joYjK1hYpPTbgKYsiBX6SBurlssPTC4DLFucMDxPt4Lf8Mmo+X9YpYPFCDIPAHz4mNLO6aeOk2BKanxZF2dZIFZYfTCzpT6wITRWJnS2xSFFl2KGLvrXmmbZgk2I6pU1vjcn3nZjZNs0C4YXzzmZoZyBsTsdOnsInyEs/Yod5oz43gqxRd3HXzGGlWjVteVczVipuEbm0rJmwL8wkfQHKx99RW1UUezwnEIZMoERTLcmTSSPkTCb518fhmCQAhJE72IY5SMAP7B+y5XqM7dqwRx+iNod9RuOB98fv/xqNg4NbcDsz4cM+DcUDHrUBo1nZXqZyqSpC2gH/O8Rjfe4XYtC/CTXfGw3HtqhkfL0vsxijQ/EaLSovWiTszotsRDiadClFrRFjs1mWXl5zlIci5giGjxHCcJEOfscWK1ggAnhSstUoHAQ7BzRUpxuE3iOMO9o0rhj7o5F3y6qUEWqJvPmO7WkUhEzrokPprmbA4xQJASMmyztchmy80vgdD8oGFFQC2rtH+HW6VXiRYNxn1Wg59vD4PtlFqQrWoTzEWyexyKlraxiTZbrUREMNJ4qqhZjEH5KMIydF24gRRBlNjs4KJdparo1sr1NrvCTyLH6UoimEa/vcRLugxJxQio3SNkYQ1I2sKMJpCAxdJimn6c3qB5a2sBj7X5CFZgCVXuFO2n9iPPuhv1XXfcSgzQxCzrlX1lUmKGY4JrbQJFNd+Gy4TfOhDp9LrU9ecC5ZK74Ry7qxPRgMb0u+ITW5A9sdOFsUHxxxq26A/U+2lA00aQ2v50hR+3qe7uMLzDIcdb4Xk7Zeao8/AsBXxaRI4y0Q1g1RWW4YxHo3vnQeAPOXYXs/ZAN7uIYsA22jyEDbqsa4CTkachNtLCqpuq6oCi9SrR3I2WZFBIQGNsW8QXYfTMv1B9IZtpazupQ5/qui1Z4llUAV/xNEoeZLx9kFvNr+X4Qv65RbHrJns3aqwWvEzQt3s07xfEYtJKN3cBu1XMO4gX0wCLbVKfbwZpnyMDwDOxg+DZ4PFDdvKgi4ueVC+PrBg5WM0Zbw7IwsO5dVDG9Cs+DnpzaBStkK3C6/a+rShayKZ5wwtaiJq4RsRmCdt9zTQK5juhAaptbSs2PrnK6JIHQiynFzJdNmvtTsX7a5vl5R4kpVuUp7iANO/Z3JYV3USg2gzwUzF5Z2IOZATS2e+YOhqItpY5HDQNbIb0XV1M9FC3ZDCt08OILKcUOIWfExZ6HHl1emBmeZyOedJlUNqRYXXBd9ovKAVNlE4XCx6T1JZpsFBaKLTqM+lypqKK/oBelUxigimdIkpEBr6hDRhVpbPimwvDDww8D7VpXF0bSh6GzTRObZxKJ4s7oLofdvvs9evR1Yr44+XOiCS1dZoejdUoj3ILZ3Q6j03lZFpGqTc4ky24g+kyxf9sXb0x9C4Y4PRsMDt7e7UIN9gtB3drOPRt8tEyxkE83jYhaK448nIQNNGKBZxAJ/9XxsuQVVEDa9Yf0X8fMm8EOz6V/EH7//WzBW22jegbTPAEllzdBc53uNUuy8o1/RWy9y4Hhe3etTWBBfAzMmXvYvLs4JxdbNuNGKRZSyosuptAuu2fTzvJ3g8UxZU9mmKEYQYhlQPpN8TUfWc0LH39HcECluOHCgU3Yz96RAbE0ofRHx3FXD1A4q6EYo4tYsibsw70I59APN+Xkh6nnbxMUiBxcjaOn2hGKSTJxTAccrMr5q0e1VPFvTw3N9MaNDArQRd9K7d4PKzG0CQpjn4tWJwJAqkNF7bDofdguDETudOYB5RZOgNh/dFsKxIM2mAO3/Oclhx1DdkizONq64umsvw/M4ZZreq3GYRisgZgxKRhZtG6quYRJSN+A4Am9bHrIVylWMF2Wp2OolciYXIcZRxvi15KKtt5BJQ82E+40tRamSeVv2usr5KklTXTrb4rTpPJRkSPsJap10uSqxscQbELQ7Mhd7jCVKkZ3CYrY3ZfiDhM++xQkYA2fGJ6vLonVR9SR6HwShe/Ct6L33EsqoWjG1kVXhzoTPdXvyT/WCL4geR8vfMm2Z+Z11UkEaAxCp6u2LhyFl23bvUHQ7FD1zm7a+AiYDPUQHPYZy72zdv6On3JriowVJYU1ZtSsqzvuCCi3eERG6foPIc1RKXwj1NC0xhfE2nt3MqM8J1fmmSOsEmuZwyoB/Dr0ohKVE4CZRYd14OfQTAeP84u2u7PLh9OTH07MzCnE22lZ22YV0O9FdTJFF2xyZlSwXI471jTbzC43Cihcv35/3kcEpsunO22xCxabsp2dkPVZ/q90aaWpIY5VY+P4PFuveDarbfHIoJKsnuZopTa4Uq+o+E6DxsT4OTWB80N3w85lU0yRGYSNP5YRlhsVGUktmT32PqpnG+T8wzW6AegrR4Fje6BsSDc3vPU4gML3wvtYE9RBiW77fN2jt/Vn38J2xJ1ZdZ9Pks9XG26441rXTYo5T6RfgpqBU8npJOR15TkT0nYJ7RUJXAi3ozpsVWifZSpknUV+8eXPOV+MmgIzuojsQKCkQ2Mgsv1mUIlwliPOa0vtM5YreoWFnzzqXUnytr2P5yovjjkQkVcAIvcMNYTiReU43AYMVqaRIGNVzUhR1d4PDi9Kl7Iq0MyjnxOLvSrAlLLYEqKGpErUS+NUMq4nAHQ3EeXKsCT2S/I0J8/YtkmUDloiZofiY+B8VVaX0peONmxosBXYgAXKlVMnXmvBGzC+V9W1wSX6qSZ6R/spJjjBZVe1TXjCPL1xA9yB0h49+sXArdOrqWtcnIeqoTF7xi9PunfgmptiSqAArxCEjr0hjsiU/Fs+IFujKBZa1fcch6z7vr17sMGZ0YuAEKyKi7UbWV6Bn88UEPRHM6QXeyB6NApqD3cI+NjDEsb3QHWjPrQG4fmPmumEwDJ2BRrZ+fmne+lymKp/hafd+Y9eCqgP/l/mrL/avZbWPc+9TGatfNtwA/5dKrjMqQtfFFtnELO+IZycvL8S+LJP9mle1wGuICc9xyNY0UNfO+vVGt+u+Dq7NpkRnWOpBr1BvBB6h+d4aDg2sloxn7fXZerXegQk4vv/UO3Bd0ft5K9H9grGcdYuOOOhbSQ29Ho0ASmhAsS8u6GNO11VdHyQsZg1E410a/o7++u27/wHcShgN"
+)
+
+
+def init_db():
+    catalog = json.loads(zlib.decompress(base64.b64decode(_DEFAULT_CATALOG_Z)))
+    model_metadata_store.seed_resource_warnings(catalog)
 
 
 def annotate(models, local_backends):
     try:
-        catalog = json.loads(CATALOG.read_text())
-    except (OSError, ValueError):
+        warnings = model_metadata_store.resource_warnings()
+    except Exception:
         return models
-    warnings = {(entry['backend'], entry['model'].casefold()): entry
-                for entry in catalog['models']}
     result = []
     for model in models:
         model = dict(model)
         key = (model.get('backend'), str(model.get('id', '')).casefold())
         if key[0] in local_backends and key in warnings:
-            model['resource_warning'] = {**warnings[key], 'reviewed_at': catalog['reviewed_at'],
-                                         'scope': catalog['scope']}
+            model['resource_warning'] = warnings[key]
         result.append(model)
     return result

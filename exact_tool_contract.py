@@ -1,6 +1,7 @@
 """Do not broaden an explicitly supplied tool call with invented optional fields."""
 import json
 import re
+import uuid
 
 import tool_argument_json
 
@@ -79,6 +80,41 @@ def repair_completion(payload, body):
     return changed
 
 
+def enforce_named_choice_completion(payload, body):
+    """Honor a named OpenAI tool choice when the user supplied its exact arguments."""
+    choice = body.get('tool_choice')
+    function = choice.get('function') if isinstance(choice, dict) else None
+    chosen = function.get('name') if isinstance(function, dict) else None
+    contract = _request(body)
+    if (not isinstance(choice, dict) or choice.get('type') != 'function' or not isinstance(chosen, str)
+            or contract is None or contract[0] != chosen):
+        return False
+    name, arguments, _schema = contract
+    choices = payload.get('choices') or []
+    if not choices:
+        return False
+    result = choices[0]
+    message = result.setdefault('message', {})
+    calls = message.get('tool_calls') or []
+    if len(calls) > 1:
+        return False
+    if calls:
+        call = calls[0]
+        function = call.setdefault('function', {})
+        desired = {'name': name, 'arguments': json.dumps(arguments, separators=(',', ':'))}
+        changed = function.get('name') != name or function.get('arguments') != desired['arguments']
+        function.update(desired)
+    else:
+        call = {'id': 'call_hearth_' + uuid.uuid4().hex, 'type': 'function',
+                'function': {'name': name, 'arguments': json.dumps(arguments, separators=(',', ':'))}}
+        message['tool_calls'] = [call]
+        changed = True
+    if changed:
+        message['content'] = None
+        result['finish_reason'] = 'tool_calls'
+    return changed
+
+
 def repair_sse(lines, body):
     if _request(body) is None:
         return lines
@@ -113,3 +149,60 @@ def repair_sse(lines, body):
             changed.add(pos)
     return [b'data: ' + json.dumps(events[i], separators=(',', ':')).encode() + b'\n'
             if i in changed else line for i, line in enumerate(lines)]
+
+
+def enforce_named_choice_sse(lines, body):
+    """Repair a single named choice in a buffered SSE response, preserving its metadata."""
+    choice = body.get('tool_choice')
+    function = choice.get('function') if isinstance(choice, dict) else None
+    chosen = function.get('name') if isinstance(function, dict) else None
+    contract = _request(body)
+    if (not isinstance(choice, dict) or choice.get('type') != 'function' or not isinstance(chosen, str)
+            or contract is None or contract[0] != chosen):
+        return lines
+    events = []
+    done_line = b'data: [DONE]\n'
+    for line in lines:
+        if line.startswith(b'data: [DONE]'):
+            done_line = line
+            continue
+        if not line.startswith(b'data: '):
+            continue
+        try:
+            event = json.loads(line[6:])
+        except (ValueError, TypeError):
+            continue
+        if event.get('choices'):
+            events.append(event)
+    if not events:
+        return lines
+    payload = {'choices': [{'message': {'tool_calls': []}, 'finish_reason': None}]}
+    calls = {}
+    for event in events:
+        for item in event.get('choices') or []:
+            if item.get('finish_reason'):
+                payload['choices'][0]['finish_reason'] = item['finish_reason']
+            for index, call in enumerate((item.get('delta') or {}).get('tool_calls') or []):
+                slot = calls.setdefault(call.get('index', index), {'id': '', 'type': 'function',
+                    'function': {'name': '', 'arguments': ''}})
+                slot['id'] += call.get('id') or ''
+                slot['type'] = call.get('type') or slot['type']
+                fn = call.get('function') or {}
+                slot['function']['name'] += fn.get('name') or ''
+                slot['function']['arguments'] += fn.get('arguments') or ''
+    payload['choices'][0]['message']['tool_calls'] = [calls[key] for key in sorted(calls)]
+    if not enforce_named_choice_completion(payload, body):
+        return lines
+    meta = {key: value for key, value in events[-1].items() if key not in ('choices', 'usage')}
+    tool_call = payload['choices'][0]['message']['tool_calls'][0]
+    first = {**meta, 'choices': [{'index': 0, 'delta': {'tool_calls': [
+        {'index': 0, **tool_call}]}, 'finish_reason': None}]}
+    final = {**meta, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}
+    usage = next((event['usage'] for event in reversed(events) if 'usage' in event), None)
+    replacement = [b'data: ' + json.dumps(first, separators=(',', ':')).encode() + b'\n\n',
+                   b'data: ' + json.dumps(final, separators=(',', ':')).encode() + b'\n\n']
+    if usage is not None:
+        replacement.append(b'data: ' + json.dumps({**meta, 'choices': [], 'usage': usage},
+            separators=(',', ':')).encode() + b'\n\n')
+    replacement.append(done_line)
+    return replacement

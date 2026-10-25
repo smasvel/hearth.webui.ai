@@ -45,11 +45,11 @@ Java/Maven, Node.js/npm, and build tools, and then:
 - Loads the application DDL from `database_schema.sql` into the new PostgreSQL
   database, leaving the users table empty on a new install. The DDL includes the
   per-user agent workflow setting, application settings and encrypted-secret tables,
-  and agent task, schedule, runtime metadata, and private workspace tables. Setup
-  applies the account, settings, secret, and agent-store migrations before service start.
-- Creates the private `data/model-test-runs` directory for saved model-test reports.
-  Reports are JSON files, separate from PostgreSQL, and can be deleted individually
-  from **Model tests**, including while another report is being generated.
+  agent data, model metadata, model-test reports, and private workspace tables. Setup
+  applies the account, settings, secret, agent-store, and model-metadata migrations.
+- Imports legacy model-test reports and KoboldCPP/vLLM registries into PostgreSQL,
+  seeds reviewed model resource notes into the database, and removes the old JSON files
+  and report directory before starting the service.
 - Displays a one-time administrator setup form on the first page visit. The
   password is saved only as a salted, one-way hash in PostgreSQL.
 - Creates and enables `~/.config/systemd/user/ai-webui.service`, using this checkout's
@@ -109,6 +109,18 @@ source of truth. OpenCode file tools are confined to the project folder and
 external directories are denied. Agent project and OpenCode files do not use
 `/tmp`; the container keeps it for system runtime needs.
 
+Hearth chat exposes the configured Playwright browser and persistent Python MCP
+tools on KoboldCPP, FastFlowLM, SGLang, Lemonade, and LM Studio. The MCP servers
+start the first time chat needs them. Tool-enabled requests use Hearth's local
+backend compatibility shims; keep the `lemonade-guard-shim`, `lmstudio-shim`, and
+`flm-tool-shim` user services running for those backends. Ask the model to use the
+browser for a specific page or task when you want a Playwright action. Hearth chat
+offers a compact browser tool set and trims oversized FastFlowLM browser results so
+they fit more reliably within smaller model context windows. After navigation and
+page-changing actions, Hearth waits for content, lists and visits each open tab
+(including popups), captures snapshots, and returns an explicit confirmation to the
+model. The model can continue to inspect, find text, click, or navigate back.
+
 After signing in, open **Agents**. Use **New agent** to name a task and describe what
 you want in everyday language; advanced model and command approval settings are
 optional. **My agents** shows task status. In automatic shell mode, allowed
@@ -117,7 +129,11 @@ directories, and subagents remain denied. Ask mode pauses shell commands for you
 decision. Open a task to follow its live **Activity** feed.
 New assignments also accept a result label and platform/output type. Web-page
 assignments preview a completed `index.html`, `dist/index.html`, or
-`build/index.html` in a sandboxed frame on the task page.
+`build/index.html` in a sandboxed frame on the task page. Choose **JSON results
+(HTML view)** to show a saved JSON artifact or accepted final response in a separate,
+labeled sandboxed report view.
+The latest agent response and labeled HTML result appear at the top of the task page,
+before task details, controls, activity, and conversation logs.
 feed, which streams task progress, the agent container's tool inputs and outputs,
 and user-facing model responses as they become available, with timestamps on
 agent messages and completed container tools. The
@@ -141,9 +157,11 @@ available, while still allowing another configured model to be selected. Task da
 remains in PostgreSQL if you close the browser.
 When an owner shares an assignment, shared users get the same task controls: they
 can send instructions, answer prompts, pause or continue work, change the model when
-resuming, rerun completed work, and delete the assignment. Only the owner can edit
-the share list or revoke access. Shared users can access the assignment's project
-files and download its completed project.
+resuming, rerun completed work, delete the assignment, and manage who else can access
+it. Anyone with assignment access can edit the share list; the owner retains ownership.
+Shared users can access the assignment's project files and download its completed
+project. They can also create, edit, pause, resume,
+and delete recurring schedules linked to assignments shared with them.
 Completed assignments have a **Run again** action that queues a fresh execution from the
 latest saved project files while retaining the assignment's settings and activity history.
 Loaded support models such as embeddings do not take precedence over a loaded coding
@@ -177,6 +195,9 @@ assignment is still active or needs review, and checked again at the next interv
 Schedules remain in PostgreSQL across restarts; if Hearth was stopped when a run
 became due, the worker starts one catch-up run after startup and skips the missed
 intervals. The standard systemd service starts this worker after reboot.
+On the **Schedules** page, edit an existing schedule to change its interval, local
+run time, or timezone. Shared users can manage schedules for assignments shared with
+them.
 With `--no-service`, scheduled runs happen only while you manually run `.venv/bin/python app.py`.
 
 With `--no-service`, start the app manually using `.venv/bin/python app.py`.
@@ -206,8 +227,21 @@ the navigation, choose an installed chat model, and run its checks individually.
 Monitor compatibility repairs and review saved reports there. Completed older
 reports can be deleted while another test is running; the active report stays
 protected. The **Test tools** and **Reset repair** actions on model cards open that
-dedicated page. The JSON reports live in `data/model-test-runs`, so back up that
-directory separately from PostgreSQL if you want to retain them across migrations.
+dedicated page. Failed workflow steps mark dependent checks as blocked; only checks
+that ran are included in repair comparisons. Automatic repair is optional and is
+off by default. The Lemonade proxy translates named-function choices into a required
+call with only the requested function offered. If the user message supplies exact
+arguments for that function, Hearth preserves the requested call when the model
+returns prose or another function. It also converts supported model-native tool markup to
+structured calls only for functions offered in that request. An instruction not to
+repeat a question does not suppress a later explicit tool action in the same turn. The
+FastFlowLM `minicpm-v-4.7:1b` path has its own tool-use reminder and exact named-call
+handling. It can perform up to six tool rounds for multi-step browser tasks, then
+requests a text-only summary of the results; other FastFlowLM models use their
+existing behavior. Model registries, test reports, compatibility profiles, and reviewed
+resource notes are stored in PostgreSQL. A one-time startup migration imports existing
+model-test reports and KoboldCPP/vLLM registry files, then removes those legacy files.
+Back up PostgreSQL to preserve this metadata. Test reports can still be downloaded as JSON.
 On the **Models** page, Lemonade model cards include an **Enable thinking** checkbox. It
 sets the per-model reasoning preference for Hearth chat, overriding the global Lemonade
 default in Settings. Hearth sends the preference through Lemonade's request control and
@@ -224,8 +258,19 @@ journalctl --user -u ai-webui.service -f
 
 The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
 browser test scripts directly against application tables. With `--browser`, it runs
-the unit tests and all Playwright suites concurrently, each against its own temporary
-schema.
+the unit tests and all seven Playwright suites concurrently, each against its own temporary
+schema. The admin browser coverage visits every standalone page, exercises key page actions,
+opens a Live logs request trace, checks Browse history search and deletion, and verifies
+that ordinary users cannot open admin-only pages or APIs.
+
+Administrators can inspect request metrics on **Metrics** and open **Live logs** for
+streaming request progress, errors, and request/response traces. The live feed polls
+automatically, shows the latest 100 requests, and loads trace text only when opened.
+Completed rows remain available for two days. No additional setup is required.
+
+Administrators can open **Browse history** to search and page through browser visits.
+Delete individual entries from their rows or clear the entire history with **Delete all
+history**; both actions ask for confirmation.
 
 For an application update, install requirements again, rebuild the agent image
 when its recipe or OpenCode version changed, and restart the service:
