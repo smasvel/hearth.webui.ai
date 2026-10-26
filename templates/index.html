@@ -105,13 +105,13 @@
           <p class="hint">
             <strong>Test and repair models:</strong> open
             <a href="{{ url_for('model_tests_page') }}">Model tests &amp; automatic repair</a>.
-            Use <strong>Test tools</strong> on a chat-model card or <strong>Test all chat models</strong>
+            Use <strong>Test default model</strong> on a model card or <strong>Test all chat models</strong>
             for a sequential run. Tests include multi-step OpenCode builds, question prompts with
             single/multiple choices and custom answers, dismissed questions, denied permissions,
             parallel reads, checkpoint resume, and edit/test recovery. Answers and tool results are simulated;
             each step checks the model response before continuing. Progress and reports survive
-            closing the browser. Automatic
-            repair tests a reversible compatibility profile against the full suite and keeps it
+            closing the browser. Automatic repair is optional. When enabled, it
+            tests a reversible compatibility profile against the full suite and keeps it
             only when failures decrease without introducing regressions. Remaining failures
             stay visible; a model may need a different runtime or stronger coding capabilities.
             Use <strong>Reset repair</strong> to undo a profile. Generated tools are inspected,

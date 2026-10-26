@@ -599,9 +599,9 @@
     searchVllm(vllmSearchInput.value.trim());
   });
 
-  // Initial load: empty query returns the catalog's first 40 entries (server-capped),
-  // so there's something to browse before typing anything.
-  searchCatalog("");
+  // Start with the recommended Lemonade chat model so a new installation has a
+  // clear first choice; users can edit the query to browse other catalog entries.
+  searchCatalog(searchInput.value.trim());
   // vLLM: empty query loads the curated suggestions (models vetted to load on vLLM),
   // shown first the way Lemonade's catalog is.
   searchVllm("");

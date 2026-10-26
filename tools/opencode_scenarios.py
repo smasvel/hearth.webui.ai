@@ -117,12 +117,15 @@ def scenarios():
         call_step('retry', 'edit', {'filePath': invoice, 'oldString': 'return price + price * tax_rate',
                   'newString': 'return max(0, price + price * tax_rate)'}, 'Edit successful.'),
     ]))
-    workflows.append(('parallel-read', [
-        {'name': 'read-both', 'instruction': 'Read both files in one response, invoice first then api. '
-            'Call read with filePath /workspace/atlas/src/invoice.py and then read with filePath /workspace/atlas/src/api.py. Emit both <tool_call> blocks in this same response.',
-         'expected': [('read', {'filePath': invoice}), ('read', {'filePath': route})],
-         'outputs': ['def invoice_total(price, tax_rate): return price + price * tax_rate',
-                     'from .invoice import invoice_total']},
+    workflows.append(('multi-file-read', [
+        call_step('read-invoice', 'read', {'filePath': invoice},
+                  'def invoice_total(price, tax_rate): return price + price * tax_rate',
+                  'Read the invoice implementation first. Call read with exactly this argument: '
+                  '{"filePath":"/workspace/atlas/src/invoice.py"}. Then read the API caller in the next turn.'),
+        call_step('read-api', 'read', {'filePath': route},
+                  'from .invoice import invoice_total',
+                  'Now call read with exactly this argument: '
+                  '{"filePath":"/workspace/atlas/src/api.py"}.'),
         {'name': 'resume', 'instruction': 'Both reads completed. Reply "Both files inspected" without calling tools again.',
          'expected': [], 'contains': 'Both files inspected'},
     ]))
@@ -177,19 +180,16 @@ def run_workflows(check, stream, only=None):
         for index, step in enumerate(steps, 1):
             name = prefix + step['name']
             messages.append({'role': 'user', 'content': step['instruction']})
-            if workflow == 'parallel-read' and step['name'] == 'read-both':
-                call_options = {}
-            else:
-                call_options = {'parallel_tool_calls': False}
-                # The core contract suite separately checks automatic tool choice.
-                # Workflow replay is about exact arguments and continuation state;
-                # name the expected function so unrelated exploratory calls cannot
-                # derail a deterministic multi-step fixture.
-                if len(step['expected']) == 1:
-                    call_options['tool_choice'] = {
-                        'type': 'function',
-                        'function': {'name': step['expected'][0][0]},
-                    }
+            call_options = {'parallel_tool_calls': False}
+            # The core contract suite separately checks automatic tool choice.
+            # Workflow replay is about exact arguments and continuation state;
+            # name the expected function so unrelated exploratory calls cannot
+            # derail a deterministic multi-step fixture.
+            if len(step['expected']) == 1:
+                call_options['tool_choice'] = {
+                    'type': 'function',
+                    'function': {'name': step['expected'][0][0]},
+                }
             outcome = check(name, '', stream, expected=step['expected'], contains=step.get('contains'),
                 passed_tests=step.get('passed_tests'),
                 messages=messages, tools=TOOLS, max_tokens=1024, **call_options,

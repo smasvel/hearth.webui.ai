@@ -39,6 +39,10 @@
             <span id="npu-status" class="metric-npu-status"></span></h1>
           <p class="hint">Timestamped request lifecycle logs, updated every second and retained for two days — Hearth chat and named clients going through Lemonade or FastFlowLM. Active rows update token counts and throughput in place; completed and failed rows remain available for diagnosis. Streaming tokens are visible for Hearth chat and OpenCode/Continue traffic through Lemonade or FastFlowLM. LM Studio/vLLM/KoboldCPP LAN traffic has no per-token visibility at the proxy layer; see Help. Each row shows whether it is running on the NPU, since a model name alone does not establish which recipe is serving it.</p>
         </div>
+        <div class="model-test-controls">
+          <button id="live-reset" class="panel-btn danger" type="button">Reset live logs</button>
+          <span id="live-reset-status" class="hint" role="status" aria-live="polite"></span>
+        </div>
         <div class="console-grid">
           <div class="console-card span-all">
             <div id="live-feed" class="metric-live-feed metric-dev-log" aria-live="polite"></div>

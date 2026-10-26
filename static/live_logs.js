@@ -119,5 +119,28 @@
     setTimeout(poll, retryMs);
   }
 
+  document.getElementById("live-reset").addEventListener("click", async () => {
+    if (!confirm("Warning 1 of 2: This permanently deletes all saved and in-memory Live logs, including captured request and response text. Continue?")) return;
+    if (!confirm("Warning 2 of 2: Clear completed history and saved traces now? In-flight requests will remain visible and their completed entries will be recorded after they finish.")) return;
+    const button = document.getElementById("live-reset");
+    const status = document.getElementById("live-reset-status");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/metrics/live/reset", {
+        method: "POST",
+        headers: {"X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content},
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      traceCache.clear();
+      traceOpenState.clear();
+      status.textContent = "Completed Live logs and saved traces were cleared. Active requests remain visible.";
+    } catch (error) {
+      status.textContent = `Could not reset Live logs: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   poll();
 })();

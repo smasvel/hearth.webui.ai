@@ -88,6 +88,12 @@ def record(**fields) -> None:
         pass  # never propagate a metrics failure into the request path
 
 
+def clear_all() -> None:
+    """Remove all persisted request metrics and restart their row identifiers."""
+    with _connect() as conn:
+        conn.execute("TRUNCATE TABLE request_metrics RESTART IDENTITY")
+
+
 def _window_clause(hours: float | None) -> tuple[str, list]:
     if not hours:
         return "", []

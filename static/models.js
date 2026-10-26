@@ -205,7 +205,7 @@
       actions.appendChild(thinkingLabel);
     }
     if (!managedAutomatically && !unavailable && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
-      actions.appendChild(btn("Test tools", "", () => {
+      actions.appendChild(btn("Test default model", "", () => {
         window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=test-tools`);
       }, isBusy));
       actions.appendChild(btn("Reset repair", "", () => {
