@@ -33,6 +33,7 @@
             <option value="0">All time</option>
           </select>
           <button id="refresh" class="panel-btn" type="button">Refresh</button>
+          <button id="metrics-reset" class="panel-btn danger" type="button">Reset all metrics</button>
           <span class="hint">{{ username }}</span>
           <form method="post" action="{{ url_for('logout') }}" class="logout-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -50,6 +51,7 @@
             LAN-tool rows (via the Caddy proxy) carry timing, type, source, backend and status.
           </p>
         </div>
+        <p id="metrics-reset-status" class="hint" role="status" aria-live="polite"></p>
 
         <div id="kpis" class="metric-kpis"></div>
 

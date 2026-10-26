@@ -98,9 +98,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn('blocked_by', body)
             self.assertNotIn('workflow', body)
             self.assertNotIn('step', body)
-            if workflow == 'parallel-read' and step['name'] == 'read-both':
-                self.assertNotIn('tool_choice', body)
-            elif len(step['expected']) == 1:
+            if len(step['expected']) == 1:
                 self.assertEqual(body['tool_choice'], {
                     'type': 'function', 'function': {'name': step['expected'][0][0]}})
                 self.assertFalse(body['parallel_tool_calls'])
@@ -119,7 +117,7 @@ class WorkflowTests(unittest.TestCase):
             if workflow == 'build' and step['name'] == 'finish':
                 self.assertTrue(any('4 passed' in m.get('content', '') for m in messages if m['role'] == 'tool'))
                 self.assertGreater(len(messages), 35)
-            if workflow == 'parallel-read' and step['name'] == 'resume':
+            if workflow == 'multi-file-read' and step['name'] == 'resume':
                 self.assertEqual(len([m for m in messages if m['role'] == 'tool']), 2)
 
     def test_failure_blocks_dependent_steps_without_network_or_fake_results(self):

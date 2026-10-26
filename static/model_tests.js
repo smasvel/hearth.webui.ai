@@ -1,6 +1,7 @@
 // Persistent model validation jobs. All model output is rendered as text.
 (() => {
   const el = id => document.getElementById(id);
+  const defaultTestModel = {backend: "lemonade", id: "Ornith-1.5-9B-GGUF"};
   const activeStates = new Set(["loading", "running", "repairing", "cancelling"]);
   let job = null, running = false, starting = false, timer = null;
   async function api(path, body, method) {
@@ -148,7 +149,7 @@
     el("tests-run").disabled = true;
     try {
       job = await api("/api/model-tests", {models: models.map(m => ({backend: m.backend, id: m.id})),
-        auto_repair: el("tests-auto-repair").checked || new URLSearchParams(window.location.search).get("action") === "test-tools"});
+        auto_repair: el("tests-auto-repair").checked});
       render(); schedule(); await history(job.id);
       el("model-tests").scrollIntoView({behavior: "smooth", block: "start"});
     } catch (error) { el("tests-status").textContent = error.message; el("tests-run").disabled = running || starting; }
@@ -179,6 +180,9 @@
       }
       if (preferred) {
         const key = JSON.stringify({backend: preferred.backend, id: preferred.id});
+        if ([...select.options].some(option => option.value === key)) select.value = key;
+      } else {
+        const key = JSON.stringify(defaultTestModel);
         if ([...select.options].some(option => option.value === key)) select.value = key;
       }
       el("tests-run").disabled = running || starting || !select.value;
@@ -235,13 +239,20 @@
         el("tests-run").disabled = running || starting;
       }
       const {models} = await api("/api/models");
-      const model = models.find(item => item.backend === backend && item.id === modelId);
+      let model = models.find(item => item.backend === backend && item.id === modelId);
       if (!model) throw new Error("That model is no longer available.");
       if (params.get("action") === "reset" && running) el("tests-status").textContent = "A test run is active. Wait for it to finish before resetting a repair profile.";
       else if (params.get("action") === "reset") await reset(model);
       else if (running) el("tests-status").textContent = "A test run is already active; showing its progress instead.";
       else if (params.get("action") === "test-tools") {
-        el("tests-auto-repair").checked = true;
+        model = models.find(item => item.backend === defaultTestModel.backend &&
+          item.id === defaultTestModel.id && item.loadable !== false);
+        if (!model) throw new Error(`${defaultTestModel.id} must be installed and loadable to run the default model test.`);
+        const defaultKey = JSON.stringify(defaultTestModel);
+        if ([...el("tests-model").options].some(option => option.value === defaultKey)) {
+          el("tests-model").value = defaultKey;
+        }
+        el("tests-auto-repair").checked = false;
         await start([model]);
       } else await start([model]);
     } catch (error) { el("tests-status").textContent = error.message; }

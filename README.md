@@ -69,15 +69,17 @@ administrator to find models, then use **Models** to load and evaluate them.
 3. Use the independent **Tool calling filters** to restrict results for selected
    backends to models whose catalog metadata explicitly declares support. Models
    with unknown support are excluded for a filtered backend. A positive label does
-   not guarantee compatibility with every tool or runtime, so use **Test tools**
+   not guarantee compatibility with every tool or runtime, so use **Model tests**
    before relying on it.
 4. Filter by parameter count with **Small** (up to 4B), **Medium** (over 4B through
    13B), or **Large** (over 13B). These filters use reported parameter counts or
    recognizable sizes in model names/descriptions; models without a detectable
    count are hidden while a size filter is active. Clear the size checkboxes to
    show all sizes again.
-5. Download a compatible model. Follow progress and logs, inspect active downloads,
-   or cancel a download. Progress detail depends on the runtime.
+5. **Downloads** opens with the recommended Lemonade `Ornith-1.5-9B-GGUF` search
+   selected. Review the result and choose Download; Hearth does not download model
+   weights automatically. Follow progress and logs, inspect active downloads, or
+   cancel a download.
 6. Open **Models** to load, unload, or delete installed models. Select a loaded
    chat model in the conversation model picker.
 7. Check the maximum context-token label shown on a **Downloads** result when
@@ -89,7 +91,7 @@ administrator to find models, then use **Models** to load and evaluate them.
    include that model's reasoning phase. The toggle is saved per model and overrides the
    Lemonade default in Settings; Hearth passes it through both Lemonade's request control and
    the chat-template option. Models whose runtime does not support thinking controls may ignore it.
-9. Run **Test tools** before using a model for coding or tool-driven workflows.
+9. Run **Model tests** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
 |---|---|---|
@@ -140,12 +142,15 @@ affect response time.
 ## Test and compare models before coding
 
 Open **Model tests** and choose an installed chat model to run its test suite by
-itself. On **Models**, select **Test tools** on a loadable chat model to open this
-page and start that model's run. Follow the current check and elapsed time, cancel
+itself. **Test default model** on a model card starts the installed Lemonade
+`Ornith-1.5-9B-GGUF` run. To test a different model, choose it from the Model
+tests dropdown. Follow the current check and elapsed time, cancel
 after the current request, reopen recent runs, download JSON reports, or delete
 older saved reports from the separate report-management selector, including while
 another model is being tested. The active report cannot be deleted. Automatic
-compatibility repair remains off for manually started runs unless you select it.
+compatibility repair is off by default, including for model-card launches. The
+Model tests dropdown selects Ornith by default when available. Select automatic
+repair on the Model tests page to opt in.
 The Lemonade gateway converts a named-function choice to a required call with only
 that function offered. When the request also provides exact arguments, Hearth
 returns that named call even if the model replies with prose or another function.
@@ -162,6 +167,9 @@ planning, multi-file workflows, questions and answers, permission decisions, and
 continuation after context compaction. Reports distinguish failed checks from
 steps blocked by an earlier failure. Automatic repair compares only checks that
 actually ran; blocked dependent steps do not inflate failure or repair counts.
+Final test summaries may spell out the verified count or emphasize it with
+Markdown. The OpenCode scenarios check multi-file reads across consecutive tool turns, while
+the core contract suite separately measures parallel tool calls.
 Hearth converts supported model-native `<tool_call>` markup from Lemonade into
 structured calls only when the function is present in the request's tool schema.
 An instruction not to repeat a question does not suppress a later explicit tool action
@@ -318,7 +326,9 @@ validation and kernel/ABI artifacts.
 Use Hearth to evaluate whether a local language model can follow the tool contracts
 needed by an AI coding agent. On **Model tests**, choose an installed chat model to
 run it individually, monitor its progress, and inspect results by model and backend.
-From **Models**, **Test tools** opens the same page and starts that model's test run.
+From **Models**, **Test default model** opens the same page and starts the installed
+Lemonade `Ornith-1.5-9B-GGUF` run. Choose another model on the Model tests page to
+test it instead.
 Older completed reports can be deleted from the separate report selector even while
 another test is running; the active report remains protected. Test reports, per-model
 compatibility profiles, backend model registries, and reviewed resource notes are stored
@@ -719,7 +729,11 @@ backend/client breakdowns, and supported NPU statistics. Open **Live logs** for
 timestamped request lifecycle details, streaming progress, errors, and request/response
 traces. The feed refreshes about once per second, shows the latest 100 requests, and
 loads request/response text only when a trace is opened. Completed rows remain available
-for two days.
+for two days. Administrators can use **Reset all metrics** to erase saved request history
+and coding reviews after two confirmation warnings; new requests begin accumulating again
+immediately. On **Live logs**, **Reset live logs** clears completed history and saved
+request/response traces after two warnings. It preserves in-flight rows; their completed
+entries are recorded after they finish.
 Streaming token detail is available for Hearth chat and OpenCode/Continue traffic through
 Lemonade or FastFlowLM; other LAN backends do not expose per-token proxy visibility.
 Available measurements depend on the backend and configured proxy instrumentation.

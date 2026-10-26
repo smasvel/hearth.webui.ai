@@ -1419,6 +1419,13 @@ def api_metrics():
     return jsonify(metrics_store.summary(_metrics_hours()))
 
 
+@app.post("/api/metrics/reset")
+@admin_required
+def api_metrics_reset():
+    metrics_store.clear_all()
+    return jsonify({"ok": True})
+
+
 @app.get("/api/metrics/recent")
 @admin_required
 def api_metrics_recent():
@@ -1460,6 +1467,13 @@ def api_metrics_live():
     except ValueError:
         limit = 100
     return jsonify({"rows": live_requests.snapshot(limit=limit)})
+
+
+@app.post("/api/metrics/live/reset")
+@admin_required
+def api_metrics_live_reset():
+    live_requests.clear_all()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/metrics/live/<int:request_id>/trace")

@@ -59,6 +59,16 @@ class Cancelled(Exception):
 
 def reports_passed_tests(text, expected):
     """Accept common phrasings of a verified count without accepting a wrong count."""
+    # Models commonly emphasize the count in Markdown (for example, "all **4**
+    # tests passed"). Normalize that formatting before checking the assertion.
+    text = re.sub(r'\*{1,2}(\d+)\*{1,2}', r'\1', text)
+    number_words = {
+        'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+        'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+        'ten': '10',
+    }
+    text = re.sub(r'\b(?:' + '|'.join(number_words) + r')\b',
+                  lambda match: number_words[match.group(0).lower()], text, flags=re.I)
     patterns = (
         r'\b(\d+)\s+(?:tests?\s+)?pass(?:ed|ing)\b',
         r'\bpassed\s+(\d+)\s+tests?\b',

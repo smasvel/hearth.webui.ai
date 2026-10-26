@@ -65,17 +65,16 @@
           <button id="getting-started-dismiss" class="getting-started-dismiss" type="button" title="Dismiss" aria-label="Dismiss">&times;</button>
           <h2 style="margin-top: 0;">New to Hearth? Start here.</h2>
           <p class="hint">
-            <strong>Ryzen AI (Lemonade)</strong>, <strong>vLLM</strong>, and
-            <strong>FastFlowLM (NPU)</strong> below already list ready-to-download models the
-            moment you open this page — no search needed. Look for the
-            <span class="badge staff-pick" style="vertical-align: middle;">staff pick</span> tag on
-            a card for a safe first choice.
+            <strong>Ornith-1.5-9B-GGUF</strong> is prefilled and searched in the Lemonade
+            catalog as a recommended first chat model. Review its card and choose Download
+            to install it; Hearth does not start model downloads automatically.
+            <strong>vLLM</strong> and <strong>FastFlowLM (NPU)</strong> also list ready-to-download
+            suggestions when available.
           </p>
           <p class="hint">
             <strong>LM Studio</strong> and <strong>KoboldCPP</strong> only search Hugging Face on
-            demand (they have no built-in catalog to browse), so their sections start empty — try
-            searching <code class="inline-code">qwen2.5 3b instruct</code> in either to get a
-            solid, fast general-purpose model to start with.
+            demand (they have no built-in catalog to browse), so their sections start empty.
+            You can search for other models there if you prefer a different backend.
           </p>
         </div>
 
@@ -149,7 +148,7 @@
             </p>
             <form id="catalog-search-form" class="download-form">
               <div class="download-row">
-                <input id="catalog-search-input" class="panel-input" type="text" placeholder="e.g. qwen, llama, embed, whisper" autocomplete="off" />
+                <input id="catalog-search-input" class="panel-input" type="text" value="Ornith-1.5-9B-GGUF" placeholder="e.g. Ornith-1.5-9B-GGUF, llama, embed, whisper" autocomplete="off" />
                 <button id="catalog-search-btn" class="panel-btn" type="submit">Search</button>
               </div>
             </form>

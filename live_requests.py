@@ -60,6 +60,14 @@ def _init_trace_store() -> int:
 _counter = itertools.count(_init_trace_store())
 
 
+def clear_all() -> None:
+    """Clear finished live-log entries and saved traces without hiding active work."""
+    with _lock:
+        with database.connect() as conn:
+            conn.execute("TRUNCATE TABLE developer_traces")
+        _recent.clear()
+
+
 def _persist_finished(entry: dict) -> None:
     payload = dict(entry)
     payload["_elapsed_s"] = max(0, entry["updated"] - entry["started"])
@@ -88,10 +96,10 @@ def start(
     *, source: str, backend: str, model: str, max_tokens: int | None = None,
     is_npu: bool = False, request_content: str | None = None,
 ) -> int:
-    req_id = next(_counter)
     now = time.monotonic()
     wall_now = time.time()
     with _lock:
+        req_id = next(_counter)
         _active[req_id] = {
             "id": req_id,
             "source": source,
@@ -155,6 +163,8 @@ def finish(
         cutoff = time.time() - _RECENT_KEEP_SECONDS
         while _recent and ((_recent[0].get("finished_at") or 0) < cutoff or len(_recent) > _RECENT_MAX):
             _recent.pop(0)
+        # Serialize persistence with clear_all() so a completion racing with a reset
+        # cannot write its trace back after the table has been cleared.
         _persist_finished(entry)
 
 

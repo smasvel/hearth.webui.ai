@@ -12,6 +12,9 @@ environment and PostgreSQL database, then stores the selected endpoint and
 optional API key in Settings. Linux setup also builds the isolated coding-agent
 image; agent execution is Linux-only. The model runtime and model weights are
 separate downloads and must be installed and started independently.
+Open **Downloads** to find `Ornith-1.5-9B-GGUF` preselected in the Lemonade search.
+Review its result and choose Download to install the model; setup does not download
+model weights automatically.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
@@ -226,8 +229,9 @@ Model loading and lifecycle controls are on **Models**. Open **Model tests** fro
 the navigation, choose an installed chat model, and run its checks individually.
 Monitor compatibility repairs and review saved reports there. Completed older
 reports can be deleted while another test is running; the active report stays
-protected. The **Test tools** and **Reset repair** actions on model cards open that
-dedicated page. Failed workflow steps mark dependent checks as blocked; only checks
+protected. **Test default model** on a model card starts the installed Lemonade
+`Ornith-1.5-9B-GGUF` run; select another installed model on the dedicated page to
+test it instead. **Reset repair** opens that page as well. Failed workflow steps mark dependent checks as blocked; only checks
 that ran are included in repair comparisons. Automatic repair is optional and is
 off by default. The Lemonade proxy translates named-function choices into a required
 call with only the requested function offered. If the user message supplies exact
@@ -267,6 +271,21 @@ Administrators can inspect request metrics on **Metrics** and open **Live logs**
 streaming request progress, errors, and request/response traces. The live feed polls
 automatically, shows the latest 100 requests, and loads trace text only when opened.
 Completed rows remain available for two days. No additional setup is required.
+Administrators can use **Reset all metrics** to erase saved request history and coding
+reviews after two confirmation warnings; subsequent requests are recorded normally.
+The **Live logs** page also has **Reset live logs**, which clears completed history and
+captured request/response traces after two confirmation warnings. In-flight rows remain
+visible and their completed entries are recorded after they finish.
+
+Model validation reports accept spelled-out test counts and common Markdown
+emphasis. The suite checks parallel calls separately from OpenCode's multi-file
+read continuation scenario, so a model can report independent results for each
+behavior. Automatic compatibility repair is off by default, including when a
+test run starts from a model card. **Test default model** runs the installed
+Lemonade `Ornith-1.5-9B-GGUF`; install and loadability are required for that
+shortcut. The Model tests dropdown also selects Ornith by default when available,
+and allows choosing another installed model. Select the repair option on the
+Model tests page to enable repairs for a run.
 
 Administrators can open **Browse history** to search and page through browser visits.
 Delete individual entries from their rows or clear the entire history with **Delete all

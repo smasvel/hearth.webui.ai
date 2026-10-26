@@ -395,6 +395,29 @@
   }
 
   el("refresh").addEventListener("click", refreshAll);
+  el("metrics-reset").addEventListener("click", async () => {
+    if (!confirm("Warning 1 of 2: This permanently deletes all saved Metrics request history and coding reviews for every source and model. Continue?")) return;
+    if (!confirm("Warning 2 of 2: Reset all performance metrics to zero now? New requests will start accumulating again immediately.")) return;
+    const button = el("metrics-reset");
+    button.disabled = true;
+    try {
+      const res = await fetch("/api/metrics/reset", {
+        method: "POST",
+        headers: {"X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content},
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      page = 1;
+      rangeSel.value = "0";
+      fSource.value = ""; fBackend.value = ""; fType.value = ""; fStatus.value = ""; fModel.value = "";
+      el("metrics-reset-status").textContent = "All saved performance metrics were reset. New requests will be recorded from now on.";
+      refreshAll();
+    } catch (err) {
+      el("metrics-reset-status").textContent = `Could not reset metrics: ${err.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
   rangeSel.addEventListener("change", () => { page = 1; refreshAll(); });
   [fSource, fBackend, fType, fStatus].forEach((elm) => elm.addEventListener("change", refreshRecentFromPage1));
   fModel.addEventListener("input", () => {
