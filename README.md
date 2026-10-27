@@ -60,10 +60,6 @@ agent task editor, performance metrics, live request logs, and AI browser histor
 Metrics, live-log, and browser-history screenshots use representative sample data;
 chat content is also a sample.
 
-| Find and download a model |
-|---|
-| ![Hearth model downloads with backend search and model results](docs/screenshots/downloads.png) |
-
 | Chat with a local model | Manage local models |
 |---|---|
 | ![Hearth chat workspace](docs/screenshots/chat.png) | ![Hearth model management](docs/screenshots/models.png) |
