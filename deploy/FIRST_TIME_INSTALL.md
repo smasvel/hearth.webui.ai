@@ -183,7 +183,9 @@ also pause or continue the work from that page. When an assignment is paused, bl
 or interrupted, its owner can change the model before continuing. This starts a fresh
 OpenCode session from the latest saved workspace checkpoint and carries forward the
 previous agent summary. The model picker defaults to the currently loaded model when
-available, while still allowing another configured model to be selected. Task data
+available, while still allowing another model from Hearth's current downloaded-model
+inventory to be selected. This includes unloaded models; Hearth loads the selected model
+before the agent starts. Task data
 remains in PostgreSQL if you close the browser.
 When an owner shares an assignment, shared users get the same task controls: they
 can send instructions, answer prompts, pause or continue work, change the model when

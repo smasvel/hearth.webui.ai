@@ -35,6 +35,9 @@ SKIP_PARTS = {'.git', 'node_modules', '.venv', 'venv', '__pycache__'}
 MAX_PROJECT_BYTES = 2 * 1024 * 1024 * 1024
 SYSTEM_CA_BUNDLES = ('/etc/ssl/certs/ca-certificates.crt',
                     '/etc/pki/tls/certs/ca-bundle.crt')
+_MODEL_CONFIG_CACHE_SECONDS = 15
+_model_config_lock = threading.Lock()
+_model_config_cache = {'loaded_at': 0.0, 'config': None}
 
 
 def _system_ca_bundle():
@@ -50,6 +53,23 @@ def parse_jsonc(path):
     raw = re.sub(r'("(?:\\.|[^"\\])*")|,([\s]*[}\]])',
                  lambda match: match.group(1) or match.group(2), raw)
     return json.loads(raw)
+
+
+def _generated_model_config():
+    """Current OpenCode provider config from Hearth's live downloadable model inventory."""
+    now = time.monotonic()
+    with _model_config_lock:
+        cached = _model_config_cache['config']
+        if cached and now - _model_config_cache['loaded_at'] < _MODEL_CONFIG_CACHE_SECONDS:
+            return copy.deepcopy(cached)
+        try:
+            import help_data
+            config = json.loads(help_data.build()['opencode_config'])
+        except Exception:
+            logging.exception('Could not generate the current OpenCode model inventory.')
+            return copy.deepcopy(cached) if cached else None
+        _model_config_cache.update(loaded_at=now, config=config)
+        return copy.deepcopy(config)
 
 
 class _ModelProxyHandler(BaseHTTPRequestHandler):
@@ -248,7 +268,28 @@ class ContainerOpenCode(OpenCode):
             callback(job, text)
 
     def models(self):
-        return super().models()
+        try:
+            models = super().models()
+        except Exception:
+            logging.warning('Could not read the running OpenCode model list; using Hearth model inventory.',
+                            exc_info=True)
+            models = []
+        known = {(model['providerID'], model['id']) for model in models}
+        config = _generated_model_config()
+        for provider_id, provider in (config or {}).get('provider', {}).items():
+            for model_id, entry in (provider.get('models') or {}).items():
+                if (provider_id, model_id) in known:
+                    continue
+                context = (entry.get('limit') or {}).get('context')
+                usable = not isinstance(context, int) or context >= 16384
+                models.append({
+                    'providerID': provider_id, 'id': model_id,
+                    'name': entry.get('name') or model_id, 'context': context,
+                    'usable': usable,
+                    'reason': '' if usable else
+                        'This OpenCode worker needs at least 16K context; this model has '+str(context)+'.',
+                })
+        return models
 
     def _container_name(self, task_id):
         if not re.fullmatch(r'[0-9a-f]{32}', task_id):
@@ -287,13 +328,22 @@ class ContainerOpenCode(OpenCode):
 
     def _host_provider(self, provider_id, model_id, socket_path, agent_name):
         config_path = Path.home()/'.config/opencode/opencode.jsonc'
-        config = parse_jsonc(config_path)
+        try:
+            config = parse_jsonc(config_path)
+        except (OSError, ValueError):
+            config = {}
         source = (config.get('provider') or {}).get(provider_id)
-        if not isinstance(source, dict):
-            raise ValueError('The selected model provider is not configured in OpenCode.')
-        models = source.get('models') or {}
+        models = (source or {}).get('models') or {}
         model = models.get(model_id)
         if not isinstance(model, dict):
+            generated = _generated_model_config()
+            generated_source = (generated or {}).get('provider', {}).get(provider_id)
+            generated_model = (generated_source or {}).get('models', {}).get(model_id)
+            if isinstance(generated_source, dict) and isinstance(generated_model, dict):
+                config, source, model = generated, generated_source, generated_model
+        if not isinstance(model, dict):
+            if not isinstance(source, dict):
+                raise ValueError('The selected model provider is not configured in OpenCode.')
             # Some providers expose aliases in their model inventory; do not broaden the
             # container config to unrelated models if the exact model is missing.
             raise ValueError('The selected model is missing from the OpenCode provider configuration.')
