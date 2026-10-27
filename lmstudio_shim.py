@@ -68,7 +68,10 @@ def _forward_headers(headers) -> dict:
 
 
 def _source_from_headers(headers) -> str:
-    """Same X-Hearth-Client convention caddy_metrics.py/lemonade_guard_shim.py use."""
+    """Prefer a named Hearth agent, then the client label configured for other callers."""
+    agent_name = (headers.get("X-Hearth-Agent-Name") or headers.get("x-hearth-agent-name") or "").strip()
+    if agent_name and len(agent_name) <= 120 and not any(ord(char) < 32 for char in agent_name):
+        return agent_name
     client = (headers.get("X-Hearth-Client") or "").lower()
     return client if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", client) else "lan"
 

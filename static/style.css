@@ -2474,8 +2474,11 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .agent-list-heading { display:flex;align-items:center;justify-content:space-between;margin-bottom:12px; }
 .agent-list-heading h2 { margin:0;font-size:1.05rem; }
 .agent-task-list { display:grid;gap:10px; }
-.agent-task-card { display:block;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel-2,rgba(255,255,255,.025));color:var(--text);text-decoration:none;transition:border-color .15s,transform .15s; }
+.agent-task-card { padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel-2,rgba(255,255,255,.025));color:var(--text);transition:border-color .15s,transform .15s; }
 .agent-task-card:hover { border-color:var(--accent,#7d8cff);transform:translateY(-1px); }
+.agent-task-card-row { display:flex;align-items:center;gap:12px; }
+.agent-task-card-link { display:block;flex:1;min-width:0;color:var(--text);text-decoration:none; }
+.agent-task-clone { flex:none; }
 .agent-task-card-top { display:flex;align-items:center;justify-content:space-between;gap:12px; }
 .agent-task-card-top strong { overflow-wrap:anywhere; }
 .agent-task-meta { margin:8px 0 0;color:var(--text-dim);font-size:.88rem;overflow-wrap:anywhere; }
@@ -2498,6 +2501,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   .agent-page-heading { align-items:flex-start;flex-direction:column;gap:14px; }
   .agent-primary-link { width:100%;text-align:center; }
   .agent-task-card { padding:14px; }
+  .agent-task-card-row { align-items:flex-start; }
   .agent-task-card-top { align-items:flex-start; }
   .agent-budget { grid-template-columns:1fr; }
   .agent-execution-heading { align-items:flex-start; }
