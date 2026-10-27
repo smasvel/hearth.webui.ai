@@ -2259,7 +2259,8 @@ def api_agent_tasks_preview(task_id):
         return jsonify({'error': 'The accepted agent result is not available until the assignment completes.'}), 409
     files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'])
     if platform == 'web':
-        entry = next((item for item in files if not item['is_dir'] and item['path'] in
+        entry = next((item for item in files if not item['is_dir'] and
+                      str(item['path']).removeprefix('./') in
                       ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
         if not entry:
             return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
@@ -4385,6 +4386,7 @@ def api_start_chat():
 
         job = chat_jobs.registry.start(
             user_id, conversation_id, body.get("model"), user_text, len(conv["messages"]), run,
+            preserved_reply=body.get("preserved_reply") if isinstance(body.get("preserved_reply"), str) else None,
         )
         if any(m["role"] == "user" for m in messages):
             chat_store.add_message(conversation_id, "user", user_text)

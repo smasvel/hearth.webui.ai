@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="csrf-token" content="{{ csrf_token }}" /><script src="{{ asset('csrf.js') }}"></script>
 <title>Agents — Hearth</title><link rel="stylesheet" href="{{ asset('style.css') }}" /></head>
-<body><div class="app"><main class="chat"><header class="chat-header">
+<body class="agents-page"><div class="app"><main class="chat"><header class="chat-header">
 <a class="icon-btn text-icon-btn" href="{{ url_for('index') }}">← Chat</a>
 <nav class="console-tabs"><a class="console-tab active" href="{{ url_for('agents_page') }}">Agents</a>{% if session.role == 'admin' %}<a class="console-tab" href="{{ url_for('models_page') }}">Models</a><a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>{% endif %}</nav>
 <span class="hint" style="margin-left:auto">{{ username }}</span></header>

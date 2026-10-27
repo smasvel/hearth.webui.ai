@@ -87,6 +87,20 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
     def _proxy(self):
         proxy = self.server.proxy_config
         if not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer '+proxy['token']):
+            rejected_path = unquote(urlsplit(self.path).path)
+            if self.command == 'POST' and rejected_path == '/v1/chat/completions':
+                # Record relay authorization failures without reading or retaining
+                # the rejected prompt body. This makes otherwise invisible 403s
+                # diagnosable in Live logs while keeping unauthenticated content private.
+                request_id = live_requests.start(
+                    source=(proxy.get('headers') or {}).get('X-Hearth-Agent-Name') or 'agent',
+                    backend=proxy.get('provider_id') or 'agent',
+                    model=proxy.get('model_id') or 'unknown',
+                )
+                live_requests.finish(
+                    request_id, status='error', status_code=403,
+                    error_detail='Agent model relay authorization rejected.',
+                )
             self.send_error(403)
             return
         request_path = unquote(urlsplit(self.path).path)

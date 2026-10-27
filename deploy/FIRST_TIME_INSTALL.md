@@ -26,11 +26,20 @@ the Hearth host needs enough free disk space for the complete model file. Upload
 models appear in **Models** for loading. This upload flow currently supports GGUF files
 for Lemonade's `llamacpp` recipe.
 
+In Chat, if regenerating a reply fails, the previous reply remains visible in a distinct
+dimmed bubble labeled with the failure. A successful regeneration replaces it normally.
+
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
 create the administrator account on first visit. These launchers run Hearth in
 the foreground; close the terminal to stop the app. Docker keeps PostgreSQL
 running in the background.
+The sign-in and initial administrator setup screens use a responsive AI workspace
+design with animated connecting paths, travelling robot agents, and signal dots on larger
+screens. The animation respects the browser's reduced-motion preference. The same
+charcoal, slate, and mint color theme is used throughout Hearth's pages and controls.
+Preview the [animated sign-in screen](../docs/screenshots/login-animation.gif) or view
+the [login screenshot](../docs/screenshots/login.png).
 
 ## One-command Ubuntu installation
 
@@ -156,6 +165,8 @@ shims before requests are forwarded to model servers.
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
 decision. Open a task to follow its live **Activity** feed.
+On phones, the Agents workflow tabs stay visible while scrolling, and the header
+lays out every app tab available to the signed-in user's role.
 When editing a task, its saved model stays selected even if it is missing from the
 current model list or that list cannot load. You can save other task edits while
 retaining that model; choosing a different model requires one currently available.
@@ -182,7 +193,10 @@ and tool logs**.
 The result panel updates with the latest assistant response and final verification;
 if a task is interrupted, its latest response remains visible alongside the error.
 The activity feed and full activity history always put the newest timestamp at the top,
-even when live events arrive out of order. Questions and permission controls appear
+even when live events arrive out of order. While an agent runs, the feed also reports
+tool starts and completions and periodically confirms the OpenCode session is active
+during long model turns; these notes do not include prompts or tool output. Questions
+and permission controls appear
 on the assignment page when a response is needed. If it says **Needs your help** but
 the request details have not loaded, use **Refresh request** in the notice. You can
 also pause or continue the work from that page. When an assignment is paused, blocked,
@@ -347,6 +361,13 @@ reviews after two confirmation warnings; subsequent requests are recorded normal
 The **Live logs** page also has **Reset live logs**, which clears completed history and
 captured request/response traces after two confirmation warnings. In-flight rows remain
 visible and their completed entries are recorded after they finish.
+Rejected agent relay chat requests appear as failed 403 entries labeled with the agent
+name and model; Hearth does not read or save their prompt body.
+Metrics tables scroll horizontally inside their panels on phones. The model report uses
+fixed shared column widths to keep headers aligned with their values; dashboard cards
+and filters fit the available screen width.
+Agent HTML result previews also work when workspace synchronization stores the entry
+file path with a leading `./`.
 
 Model validation reports accept spelled-out test counts and common Markdown
 emphasis. The suite checks parallel calls separately from OpenCode's multi-file

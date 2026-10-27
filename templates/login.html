@@ -4,33 +4,71 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{ 'Create administrator' if setup_mode else 'Sign in' }} — Hearth</title>
-  <link rel="stylesheet" href="{{ asset('style.css') }}" />
+  <link rel="stylesheet" href="{{ asset('style.css') }}&login=agents-v2" />
 </head>
 <body class="login-body">
-  <div class="login-card">
-    <h1>{{ 'Set up Hearth' if setup_mode else 'Hearth' }}</h1>
-    {% if setup_mode %}<p>Create the first administrator account to finish setup.</p>{% endif %}
-    {% if error %}<p class="login-error">{{ error }}</p>{% endif %}
-    <form method="post" class="login-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <label>Username
-        <input type="text" name="username" value="{{ 'admin' if setup_mode else '' }}" autocomplete="username" autofocus required />
-      </label>
-      {% if setup_mode %}
-        <label>Admin password
-          <input type="password" name="password" autocomplete="new-password" minlength="8" required />
-        </label>
-        <label>Confirm admin password
-          <input type="password" name="password_confirm" autocomplete="new-password" minlength="8" required />
-        </label>
-        <button type="submit">Create administrator</button>
-      {% else %}
-        <label>Password
-          <input type="password" name="password" autocomplete="current-password" required />
-        </label>
-        <button type="submit">Sign in</button>
-      {% endif %}
-    </form>
-  </div>
+  <main class="login-shell">
+    <section class="login-showcase" aria-label="Hearth AI workspace">
+      <a class="login-brand" href="/login" aria-label="Hearth home"><span class="login-brand-mark">H</span>hearth<span class="login-brand-dot">.</span></a>
+      <div class="login-story">
+        <div class="login-eyebrow"><span></span> YOUR PRIVATE AI WORKSPACE</div>
+        <h1>Ideas in motion.<br /><em>Work in progress.</em></h1>
+        <p>Meet your local AI team. Think, build, and create together — right at home.</p>
+      </div>
+      <div class="agent-scene" aria-hidden="true">
+        <div class="scene-grid"></div><div class="scene-orbit orbit-one"></div><div class="scene-orbit orbit-two"></div>
+        <svg class="scene-lines" viewBox="0 0 620 390" preserveAspectRatio="none">
+          <path class="route route-a" d="M112 214 C180 214 170 126 250 126 S350 210 425 210" />
+          <path class="route route-b" d="M112 214 C180 214 168 300 250 300 S350 210 425 210" />
+          <path class="route route-c" d="M425 210 C485 210 470 125 530 125" />
+          <circle class="route-dot dot-a" r="4"><animateMotion dur="4s" repeatCount="indefinite" path="M112 214 C180 214 170 126 250 126 S350 210 425 210" /></circle>
+          <circle class="route-dot dot-b" r="4"><animateMotion dur="5s" repeatCount="indefinite" path="M112 214 C180 214 168 300 250 300 S350 210 425 210" /></circle>
+          <circle class="route-dot dot-c" r="3"><animateMotion dur="3s" repeatCount="indefinite" path="M425 210 C485 210 470 125 530 125" /></circle>
+          <g class="travel-bot bot-a"><animateMotion dur="7s" repeatCount="indefinite" path="M112 214 C180 214 170 126 250 126 S350 210 425 210" rotate="auto"/><rect x="-12" y="-9" width="24" height="18" rx="6"/><path d="M-5 -9v-4h10v4"/><circle cx="-4" cy="-1" r="2"/><circle cx="4" cy="-1" r="2"/><path d="M-4 5h8"/></g>
+          <g class="travel-bot bot-b"><animateMotion dur="8s" begin="-3s" repeatCount="indefinite" path="M112 214 C180 214 168 300 250 300 S350 210 425 210" rotate="auto"/><rect x="-12" y="-9" width="24" height="18" rx="6"/><path d="M-5 -9v-4h10v4"/><circle cx="-4" cy="-1" r="2"/><circle cx="4" cy="-1" r="2"/><path d="M-4 5h8"/></g>
+          <g class="travel-bot bot-c"><animateMotion dur="5s" begin="-1.5s" repeatCount="indefinite" path="M425 210 C485 210 470 125 530 125" rotate="auto"/><rect x="-11" y="-8" width="22" height="16" rx="6"/><path d="M-4 -8v-4h8v4"/><circle cx="-3" cy="-1" r="1.7"/><circle cx="3" cy="-1" r="1.7"/></g>
+        </svg>
+        <div class="agent-node node-you"><div class="node-avatar avatar-you">✦</div><span>YOUR IDEA</span></div>
+        <div class="agent-node node-plan"><div class="node-avatar avatar-plan"><span class="robot-face"><i></i><i></i><b></b></span></div><span>PLANNING</span></div>
+        <div class="agent-node node-build"><div class="node-avatar avatar-build">⌘</div><span>BUILDING</span></div>
+        <div class="agent-node node-result"><div class="node-avatar avatar-result">✓</div><span>READY</span></div>
+        <div class="scene-caption"><span class="caption-pulse"></span><span>Agents are working together</span><span class="caption-dots">•••</span></div>
+        <div class="scene-spark spark-one">✳</div><div class="scene-spark spark-two">✦</div><div class="scene-spark spark-three">·</div>
+      </div>
+      <div class="login-showcase-foot"><span>LOCAL BY DESIGN</span><span>YOUR MODELS · YOUR DATA · YOUR RULES</span></div>
+    </section>
+    <section class="login-panel" aria-labelledby="login-heading">
+      <div class="login-card">
+        <div class="login-mobile-brand"><span class="login-brand-mark">H</span>hearth<span class="login-brand-dot">.</span></div>
+        <div class="login-panel-heading"><span class="login-panel-kicker">{% if setup_mode %}FIRST-TIME SETUP{% else %}WELCOME BACK{% endif %}</span>
+          <h2 id="login-heading">{{ 'Create your space' if setup_mode else 'Good to see you.' }}</h2>
+          <p>{{ 'Set up your administrator account to begin.' if setup_mode else 'Sign in to pick up where your agents left off.' }}</p>
+        </div>
+        {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
+        <form method="post" class="login-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <label>Username
+            <input type="text" name="username" value="{{ 'admin' if setup_mode else '' }}" autocomplete="username" autofocus required />
+          </label>
+          {% if setup_mode %}
+            <label>Admin password
+              <input type="password" name="password" autocomplete="new-password" minlength="8" required />
+            </label>
+            <label>Confirm admin password
+              <input type="password" name="password_confirm" autocomplete="new-password" minlength="8" required />
+            </label>
+            <button type="submit">Create administrator <span aria-hidden="true">→</span></button>
+          {% else %}
+            <label>Password
+              <input type="password" name="password" autocomplete="current-password" required />
+            </label>
+            <button type="submit">Sign in securely <span aria-hidden="true">→</span></button>
+          {% endif %}
+        </form>
+        <div class="login-secure"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>Private workspace <span>·</span> Protected by Hearth</div>
+      </div>
+      <div class="login-panel-foot">A calmer way to work with AI <span>© HEARTH</span></div>
+    </section>
+  </main>
 </body>
 </html>

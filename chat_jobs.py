@@ -19,13 +19,14 @@ def cancelable_lines(lines, cancel):
 
 
 class ChatJob:
-    def __init__(self, user_id, conversation_id, model, user_text, base_message_count):
+    def __init__(self, user_id, conversation_id, model, user_text, base_message_count, preserved_reply=None):
         self.user_id = user_id
         self.conversation_id = conversation_id
         self.id = uuid.uuid4().hex
         self.model = model
         self.user_text = user_text
         self.base_message_count = base_message_count
+        self.preserved_reply = preserved_reply
         self.user_saved = False
         self.started_at = time.time()
         self.finished_at = None
@@ -43,6 +44,7 @@ class ChatJob:
                 "content": self.content, "reasoning": self.reasoning,
                 "error": self.error, "started_at": self.started_at,
                 "user_text": self.user_text, "base_message_count": self.base_message_count,
+                "preserved_reply": self.preserved_reply,
                 "stop_requested": self.cancel.is_set(),
             }
 
@@ -81,7 +83,7 @@ class JobRegistry:
             job = self.jobs.get(conversation_id)
             return job if job and job.user_id == user_id else None
 
-    def start(self, user_id, conversation_id, model, user_text, base_message_count, run):
+    def start(self, user_id, conversation_id, model, user_text, base_message_count, run, preserved_reply=None):
         with self.lock:
             now = time.time()
             for key, old in list(self.jobs.items()):
@@ -90,7 +92,7 @@ class JobRegistry:
             old = self.jobs.get(conversation_id)
             if old and (old.user_id != user_id or old.status == "running"):
                 raise ValueError("This conversation already has a response in progress.")
-            job = ChatJob(user_id, conversation_id, model, user_text, base_message_count)
+            job = ChatJob(user_id, conversation_id, model, user_text, base_message_count, preserved_reply)
             self.jobs[conversation_id] = job
 
         def worker():

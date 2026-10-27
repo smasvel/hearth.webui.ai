@@ -735,7 +735,8 @@
       activeReplyEl = null;
     }
     if (generation?.error && !generationErrorShown) {
-      addChatError(generation.error, generation.user_text, generation.base_message_count);
+      if (generation.preserved_reply) addFailedRegeneration(generation.error, generation.preserved_reply, generation.base_message_count - 1, generation.user_text);
+      else addChatError(generation.error, generation.user_text, generation.base_message_count);
       generationErrorShown = true;
     }
     setChatBusy(running, !!generation?.stop_requested && running);
@@ -1357,6 +1358,10 @@
   // point, then runs a fresh turn.
   async function resendFromUser(userIndex, text) {
     if (busy || userIndex < 0) return;
+    const previousReply = history[userIndex + 1]?.role === "assistant" ? history[userIndex + 1].content : "";
+    const isRegeneration = Boolean(previousReply) && text === history[userIndex]?.content;
+    const originalHistory = history.map((message) => ({ ...message }));
+    const originalWraps = msgWraps.slice();
     if (currentConversationId) {
       try {
         await fetch(`/api/conversations/${currentConversationId}/truncate`, {
@@ -1372,11 +1377,11 @@
     for (let i = msgWraps.length - 1; i >= userIndex; i--) msgWraps[i]?.remove();
     msgWraps.length = userIndex;
     history.length = userIndex;
-    await runChatTurn(text);
+    await runChatTurn(text, isRegeneration ? previousReply : "", isRegeneration ? { userIndex, text, originalHistory, originalWraps, previousReply } : null);
   }
 
   // Start a server-owned turn. Polling can stop with the tab; generation cannot.
-  async function runChatTurn(text) {
+  async function runChatTurn(text, preservedReply = "", regenerationFallback = null) {
     const isSecurityScan = ["/security-scan", "/security scan"].includes(text.toLowerCase());
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
     const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "Wan 2.1 T2V 1.3B" : ""));
@@ -1401,7 +1406,7 @@
         // default (Settings -> Chat request limits); sending a hardcoded value here would
         // silently ignore that setting.
         body: JSON.stringify({ model, messages: history, temperature: Number(temperatureEl.value) || 0.7,
-          conversation_id: id }),
+          conversation_id: id, preserved_reply: preservedReply }),
       });
       const data = await res.json();
       if (currentConversationId !== id || conversationViewVersion !== version) return;
@@ -1412,6 +1417,16 @@
       await fetchConversations();
     } catch (err) {
       if (currentConversationId !== id || conversationViewVersion !== version) return;
+      if (regenerationFallback) {
+        history = regenerationFallback.originalHistory;
+        msgWraps = regenerationFallback.originalWraps;
+        for (const wrap of msgWraps) messagesEl.appendChild(wrap);
+        const userIndex = regenerationFallback.userIndex;
+        addFailedRegeneration(err.message, regenerationFallback.previousReply, userIndex, regenerationFallback.text);
+        renderedMessagesKey = null;
+        setChatBusy(false);
+        return;
+      }
       // A request may have reached the server despite a browser/network error.
       addSystemMessage(`Chat connection interrupted: ${err.message}. Reconnecting…`, true);
       setChatBusy(false);
@@ -1549,6 +1564,29 @@
     wrap.appendChild(bar);
     messagesEl.appendChild(wrap);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addFailedRegeneration(message, oldReply, retryIndex, failedText) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-wrap regeneration-failed";
+    const label = document.createElement("div");
+    label.className = "regeneration-failed-label";
+    label.textContent = `Regeneration failed: ${message}. Previous reply:`;
+    wrap.appendChild(label);
+    const bubble = document.createElement("div");
+    bubble.className = "msg assistant preserved-reply";
+    const answer = document.createElement("div");
+    answer.className = "answer-content";
+    answer.innerHTML = renderMarkdown(oldReply);
+    bubble.appendChild(answer);
+    wrap.appendChild(bubble);
+    const bar = document.createElement("div");
+    bar.className = "msg-actions";
+    bar.appendChild(makeActionBtn("Retry", "Try regenerating this reply again", () => {
+      if (!busy) resendFromUser(retryIndex, failedText);
+    }));
+    wrap.appendChild(bar);
+    messagesEl.appendChild(wrap);
   }
 
   // --- Voice: mic input (record -> transcribe -> auto-send) and spoken responses

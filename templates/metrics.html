@@ -8,7 +8,7 @@
   <title>Metrics — Hearth</title>
   <link rel="stylesheet" href="{{ asset('style.css') }}" />
 </head>
-<body>
+<body class="metrics-page">
   <div class="app">
     <main class="chat">
       <header class="chat-header">
@@ -62,8 +62,17 @@
               Errors count recorded HTTP failures; HTTP success does not establish coding correctness.
               Coding accuracy is the pass rate of manually reviewed coding requests. Mark Pass or Fail in Recent requests after checking the result.
               Unreviewed requests are excluded. Missing measurements appear as —; sample counts show coverage.</p>
-            <div class="metric-table-wrap">
-              <table class="console-table metric-table">
+            <p class="metric-table-scroll-hint hint">On small screens, scroll horizontally to see all columns.</p>
+            <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Model performance table; scroll horizontally to see all columns.">
+              <table class="console-table metric-table metric-model-report">
+                <colgroup>
+                  <col class="col-model" /><col class="col-backend" /><col class="col-requests" />
+                  <col class="col-input" /><col class="col-output" /><col class="col-samples" />
+                  <col class="col-speed" /><col class="col-samples" /><col class="col-response" />
+                  <col class="col-http" /><col class="col-small" /><col class="col-small" />
+                  <col class="col-unknown" /><col class="col-rate" /><col class="col-coding" />
+                  <col class="col-coding-errors" /><col class="col-accuracy" /><col class="col-reviewed" />
+                </colgroup>
                 <thead><tr><th>Model</th><th>Backend</th><th class="num">Requests</th>
                   <th class="num">Input tokens</th><th class="num">Generated tokens</th><th class="num">Token samples</th>
                   <th class="num">Avg tok/s</th><th class="num">Speed samples</th><th class="num">Avg response (s)</th>
@@ -105,7 +114,8 @@
               <input id="f-model" class="panel-input" type="text" placeholder="Filter by model…" autocomplete="off" />
               <button id="f-clear" class="panel-btn" type="button">Clear filters</button>
             </div>
-            <div class="metric-table-wrap">
+            <p class="metric-table-scroll-hint hint">On small screens, scroll horizontally to see all columns.</p>
+            <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Recent requests table; scroll horizontally to see all columns.">
               <table class="console-table metric-table">
                 <thead>
                   <tr>
