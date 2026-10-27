@@ -43,8 +43,8 @@ all documented in their own sections below.
 | Use case | Included capabilities |
 |---|---|
 | Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, response copy-to-clipboard, model switching, and supported reasoning displays |
-| Model management | Search, download, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
-| LLM evaluation | Individually selected model tests, typed argument checks, streamed and ordinary responses, repair progress, saved reports, and deletion of older reports during a run |
+| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
+| LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
 | Web research | Web search and page retrieval, optional Chromium scraping, and Playwright browser actions in Hearth chat |
@@ -80,11 +80,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    size, task type, update date, popularity, download status, and source link. Each
    card labels tool-calling support as **yes**, **no**, or **unknown**, based on
    catalog metadata.
-3. Use the independent **Tool calling filters** to restrict results for selected
-   backends to models whose catalog metadata explicitly declares support. Models
-   with unknown support are excluded for a filtered backend. A positive label does
-   not guarantee compatibility with every tool or runtime, so use **Model tests**
-   before relying on it.
+3. Use **Exclude unknown support** to hide models whose catalog does not say
+   whether they support tool calling; models marked **no** remain visible. The
+   independent **Tool calling filters** restrict selected backends to models whose
+   catalog metadata explicitly declares support. A positive label does not guarantee
+   compatibility with every tool or runtime, so use **Model tests** before relying on it.
 4. Filter by parameter count with **Small** (up to 4B), **Medium** (over 4B through
    13B), or **Large** (over 13B). These filters use reported parameter counts or
    recognizable sizes in model names/descriptions; models without a detectable
@@ -94,18 +94,24 @@ administrator to find models, then use **Models** to load and evaluate them.
    selected. Review the result and choose Download; Hearth does not download model
    weights automatically. Follow progress and logs, inspect active downloads, or
    cancel a download.
-6. Open **Models** to load, unload, or delete installed models. Select a loaded
+6. To use a model file already on your device, choose **Upload a local GGUF model**
+   on Models, browse to a `.gguf` file, and upload it. Hearth validates the GGUF
+   header, stores the file under `data/local-models`, and registers it with the
+   configured Lemonade server. That server must run on the Hearth host or be able to
+   read the stored file path. The upload transfers the full model file to Hearth;
+   ensure the host has enough disk space. The model then appears in **Models**.
+7. Open **Models** to load, unload, or delete installed models. Select a loaded
    chat model in the conversation model picker.
-7. Check the maximum context-token label shown on a **Downloads** result when
+8. Check the maximum context-token label shown on a **Downloads** result when
    metadata reports it. In **Models**, check the context limit shown on each label when choosing
    how much chat history to send. The displayed limit is the model/backend
    capability Hearth knows about; runtime settings can impose a lower active
    context size.
-8. On a Lemonade model card, use **Enable thinking** to choose whether Hearth chat requests
+9. On a Lemonade model card, use **Enable thinking** to choose whether Hearth chat requests
    include that model's reasoning phase. The toggle is saved per model and overrides the
    Lemonade default in Settings; Hearth passes it through both Lemonade's request control and
    the chat-template option. Models whose runtime does not support thinking controls may ignore it.
-9. Run **Model tests** before using a model for coding or tool-driven workflows.
+10. Run **Model tests** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
 |---|---|---|
@@ -155,10 +161,20 @@ affect response time.
 
 ## Test and compare models before coding
 
+The Model tests page groups four suites into tabs: compatibility tests, tool-calling
+tests, a 12-question reasoning benchmark, and 10 model security behavior probes.
+The reasoning benchmark presents each original question separately, checks it against
+a fixed answer key, and reports points correct. It is not a human IQ measurement:
+human IQ scores depend on standardized, normed psychological assessments and must not
+be inferred from this model benchmark. The security suite probes response behavior
+for injection, disclosure, unsafe requests, privacy, and unauthorized actions; it
+does not scan the host or prove the model or deployment secure. Tool calls are never
+executed by these suites. Results and individual check details are saved with the
+existing model-test reports.
+
 Open **Model tests** and choose an installed chat model to run its test suite by
-itself. **Test default model** on a model card starts the installed Lemonade
-`Ornith-1.5-9B-GGUF` run. To test a different model, choose it from the Model
-tests dropdown. Follow the current check and elapsed time, cancel
+itself. **Test Model** on a model card runs the model from that card. Follow the
+current check and elapsed time, cancel
 after the current request, reopen recent runs, download JSON reports, or delete
 older saved reports from the separate report-management selector, including while
 another model is being tested. The active report cannot be deleted. Automatic
@@ -309,12 +325,12 @@ configured separately. The first-time Hearth installer does not perform that set
 | Feature | What Hearth supports | Where to start |
 |---|---|---|
 | Local AI chat | Live answer and reasoning updates, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
-| Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation | Downloads |
+| Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation, local GGUF upload to Lemonade | Downloads |
 | Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
-| Model evaluation | Individually selected model checks, tool and coding workflows, saved JSON reports, deletion of older reports during a run, repair progress, and repair-profile reset | Model tests; per-model links from Models |
+| Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Guided task creation with per-run model thinking control, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation with per-run model thinking control, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-and-browsing); Browse history |
@@ -340,9 +356,8 @@ validation and kernel/ABI artifacts.
 Use Hearth to evaluate whether a local language model can follow the tool contracts
 needed by an AI coding agent. On **Model tests**, choose an installed chat model to
 run it individually, monitor its progress, and inspect results by model and backend.
-From **Models**, **Test default model** opens the same page and starts the installed
-Lemonade `Ornith-1.5-9B-GGUF` run. Choose another model on the Model tests page to
-test it instead.
+From **Models**, **Test Model** opens the same page and starts the model from the
+clicked card. Automatic repair stays off for this run.
 Older completed reports can be deleted from the separate report selector even while
 another test is running; the active report remains protected. Test reports, per-model
 compatibility profiles, backend model registries, and reviewed resource notes are stored
@@ -508,13 +523,19 @@ cookie (closing the browser requires a fresh login) and expires after 30 minutes
 request.
 
 Chat responses continue when you switch tabs, change conversations, navigate to another
-page, or close the browser. Returning to the chat restores its current progress or saved
-reply. The Stop button explicitly cancels a text response and keeps its partial answer.
-Answer text and supported separate reasoning content appear as the backend streams them;
-models that emit no separate reasoning events show the answer as it arrives.
-Active jobs run in the web service; completed replies remain in PostgreSQL chat history.
+page, or close the browser. You can ask Hearth a question, close the browser, and sign
+back in later to find the completed reply in that conversation. The response runs in
+Hearth's server-side background worker, and completed replies are saved in PostgreSQL
+chat history even after the browser disconnects. The Stop button explicitly cancels a
+text response and keeps its partial answer. Answer text and supported separate reasoning
+content appear as the backend streams them; models that emit no separate reasoning
+events show the answer as it arrives.
+
+Keep the machine hosting Hearth awake and its web service running while a response is
+generating. Closing a browser does not stop the server-side response, but if the same
+laptop hosts Hearth and goes to sleep, generation cannot continue until it wakes.
 Restarting the web service interrupts active jobs, so wait for responses to finish before
-restarting it.
+restarting it. Replies completed before a restart remain in chat history.
 
 User accounts share the PostgreSQL database with chat history. After a fresh install,
 the first visit to Hearth displays a one-time administrator setup form. Choose the
@@ -621,6 +642,13 @@ The live task stream includes each latest agent response, completion note, and
 verification result, so the result panel updates when the task finishes. Interrupted
 tasks keep their latest response visible alongside the error and can be resumed.
 
+Each assignment has its own durable project workspace in PostgreSQL. Existing
+unscoped workspace data is moved to its assignment when the owner has one assignment;
+when ownership is ambiguous, existing files remain available as a legacy fallback
+until each assignment saves its own checkpoint. Scheduled
+continuations reuse the code and files already built there, along with the previous
+progress summary. That workspace remains stored while the assignment exists,
+including between scheduled runs, and is removed when the assignment is deleted.
 Agent assignments and project files are private to their owner by default,
 including from other administrators. An owner can explicitly share an assignment
 with registered users who have Agent access enabled. Shared users receive the same
@@ -659,15 +687,32 @@ embeddings do not hide the loaded coding model from that default, including LM S
 models reported through their loaded-instance list. A model change continues in a fresh OpenCode session from the latest saved
 workspace checkpoint and carries forward the previous agent summary. Tasks persist when you close the browser, and Hearth
 reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
-restart can be resumed from the task page.
+restart can be resumed from the task page. Work that was queued but had not started
+remains queued across a restart and starts when the supervisor is ready.
 Completed assignments show **Run again**. This queues a fresh execution of the same
 assignment from its latest saved project files and returns it to the queue while
 keeping its settings and activity history.
+When a verification command is configured, Hearth includes it in the agent's plan
+from the first prompt. The agent is instructed to inspect its prerequisites, create
+and save any required verifier or supporting files, run the command, and fix failures
+before claiming completion. Hearth then runs the configured command independently.
+Completed, stopped, and interrupted assignments also let you edit the task description, acceptance
+criteria, model, output settings, and work limits. **Save changes** stores the edits
+without starting a run; **Resubmit** saves the current edits and queues the same
+assignment from its latest saved project files. Use **Edit task** in the assignment
+header to open the editor. This does not create a second assignment or discard the
+existing code and activity history.
+When a run finishes, Hearth stops and retains that assignment's Docker container.
+Reruns with the same model and provider settings reuse it, create a fresh OpenCode
+session, and restore the latest PostgreSQL project files. Changing the model or
+provider configuration replaces the container; deleting the assignment removes it.
 After reviewing a running, waiting, paused, blocked, or interrupted assignment, its owner can use
 **Reset cycles** to set the work-cycle count back to zero without changing the saved
 workspace or model, then choose **Continue** when ready.
-Startup cleanup preserves containers with matching PostgreSQL task and runtime records;
-if a container is missing, resuming rebuilds it from the saved project files.
+Startup cleanup preserves containers with matching PostgreSQL task and runtime records.
+Test runs use a private agent runtime directory. If an assignment container is removed
+while work is active, Hearth recreates it from the latest synchronized project checkpoint
+and continues the assignment.
 
 If OpenCode reports an idle session before a new assistant result is available, Hearth
 keeps polling for up to 30 minutes. A session that remains idle after that is marked
@@ -682,13 +727,16 @@ contains an implementation placeholder, and continues the assignment instead.
 
 Use **Recurring agent schedules** to select an existing assignment from the
 **Assignments** page and set its repeat interval, from 5 minutes to 365 days.
-Each occurrence reruns that same assignment with its saved goal, model, settings,
-and project files; schedules do not create a second agent definition. The first
+Each occurrence continues that assignment from its saved project files and progress,
+using its saved goal, model, and settings; it reuses existing code instead of
+recreating completed parts. Schedules do not create a second agent definition. The first
 run starts after one interval. Daily or weekly schedules can specify a local run
 time using the browser timezone shown in the form, and keep that wall-clock time
 across daylight-saving changes. Hearth skips an occurrence if the selected
 assignment is still active or needs review, then checks it again at the next
-interval. You can pause, resume, or delete a schedule without deleting its
+interval. Completed and stopped assignments can both be rerun by a schedule;
+Hearth can also recover an interrupted scheduled run after its service restarts.
+You can pause, resume, or delete a schedule without deleting its
 assignment, and edit its repeat interval, local run time, or timezone from the
 **Schedules** page. Shared users can manage schedules linked to assignments shared
 with them. Schedules run only while Hearth is running, and disabling the
@@ -832,7 +880,9 @@ Run the application checks through the isolated PostgreSQL test runner:
 
 With `--browser`, the unit suite and all seven Playwright suites run concurrently. Each
 browser suite receives its own temporary PostgreSQL schema, and all schemas are removed
-when the run finishes. Admin browser coverage visits every standalone page, opens a Live
+when the run finishes. Agent runtime files and containers use a matching temporary
+directory, so isolated tests cannot discover or remove containers owned by the running
+application. Admin browser coverage visits every standalone page, opens a Live
 logs request trace, checks Browse history search and both deletion actions, and verifies
 that ordinary users cannot open admin-only pages or APIs.
 

@@ -3,7 +3,24 @@
   const el = id => document.getElementById(id);
   const defaultTestModel = {backend: "lemonade", id: "Ornith-1.5-9B-GGUF"};
   const activeStates = new Set(["loading", "running", "repairing", "cancelling"]);
-  let job = null, running = false, starting = false, timer = null;
+  let job = null, running = false, starting = false, timer = null, selectedSuite = "all";
+  const suiteDescriptions = {
+    all: ["Run chat, streaming, tool choices, typed arguments, file-tool contracts, long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures, large-code input, and context-limit checks. Question answers and tool results are simulated. Dependent steps stop if an earlier step fails. Models are tested sequentially; local loads unload other local chat models and leave the final local model loaded. Returned tools are inspected; no generated shell commands or project changes are executed.", "Automatic repair applies a reversible per-model tool-instruction profile and keeps it only if results improve."],
+    tools: ["Checks tool selection, exact and parallel calls, typed arguments, simulated tool results, and file read/edit request contracts in normal and streaming responses. Returned calls are inspected and never executed.", "Tool compatibility checks use simulated schemas and data; automatic repair is not applied."],
+    iq: ["Runs 12 original, individually presented reasoning questions covering patterns, deduction, arithmetic, spatial reasoning, and probability. Each question is sent separately and scored against a fixed answer key.", "This is a reasoning benchmark score (points correct), not a human IQ score. Human IQ requires standardized, normed tests; model results are not comparable to human IQ."],
+    security: ["Runs 10 harmless behavioral probes covering prompt injection, secret disclosure, credential theft, unsafe requests, privacy, and unauthorized tool use. No tools are connected and generated actions are never executed.", "This evaluates responses to these probes only. It does not scan the host, runtime, model weights, or deployment, and passing does not establish security."]
+  };
+  function setSuite(suite) {
+    selectedSuite = suite;
+    document.querySelectorAll("[data-suite]").forEach(tab => {
+      const active = tab.dataset.suite === suite;
+      tab.classList.toggle("active", active); tab.setAttribute("aria-selected", String(active));
+    });
+    el("suite-description").textContent = suiteDescriptions[suite][0];
+    el("suite-note").textContent = suiteDescriptions[suite][1];
+    el("auto-repair-control").hidden = suite !== "all";
+  }
+  document.querySelectorAll("[data-suite]").forEach(tab => tab.addEventListener("click", () => setSuite(tab.dataset.suite)));
   async function api(path, body, method) {
     method = method || (body === undefined ? "GET" : "POST");
     const response = await fetch(path, body === undefined ? {method} : {
@@ -23,7 +40,7 @@
     const wasRunning = running;
     running = !!job && activeStates.has(job.status);
     el("tests-run").disabled = running || starting || !el("tests-model").value;
-    el("tests-auto-repair").disabled = running;
+    el("tests-auto-repair").disabled = running || selectedSuite !== "all";
     el("tests-history").disabled = running;
     el("tests-cancel").disabled = !running || job.status === "cancelling";
     el("tests-delete").disabled = !el("tests-delete-history").value;
@@ -43,7 +60,8 @@
     const passed = [...latest.values()].filter(r => r.passed).length;
     const blocked = [...latest.values()].filter(r => r.skipped).length;
     const failed = latest.size - passed - blocked;
-    el("tests-status").textContent = `${job.status} · ${passed} passed · ${failed} failed` +
+    const score = job.suite === "iq" ? ` · Reasoning score ${passed}/${latest.size}` : job.suite === "security" ? ` · Safe responses ${passed}/${latest.size}` : "";
+    el("tests-status").textContent = `${job.status} · ${passed} passed · ${failed} failed${score}` +
       (blocked ? ` · ${blocked} dependent steps blocked` : "") +
       (job.current_model ? ` · ${job.current_model.id}` : "") +
       (job.current_check && running ? ` · ${job.current_check.name} (${job.current_check.stream ? "streaming" : "normal"}, ${Math.max(0, Math.round(Date.now() / 1000 - job.current_check.started_at))}s)` : "") +
@@ -138,18 +156,21 @@
       el("tests-delete").disabled = true;
     }
     job = jobs.find(j => j.id === selectId) || jobs.find(j => activeStates.has(j.status)) || jobs[0] || null;
-    if (job) { list.value = job.id; job = await api(`/api/model-tests/${encodeURIComponent(job.id)}`); }
+    if (job) {
+      list.value = job.id; job = await api(`/api/model-tests/${encodeURIComponent(job.id)}`);
+      if (suiteDescriptions[job.suite]) setSuite(job.suite);
+    }
     render(); schedule();
   }
-  async function start(models) {
+  async function start(models, suite = selectedSuite) {
     if (running || starting) return;
-    if (!confirm(`Run the complete test suite for ${models.map(m => m.id).join(", ")}?\n\nLoading a local model unloads other local chat models. The tested local model stays loaded. The suite includes long OpenCode workflows and simulated question answers. Tests can take many minutes. No generated tools will be executed.`)) return;
+    if (!confirm(`Run the selected test suite for ${models.map(m => m.id).join(", ")}?\n\n${suiteDescriptions[suite][0]}\n\nPrompts are sent individually.`)) return;
     starting = true;
     document.dispatchEvent(new Event("model-tests-state"));
     el("tests-run").disabled = true;
     try {
       job = await api("/api/model-tests", {models: models.map(m => ({backend: m.backend, id: m.id})),
-        auto_repair: el("tests-auto-repair").checked});
+        suite, auto_repair: suite === "all" && el("tests-auto-repair").checked});
       render(); schedule(); await history(job.id);
       el("model-tests").scrollIntoView({behavior: "smooth", block: "start"});
     } catch (error) { el("tests-status").textContent = error.message; el("tests-run").disabled = running || starting; }
@@ -244,14 +265,7 @@
       if (params.get("action") === "reset" && running) el("tests-status").textContent = "A test run is active. Wait for it to finish before resetting a repair profile.";
       else if (params.get("action") === "reset") await reset(model);
       else if (running) el("tests-status").textContent = "A test run is already active; showing its progress instead.";
-      else if (params.get("action") === "test-tools") {
-        model = models.find(item => item.backend === defaultTestModel.backend &&
-          item.id === defaultTestModel.id && item.loadable !== false);
-        if (!model) throw new Error(`${defaultTestModel.id} must be installed and loadable to run the default model test.`);
-        const defaultKey = JSON.stringify(defaultTestModel);
-        if ([...el("tests-model").options].some(option => option.value === defaultKey)) {
-          el("tests-model").value = defaultKey;
-        }
+      else if (params.get("action") === "test-model" || params.get("action") === "test-tools") {
         el("tests-auto-repair").checked = false;
         await start([model]);
       } else await start([model]);

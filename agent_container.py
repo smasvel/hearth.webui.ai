@@ -424,8 +424,38 @@ class ContainerOpenCode(OpenCode):
         (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
         proxy_path = task_dir/'model.sock'
         original, provider, proxy_info = self._host_provider(job['model']['providerID'], job['model']['id'], proxy_path)
-        proxy = self._make_proxy(name, proxy_info)
         config = self._agent_config(original, job['model']['providerID'], job['model']['id'], provider)
+        existing = agent_store.get_runtime(task_id)
+        if existing:
+            can_reuse = self._can_reuse_container(existing, job, config, proxy_info)
+            if can_reuse:
+                try:
+                    image = self._docker('inspect', '-f', '{{.Config.Image}}', name, timeout=15)
+                    can_reuse = image == IMAGE
+                except RuntimeError as exc:
+                    if 'No such object' not in str(exc) and 'No such container' not in str(exc):
+                        raise
+                    can_reuse = False
+            if can_reuse:
+                self._report(job, 'Reusing the saved Docker container and OpenCode installation.')
+                session = self._endpoint(name, existing)
+                data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
+                        'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
+                        'permissions': self._permissions(job)}
+                result = session.call('POST', '/api/session', data)['data']['id']
+                self._docker('exec', name, 'sh', '-lc',
+                             'rm -rf -- /home/node/agents/project && mkdir -p /home/node/agents/project')
+                self._sync_to_container(name, job['owner'], workspace_id=task_id)
+                existing['last_sync'] = 0
+                self._write_runtime(name, existing)
+                self._report(job, 'Saved project workspace synced into the reused container.')
+                return name+SESSION_SEPARATOR+result
+            reason = ('Container settings changed' if existing.get('model') != job.get('model') or
+                      not self._can_reuse_container(existing, job, config, proxy_info)
+                      else 'The previous container or image is unavailable')
+            self._report(job, reason+'; replacing it before starting this run.')
+            self.cleanup(job)
+        proxy = self._make_proxy(name, proxy_info)
         info = {'container': name, 'task_id': task_id, 'password': secrets.token_urlsafe(32),
                 'owner': job['owner'], 'model': job['model'], 'model_proxy': proxy.info,
                 'opencode_config': config,
@@ -437,9 +467,48 @@ class ContainerOpenCode(OpenCode):
                 'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
-        self._sync_to_container(name, job['owner'])
+        self._sync_to_container(name, job['owner'], workspace_id=job['id'])
         self._report(job, 'Project synced. The agent is ready to start its first work cycle.')
         return name+SESSION_SEPARATOR+result
+
+    @staticmethod
+    def _can_reuse_container(existing, job, config, proxy_info):
+        """Reuse only when the stopped service has the same model and provider settings."""
+        if existing.get('model') != job.get('model'):
+            return False
+        old_proxy = existing.get('model_proxy') or {}
+        proxy_fields = ('base_url', 'api_key', 'headers', 'verify_tls')
+        if any(old_proxy.get(key) != proxy_info.get(key) for key in proxy_fields):
+            return False
+        old_config = copy.deepcopy(existing.get('opencode_config') or {})
+        new_config = copy.deepcopy(config)
+        provider_id = job['model']['providerID']
+        try:
+            old_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
+            new_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
+        except (KeyError, TypeError):
+            return False
+        return old_config == new_config
+
+    def park(self, job):
+        """Stop a completed task container but retain it and its runtime for its next run."""
+        task_id = job.get('id')
+        if not task_id:
+            return
+        name = self._container_name(task_id)
+        with self._lock:
+            proxy = self._proxies.pop(name, None)
+        try:
+            if proxy:
+                proxy.close()
+            try:
+                self._docker('stop', '--time', '5', name, timeout=60)
+            except RuntimeError as exc:
+                if 'No such container' not in str(exc):
+                    raise
+        except Exception:
+            logging.exception('Could not park agent container %s', name)
+            raise
 
     def resume(self, job):
         """Reattach to the persistent session or recreate it from the synced project."""
@@ -486,8 +555,11 @@ class ContainerOpenCode(OpenCode):
         self._make_proxy(name, info['model_proxy'])
         try:
             running = self._docker('inspect', '-f', '{{.State.Running}}', name, timeout=15)
-        except RuntimeError:
-            raise RuntimeError('The isolated agent container is missing. Stop this assignment and create a new one.')
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            if 'no such container' in message or 'no such object' in message:
+                raise RuntimeError('The isolated agent container is missing.') from exc
+            raise
         if running != 'true':
             self._docker('start', name, timeout=60)
         return _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
@@ -525,13 +597,13 @@ class ContainerOpenCode(OpenCode):
         if SESSION_SEPARATOR not in str(session): return super().stop_verification(session, message_id)
         name, raw, info = self._split(session); return self._endpoint(name, info).stop_verification(raw, message_id)
 
-    def _sync_to_container(self, name, owner):
+    def _sync_to_container(self, name, owner, workspace_id=''):
         process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', '/home/node/agents/project', '-xf', '-'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         total = 0
         try:
             with tarfile.open(fileobj=process.stdin, mode='w|') as tar:
-                for item in agent_store.list_workspace_files(owner):
+                for item in agent_store.list_workspace_files(owner, workspace_id=workspace_id):
                     rel = PurePosixPath(item['path'])
                     if any(part in SKIP_PARTS for part in rel.parts): continue
                     info = tarfile.TarInfo(rel.as_posix())
@@ -572,7 +644,8 @@ class ContainerOpenCode(OpenCode):
             if code:
                 raise RuntimeError('Could not synchronize the isolated project: '+error)
         try:
-            agent_store.replace_workspace_from_tar(job['owner'], process.stdout, finish_export)
+            agent_store.replace_workspace_from_tar(job['owner'], process.stdout, finish_export,
+                                                   workspace_id=job['id'])
         except Exception:
             process.kill(); process.wait(timeout=5)
             raise

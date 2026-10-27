@@ -39,13 +39,14 @@
           <h1>Download Models</h1>
             <div class="download-tool-filters" aria-label="Filter search results by tool calling support">
               <strong>Tool calling filters:</strong>
+              <label><input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support</label>
               <label><input data-tools-backend="lemonade" type="checkbox" /> Lemonade</label>
               <label><input data-tools-backend="vllm" type="checkbox" /> vLLM</label>
               <label><input data-tools-backend="lmstudio" type="checkbox" /> LM Studio</label>
               <label><input data-tools-backend="kobold" type="checkbox" /> KoboldCPP</label>
               <label><input data-tools-backend="fastflowlm" type="checkbox" /> FastFlowLM</label>
             </div>
-            <p class="hint">Each filter applies to that backend in all search results. Only declared support is shown; unknown support is excluded. Backend configuration may also be required.</p>
+            <p class="hint">Exclude unknown support to hide models whose catalog does not say whether they support tool calling. Backend filters show only models that declare support for that backend. Catalog metadata may be incomplete; backend configuration may also be required.</p>
             <div class="download-size-filters" aria-label="Filter models by parameter count">
               <strong>Model size:</strong>
               <label><input data-parameter-band="small" type="checkbox" /> Small (up to 4B)</label>

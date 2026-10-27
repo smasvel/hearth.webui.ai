@@ -25,15 +25,39 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_workspace_files (
                 owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL DEFAULT '',
                 path TEXT NOT NULL,
                 content BYTEA NOT NULL DEFAULT ''::bytea,
                 is_dir BOOLEAN NOT NULL DEFAULT FALSE,
                 executable BOOLEAN NOT NULL DEFAULT FALSE,
                 updated_at DOUBLE PRECISION NOT NULL,
-                PRIMARY KEY (owner_id, path)
+                PRIMARY KEY (owner_id, workspace_id, path)
             )
         """)
+        conn.execute("ALTER TABLE agent_workspace_files ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''")
         conn.execute("ALTER TABLE agent_workspace_files ADD COLUMN IF NOT EXISTS executable BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.execute("""
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'agent_workspace_files'::regclass
+                      AND contype = 'p'
+                      AND pg_get_constraintdef(oid) = 'PRIMARY KEY (owner_id, workspace_id, path)'
+                ) THEN
+                    ALTER TABLE agent_workspace_files DROP CONSTRAINT IF EXISTS agent_workspace_files_pkey;
+                    ALTER TABLE agent_workspace_files ADD CONSTRAINT agent_workspace_files_pkey
+                        PRIMARY KEY (owner_id, workspace_id, path);
+                END IF;
+            END $$
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_workspace_checkpoints (
+                owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (owner_id, workspace_id)
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_runtime_metadata (
                 task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
@@ -80,7 +104,55 @@ def get_task(task_id):
 
 def delete_task(task_id):
     with database.connect() as conn:
-        conn.execute("DELETE FROM agent_tasks WHERE id = %s", (task_id,))
+        with conn.transaction():
+            row = conn.execute("SELECT owner_id FROM agent_tasks WHERE id = %s", (task_id,)).fetchone()
+            if row:
+                conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = %s",
+                             (row['owner_id'], task_id))
+                conn.execute("DELETE FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
+                             (row['owner_id'], task_id))
+                conn.execute("DELETE FROM agent_tasks WHERE id = %s", (task_id,))
+                remaining = conn.execute("SELECT 1 FROM agent_tasks WHERE owner_id = %s LIMIT 1",
+                                         (row['owner_id'],)).fetchone()
+                if not remaining:
+                    conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = ''",
+                                 (row['owner_id'],))
+
+
+def delete_workspace(owner_id, workspace_id=''):
+    with database.connect() as conn:
+        with conn.transaction():
+            conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = %s",
+                         (owner_id, workspace_id))
+
+
+def assign_legacy_workspace(owner_id, task_id):
+    """Move an unscoped legacy workspace to its sole assignment, when unambiguous."""
+    with database.connect() as conn:
+        with conn.transaction():
+            count = conn.execute("SELECT COUNT(*) AS n FROM agent_tasks WHERE owner_id = %s",
+                                 (owner_id,)).fetchone()['n']
+            if count != 1 or conn.execute(
+                "SELECT 1 FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
+                (owner_id, task_id),
+            ).fetchone():
+                return False
+            conn.execute("INSERT INTO agent_workspace_checkpoints (owner_id, workspace_id, updated_at) "
+                         "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                         (owner_id, task_id, time.time()))
+            conn.execute("INSERT INTO agent_workspace_files "
+                         "(owner_id, workspace_id, path, content, is_dir, executable, updated_at) "
+                         "SELECT owner_id, %s, path, content, is_dir, executable, updated_at "
+                         "FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = '' "
+                         "ON CONFLICT (owner_id, workspace_id, path) DO NOTHING",
+                         (task_id, owner_id))
+            conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = ''",
+                         (owner_id,))
+            conn.execute("DELETE FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = ''",
+                         (owner_id,))
+            return True
+            conn.execute("DELETE FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
+                         (owner_id, workspace_id))
 
 
 def user_exists(user_id):
@@ -168,35 +240,51 @@ def delete_schedule(schedule_id, owner_id):
         ).fetchone() is not None
 
 
-def list_workspace_files(owner_id):
+def list_workspace_files(owner_id, workspace_id=''):
     with database.connect() as conn:
+        initialized = (not workspace_id or conn.execute(
+            "SELECT 1 FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
+            (owner_id, workspace_id),
+        ).fetchone())
+        lookup_id = workspace_id if initialized else ''
         rows = conn.execute(
-            "SELECT path, content, is_dir, executable, updated_at FROM agent_workspace_files WHERE owner_id = %s ORDER BY path",
-            (owner_id,),
+            "SELECT path, content, is_dir, executable, updated_at FROM agent_workspace_files "
+            "WHERE owner_id = %s AND workspace_id = %s ORDER BY path",
+            (owner_id, lookup_id),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def save_workspace_file(owner_id, path, content=b'', is_dir=False, executable=False):
+def save_workspace_file(owner_id, path, content=b'', is_dir=False, executable=False, workspace_id=''):
     _validate_path(path)
     if len(content) > MAX_FILE_BYTES:
         raise ValueError('A project file exceeds the 512 MiB database storage limit.')
     with database.connect() as conn:
-        conn.execute(
-            "INSERT INTO agent_workspace_files (owner_id, path, content, is_dir, executable, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, path) DO UPDATE SET "
-            "content = EXCLUDED.content, is_dir = EXCLUDED.is_dir, executable = EXCLUDED.executable, "
-            "updated_at = EXCLUDED.updated_at",
-            (owner_id, path, content, is_dir, executable, time.time()),
-        )
+        with conn.transaction():
+            now = time.time()
+            conn.execute("INSERT INTO agent_workspace_checkpoints (owner_id, workspace_id, updated_at) "
+                         "VALUES (%s, %s, %s) ON CONFLICT (owner_id, workspace_id) DO UPDATE SET updated_at = EXCLUDED.updated_at",
+                         (owner_id, workspace_id, now))
+            conn.execute(
+                "INSERT INTO agent_workspace_files (owner_id, workspace_id, path, content, is_dir, executable, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, workspace_id, path) DO UPDATE SET "
+                "content = EXCLUDED.content, is_dir = EXCLUDED.is_dir, executable = EXCLUDED.executable, "
+                "updated_at = EXCLUDED.updated_at",
+                (owner_id, workspace_id, path, content, is_dir, executable, now),
+            )
 
 
-def replace_workspace_from_tar(owner_id, source, finish=None):
+def replace_workspace_from_tar(owner_id, source, finish=None, workspace_id=''):
     """Atomically replace a workspace from an untrusted container tar stream."""
     total = 0
     with database.connect() as conn:
         with conn.transaction():
-            conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s", (owner_id,))
+            now = time.time()
+            conn.execute("INSERT INTO agent_workspace_checkpoints (owner_id, workspace_id, updated_at) "
+                         "VALUES (%s, %s, %s) ON CONFLICT (owner_id, workspace_id) DO UPDATE SET updated_at = EXCLUDED.updated_at",
+                         (owner_id, workspace_id, now))
+            conn.execute("DELETE FROM agent_workspace_files WHERE owner_id = %s AND workspace_id = %s",
+                         (owner_id, workspace_id))
             with tarfile.open(fileobj=source, mode='r|') as archive:
                 for member in archive:
                     if not member.isdir() and not member.isfile():
@@ -221,11 +309,11 @@ def replace_workspace_from_tar(owner_id, source, finish=None):
                         if len(content) != member.size:
                             raise ValueError('Agent project export contains a truncated file.')
                     conn.execute(
-                        "INSERT INTO agent_workspace_files (owner_id, path, content, is_dir, executable, updated_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, path) DO UPDATE SET "
+                        "INSERT INTO agent_workspace_files (owner_id, workspace_id, path, content, is_dir, executable, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, workspace_id, path) DO UPDATE SET "
                         "content = EXCLUDED.content, is_dir = EXCLUDED.is_dir, executable = EXCLUDED.executable, "
                         "updated_at = EXCLUDED.updated_at",
-                        (owner_id, path, content, is_dir, bool(member.mode & 0o111), time.time()),
+                        (owner_id, workspace_id, path, content, is_dir, bool(member.mode & 0o111), time.time()),
                     )
             if finish:
                 finish()
@@ -237,7 +325,7 @@ def _validate_path(path):
         raise ValueError('Agent project contains an unsafe relative path.')
 
 
-def import_legacy_workspace(owner_id, directory):
+def import_legacy_workspace(owner_id, directory, workspace_id=''):
     root = Path(directory)
     agents_root = Path.home().resolve()/'agents'
     if (not root.is_dir() or root.is_symlink()
@@ -251,6 +339,10 @@ def import_legacy_workspace(owner_id, directory):
     total = 0
     with database.connect() as conn:
         with conn.transaction():
+            if workspace_id:
+                conn.execute("INSERT INTO agent_workspace_checkpoints (owner_id, workspace_id, updated_at) "
+                             "VALUES (%s, %s, %s) ON CONFLICT (owner_id, workspace_id) DO NOTHING",
+                             (owner_id, workspace_id, time.time()))
             for path in sorted(root.rglob('*')):
                 if path.is_symlink():
                     continue
@@ -268,8 +360,9 @@ def import_legacy_workspace(owner_id, directory):
                         raise ValueError('Legacy agent workspace exceeds the PostgreSQL storage limit.')
                     content = path.read_bytes()
                 conn.execute(
-                    "INSERT INTO agent_workspace_files (owner_id, path, content, is_dir, executable, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, path) DO NOTHING",
-                    (owner_id, relative, content, is_dir, bool(path.stat().st_mode & 0o111) if not is_dir else False, time.time()),
+                    "INSERT INTO agent_workspace_files (owner_id, workspace_id, path, content, is_dir, executable, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (owner_id, workspace_id, path) DO NOTHING",
+                    (owner_id, workspace_id, relative, content, is_dir,
+                     bool(path.stat().st_mode & 0o111) if not is_dir else False, time.time()),
                 )
     return True

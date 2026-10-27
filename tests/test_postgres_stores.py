@@ -18,6 +18,16 @@ class PostgreSQLStoreTests(unittest.TestCase):
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
 
+    def test_temporary_schema_uses_private_agent_runtime_directory(self):
+        outer_runtime = os.environ['HEARTH_AGENT_RUNTIME_DIR']
+        with database.temporary_schema():
+            isolated_runtime = os.environ['HEARTH_AGENT_RUNTIME_DIR']
+            self.assertNotEqual(isolated_runtime, outer_runtime)
+            self.assertNotEqual(isolated_runtime, str(database.DATA_DIR / 'agent-runtime'))
+            self.assertTrue(os.path.isdir(isolated_runtime))
+        self.assertEqual(os.environ['HEARTH_AGENT_RUNTIME_DIR'], outer_runtime)
+        self.assertFalse(os.path.exists(isolated_runtime))
+
     def test_users_authenticate_and_unique_conflicts_rollback(self):
         user = users_store.create_user('test-owner', 'password', 'admin')
         self.assertEqual(users_store.verify_login('test-owner', 'password')['id'], user['id'])

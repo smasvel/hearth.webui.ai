@@ -36,16 +36,22 @@
       <div class="console-head"><h1>Model tests &amp; repairs</h1>
         <p class="hint">Run compatibility checks, follow repair progress, and review saved results here. Model load and lifecycle controls remain on the Models page.</p>
       </div>
+      <div class="model-test-tabs" role="tablist" aria-label="Model test suites">
+        <button type="button" class="console-tab active" role="tab" id="suite-compat-tab" aria-selected="true" aria-controls="model-tests" data-suite="all">Model tests</button>
+        <button type="button" class="console-tab" role="tab" id="suite-tools-tab" aria-selected="false" aria-controls="model-tests" data-suite="tools">Tool-calling tests</button>
+        <button type="button" class="console-tab" role="tab" id="suite-iq-tab" aria-selected="false" aria-controls="model-tests" data-suite="iq">Model IQ</button>
+        <button type="button" class="console-tab" role="tab" id="suite-security-tab" aria-selected="false" aria-controls="model-tests" data-suite="security">Security testing</button>
+      </div>
       <section class="console-card model-test-panel" id="model-tests" aria-labelledby="model-tests-heading">
         <h2 id="model-tests-heading">Test progress and results</h2>
-        <p class="hint">Run chat, streaming, tool choices, typed arguments, file-tool contracts,
+        <p id="suite-description" class="hint">Run chat, streaming, tool choices, typed arguments, file-tool contracts,
           long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures,
           large-code input, and context-limit checks. Question answers and tool results are simulated.
           Dependent steps stop if an earlier step fails. Models are tested sequentially; local
           loads unload other local chat models and leave the final local model loaded.
           Returned tools are inspected; no generated shell commands or project changes are executed.</p>
         <div class="model-test-controls">
-          <label><input id="tests-auto-repair" type="checkbox" /> Automatically try verified compatibility repairs (optional)</label>
+          <label id="auto-repair-control"><input id="tests-auto-repair" type="checkbox" /> Automatically try verified compatibility repairs (optional)</label>
           <label>Model to test <select id="tests-model" class="panel-input" aria-label="Model to test"><option value="">Loading installed models…</option></select></label>
           <button id="tests-run" type="button" class="panel-btn">Run tests for selected model</button>
           <button id="tests-cancel" type="button" class="panel-btn" disabled>Cancel after current request</button>
@@ -55,12 +61,12 @@
           <button id="tests-delete" type="button" class="panel-btn" disabled>Delete selected report</button>
         </div>
         <p id="tests-delete-status" class="hint" role="status" aria-live="polite"></p>
-        <p class="hint">Automatic repair applies a reversible per-model tool-instruction profile,
+        <p id="suite-note" class="hint">Automatic repair applies a reversible per-model tool-instruction profile,
           reruns failed checks, and keeps it only if results improve. It cannot retrain a model
           or repair arbitrary application code. Repairs affect Hearth requests and local
           compatibility proxies; clients connecting directly to remote servers need their own
           configuration. Reports keep the latest 30 runs. Use Reset repair here from a model card to undo it.</p>
-        <p id="tests-status" role="status" aria-live="polite">Choose a model to run its tests. Test tools on a model card opens this page with that model selected.</p>
+        <p id="tests-status" role="status" aria-live="polite">Choose a model to run its tests. Test Model on a model card runs that model with automatic repair off.</p>
         <div id="tests-repairs" class="hint"></div>
         <div class="model-test-results" role="region" aria-label="Model test results" tabindex="0"><table id="tests-table" aria-label="Model test results" hidden>
           <thead><tr><th scope="col">Model</th><th scope="col">Check</th><th scope="col">Mode</th><th scope="col">Attempt</th><th scope="col">Result</th><th scope="col">Seconds</th><th scope="col">Details</th></tr></thead>

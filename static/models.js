@@ -7,6 +7,63 @@
   const searchEl = el("model-search");
   const warningsOnlyEl = el("model-warnings-only");
   const toastEl = el("toast");
+  const localUploadForm = el("local-model-upload-form");
+  const localUploadInput = el("local-model-file");
+  const localUploadButton = el("local-model-upload-btn");
+  const localUploadStatus = el("local-model-upload-status");
+  const localUploadProgress = el("local-model-upload-progress");
+
+  function formatBytes(n) {
+    if (n == null) return "";
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(0)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+
+  if (localUploadForm) {
+    localUploadForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const file = localUploadInput.files[0];
+      if (!file) return;
+      localUploadButton.disabled = true;
+      localUploadStatus.textContent = `Uploading ${file.name}…`;
+      localUploadProgress.classList.remove("hidden");
+      localUploadProgress.firstElementChild.style.width = "0%";
+      const form = new FormData();
+      form.append("model_file", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/models/upload-local");
+      xhr.setRequestHeader("X-CSRF-Token", document.querySelector('meta[name="csrf-token"]')?.content || "");
+      xhr.upload.addEventListener("progress", (progress) => {
+        if (!progress.lengthComputable) return;
+        const percent = Math.round(progress.loaded / progress.total * 100);
+        localUploadProgress.firstElementChild.style.width = `${percent}%`;
+        localUploadStatus.textContent = `Uploading ${file.name}… ${percent}%`;
+      });
+      xhr.addEventListener("load", () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch { /* handled as an HTTP error */ }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          localUploadStatus.textContent = data.error || `Upload failed (HTTP ${xhr.status}).`;
+        } else {
+          localUploadProgress.firstElementChild.style.width = "100%";
+          localUploadStatus.textContent = `${data.model_id} uploaded and registered (${formatBytes(data.size_bytes)}). Refresh the model list to load it.`;
+          localUploadInput.value = "";
+          fetchModels();
+        }
+        localUploadButton.disabled = false;
+      });
+      xhr.addEventListener("error", () => {
+        localUploadStatus.textContent = "Upload failed because the connection was interrupted.";
+        localUploadButton.disabled = false;
+      });
+      xhr.addEventListener("abort", () => {
+        localUploadStatus.textContent = "Upload was cancelled.";
+        localUploadButton.disabled = false;
+      });
+      xhr.send(form);
+    });
+  }
 
   const GROUPS = [
     { key: "lmstudio", label: "LM Studio" },
@@ -205,8 +262,8 @@
       actions.appendChild(thinkingLabel);
     }
     if (!managedAutomatically && !unavailable && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
-      actions.appendChild(btn("Test default model", "", () => {
-        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=test-tools`);
+      actions.appendChild(btn("Test Model", "", () => {
+        window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=test-model`);
       }, isBusy));
       actions.appendChild(btn("Reset repair", "", () => {
         window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=reset`);

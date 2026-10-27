@@ -14,7 +14,17 @@ image; agent execution is Linux-only. The model runtime and model weights are
 separate downloads and must be installed and started independently.
 Open **Downloads** to find `Ornith-1.5-9B-GGUF` preselected in the Lemonade search.
 Review its result and choose Download to install the model; setup does not download
-model weights automatically.
+model weights automatically. On Downloads, use **Exclude unknown support** to hide
+search results whose catalog metadata does not say whether they support tool calling;
+the per-backend tool-calling filters remain available when you want only models that
+explicitly declare support.
+You can also choose **Upload a local GGUF model** on Models to browse for a `.gguf`
+file on the device using the browser. Hearth stores the upload in `data/local-models`
+and registers its local path with the Lemonade server configured in Settings. The
+Lemonade server must run on the Hearth host or have permission to read that path, and
+the Hearth host needs enough free disk space for the complete model file. Uploaded
+models appear in **Models** for loading. This upload flow currently supports GGUF files
+for Lemonade's `llamacpp` recipe.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
@@ -101,9 +111,13 @@ For manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists setu
 options. The command starts PostgreSQL and applies `database_schema.sql`; the first
 browser visit creates the administrator.
 
-Agent assignments, activity, sharing, runtime metadata, and project workspace
-files are persisted in PostgreSQL, including shell tool status, inputs, outputs,
-and completion timestamps. On upgrade, Hearth imports legacy agent task
+Agent assignments, activity, sharing, runtime metadata, and per-assignment project
+workspace files are persisted in PostgreSQL, including shell tool status, inputs,
+outputs, and completion timestamps. Scheduled runs continue from the assignment's
+saved code and previous progress summary. The workspace remains stored between runs
+and is deleted with its assignment. Existing unscoped workspace files move to their
+assignment when ownership is unambiguous; otherwise, they remain a legacy fallback
+until each assignment saves its own checkpoint. On upgrade, Hearth imports legacy agent task
 and project data from the old `data/agent-tasks` and `~/agents` locations, then
 removes the migrated host copies. Each task's Docker-backed runtime folder is
 mounted at `/home/node/agents`; OpenCode works in its `project` subfolder, with
@@ -183,16 +197,37 @@ After reviewing a running, waiting, paused, blocked, or interrupted task, its ow
 counter to zero from the task page, then continue when ready. This keeps the saved
 workspace and selected model.
 Startup cleanup preserves containers with matching PostgreSQL task and runtime records.
-If a container is missing, continuing rebuilds it from the saved project files.
+Test runs use a private agent runtime directory so they cannot remove live assignment
+containers. If a container disappears during work, Hearth rebuilds it from the latest
+synchronized project checkpoint and continues the assignment.
+Assignments already running when Hearth restarts are marked interrupted and can be
+resumed from the task page. Assignments that were still queued remain queued and start
+when the worker is ready.
+Completed, stopped, or interrupted assignments can be edited with **Edit task** in the task header
+and resubmitted.
+**Save changes** updates the task without starting a run. **Resubmit** saves the
+current edits and queues the same assignment, keeping its saved project files and
+activity history.
+When a verification command is configured, Hearth includes it in the initial agent
+plan and asks the agent to create and save any missing verifier scripts, fixtures,
+or configuration it needs, then run and repair the command before claiming completion.
+Hearth independently executes the command after the completion claim.
+After a run finishes, Hearth stops but retains its Docker container. A rerun reuses
+that container when the model and provider settings still match, while syncing the
+saved PostgreSQL workspace into it. Deleting the assignment removes the container;
+changing its model or provider configuration creates a replacement.
 
 Recurring schedules are optional and are not created by the installer. Open
 **Schedules → Create a schedule** to choose an existing agent project by name, then
 **Schedules → Create a schedule** to choose an existing assignment from the
 Assignments page, then set its
 repeat interval and optional local run time. Each occurrence reruns that same
-assignment with its saved goal, model, settings, and project files; no second agent
-definition is created. Daily or weekly schedules use the browser timezone shown in
-the form and keep that wall-clock time across daylight-saving changes. Without a
+assignment from its saved code, project files, progress summary, goal, model, and
+settings; completed parts are reused and no second agent definition is created.
+Daily or weekly schedules use the browser timezone shown in
+the form and keep that wall-clock time across daylight-saving changes. Completed
+and stopped assignments can both be rerun by a schedule, and Hearth recovers a
+scheduled run interrupted by a service restart. Without a
 selected time, the first run waits one full interval. A run is skipped when its
 assignment is still active or needs review, and checked again at the next interval.
 Schedules remain in PostgreSQL across restarts; if Hearth was stopped when a run
@@ -227,11 +262,17 @@ and credentials under Settings. LM Studio's default endpoint is
 and load it from Models. PostgreSQL setup does not install model weights.
 Model loading and lifecycle controls are on **Models**. Open **Model tests** from
 the navigation, choose an installed chat model, and run its checks individually.
+The page has tabs for compatibility, tool calling, model reasoning, and model
+security behavior. The reasoning tab asks 12 original questions one at a time and
+scores points correct; it is a comparison benchmark, not a human IQ score. The
+security tab runs 10 safe behavioral probes and reports how the model handles them;
+it does not scan the host or certify security. Test prompts are sent individually,
+and generated tools/actions are not executed. Results are saved as model-test reports.
 Monitor compatibility repairs and review saved reports there. Completed older
 reports can be deleted while another test is running; the active report stays
-protected. **Test default model** on a model card starts the installed Lemonade
-`Ornith-1.5-9B-GGUF` run; select another installed model on the dedicated page to
-test it instead. **Reset repair** opens that page as well. Failed workflow steps mark dependent checks as blocked; only checks
+protected. **Test Model** on a model card starts a test of that card's model;
+automatic repair stays off for this run. **Reset repair** opens that page as well.
+Failed workflow steps mark dependent checks as blocked; only checks
 that ran are included in repair comparisons. Automatic repair is optional and is
 off by default. The Lemonade proxy translates named-function choices into a required
 call with only the requested function offered. If the user message supplies exact
@@ -263,7 +304,8 @@ journalctl --user -u ai-webui.service -f
 The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
 browser test scripts directly against application tables. With `--browser`, it runs
 the unit tests and all seven Playwright suites concurrently, each against its own temporary
-schema. The admin browser coverage visits every standalone page, exercises key page actions,
+schema and a private agent runtime directory, so test startup cannot remove containers
+owned by the running application. The admin browser coverage visits every standalone page, exercises key page actions,
 opens a Live logs request trace, checks Browse history search and deletion, and verifies
 that ordinary users cannot open admin-only pages or APIs.
 
@@ -281,11 +323,10 @@ Model validation reports accept spelled-out test counts and common Markdown
 emphasis. The suite checks parallel calls separately from OpenCode's multi-file
 read continuation scenario, so a model can report independent results for each
 behavior. Automatic compatibility repair is off by default, including when a
-test run starts from a model card. **Test default model** runs the installed
-Lemonade `Ornith-1.5-9B-GGUF`; install and loadability are required for that
-shortcut. The Model tests dropdown also selects Ornith by default when available,
-and allows choosing another installed model. Select the repair option on the
-Model tests page to enable repairs for a run.
+test run starts from a model card. **Test Model** tests the model from that card.
+The Model tests dropdown also selects Ornith by default when available, and allows
+choosing another installed model. Select the repair option on the Model tests
+page to enable repairs for a run.
 
 Administrators can open **Browse history** to search and page through browser visits.
 Delete individual entries from their rows or clear the entire history with **Delete all

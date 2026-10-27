@@ -202,6 +202,27 @@ class AgentTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Only completed assignments'):
             self.manager.rerun(key)
 
+    def test_missing_agent_container_is_queued_for_checkpoint_recovery(self):
+        class MissingContainerClient:
+            def ensure_agent(self): pass
+            def models(self): return [{**MODEL, 'name': 'Fixture Qwen'}]
+            def resume(self, _job): raise RuntimeError('The isolated agent container is missing.')
+
+        self.manager.client = MissingContainerClient()
+        key = self.manager.create(self.values, self.owner)['id']
+        job = self.manager.jobs[key]
+        job.update(status='queued', session_id='hearth-agent-fixture::ses_fixture',
+                   resume_session=True, model_prepared=True, after_interrupt='blocked', errors=3)
+        self.manager.save(job)
+        self.manager.tick()
+        recovered = self.manager.get(key)
+        self.assertEqual(recovered['status'], 'queued')
+        self.assertTrue(recovered['resume_session'])
+        self.assertEqual(recovered['errors'], 0)
+        self.assertNotIn('after_interrupt', recovered)
+        self.assertIn('rebuilding it from the latest synchronized project checkpoint',
+                      recovered['activity'][-1]['text'])
+
     def test_waiting_input_task_does_not_starve_a_queued_rerun(self):
         waiting=self.create()
         self.manager.jobs[waiting].update(status='waiting_input')

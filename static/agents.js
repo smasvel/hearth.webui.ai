@@ -53,7 +53,24 @@
     if (el('agent-sharing')) el('agent-sharing').hidden = false;
     if(el('agent-model-change'))el('agent-model-change').hidden=!['pausing','paused','blocked','interrupted'].includes(task.status);
     for (const id of ['agent-pause','agent-resume','agent-stop','agent-delete','agent-send-instructions']) if(el(id))el(id).hidden = false;
-    if(el('agent-rerun'))el('agent-rerun').hidden=task.status!=='completed';
+    if(el('agent-rerun'))el('agent-rerun').hidden=!['completed','stopped'].includes(task.status);
+    const editPanel=el('agent-edit-panel');
+    if(editPanel)editPanel.hidden=!['completed','stopped','interrupted'].includes(task.status);
+    const editToggle=el('agent-edit-toggle');
+    if(editToggle)editToggle.hidden=!['completed','stopped','interrupted'].includes(task.status);
+    const editForm=el('agent-edit-form');
+    if(editForm && editForm.dataset.loadedTask!==task.id) {
+      for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','verification_timeout']) {
+        if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,verification_timeout:300}[name] ?? '');
+      }
+      editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
+      editForm.dataset.loadedTask=task.id;
+    }
+    const editModel=el('agent-edit-model');
+    if(editModel && editModel.options.length && task.model && editForm?.dataset.modelTask!==task.id) {
+      editModel.value=JSON.stringify(task.model);
+      editForm.dataset.modelTask=task.id;
+    }
     if(el('agent-reset-cycles'))el('agent-reset-cycles').hidden=!['running','waiting_input','paused','blocked','interrupted'].includes(task.status);
     if(el('agent-prompts'))el('agent-prompts').hidden = false;
     if(el('agent-title'))el('agent-title').textContent = task.title;
@@ -442,10 +459,10 @@
     catch(e){el('agent-network').textContent=e.message;}
   });
   el('agent-download')?.addEventListener('click',()=>{if(task) window.location.assign(`/api/agent-tasks/${task.id}/download`);});
-  if(el('agent-model') || el('agent-resume-model')) api('/api/agent-tasks/models').then(({models})=>{
+  if(el('agent-model') || el('agent-resume-model') || el('agent-edit-model')) api('/api/agent-tasks/models').then(({models})=>{
     for(const m of models) {
       const value=JSON.stringify({providerID:m.providerID,id:m.id});
-      for(const select of [el('agent-model'),el('agent-resume-model')].filter(Boolean)) {
+      for(const select of [el('agent-model'),el('agent-resume-model'),el('agent-edit-model')].filter(Boolean)) {
         const option=node('option',m.name+(m.usable === false ? ' — needs larger context' : ''),select);
         option.value=value; option.disabled=m.usable === false; option.title=m.reason || '';
       }
@@ -459,8 +476,61 @@
       const current=JSON.stringify(task?.model || {});
       el('agent-resume-model').value=(preferred || ([...el('agent-resume-model').options].find(o=>o.value===current && !o.disabled)) || available[0] || {}).value || '';
     }
+    if(el('agent-edit-model') && task?.model) {
+      el('agent-edit-model').value=JSON.stringify(task.model);
+      const editForm=el('agent-edit-form');
+      if(editForm)editForm.dataset.modelTask=task.id;
+    }
     if(!models.some(m=>m.usable !== false)) throw new Error('Configure a local model in OpenCode first.');
-  }).catch(e=>{if(el('agent-create-status'))el('agent-create-status').textContent=e.message;if(el('agent-assign'))el('agent-assign').disabled=true;if(el('agent-schedule-create'))el('agent-schedule-create').disabled=true;});
+  }).catch(e=>{
+    if(el('agent-create-status'))el('agent-create-status').textContent=e.message;
+    if(el('agent-assign'))el('agent-assign').disabled=true;
+    if(el('agent-schedule-create'))el('agent-schedule-create').disabled=true;
+    const editModel=el('agent-edit-model');
+    if(editModel){editModel.replaceChildren(new Option('Could not load available models',''));editModel.disabled=true;}
+    if(el('agent-edit-status'))el('agent-edit-status').textContent=`Models could not be loaded: ${e.message}`;
+  });
+  function readEditValues(form) {
+    const values=Object.fromEntries(new FormData(form));
+    values.model=JSON.parse(values.model);
+    values.max_cycles=Number(values.max_cycles);
+    values.verification_timeout=Number(values.verification_timeout);
+    values.enable_thinking=form.elements.enable_thinking.checked;
+    return values;
+  }
+  async function saveEditedTask(resubmit) {
+    if(!task || !['completed','stopped','interrupted'].includes(task.status))return;
+    if(resubmit && !window.confirm('Save these task details and resubmit from the latest saved project files? Existing code and activity history will be retained.'))return;
+    const form=el('agent-edit-form'), status=el('agent-edit-status');
+    const saveButton=el('agent-edit-save'), resubmitButton=el('agent-edit-resubmit');
+    let values;
+    try { values=readEditValues(form); }
+    catch(error) { status.textContent=`Choose an available model before saving: ${error.message}`;return; }
+    saveButton.disabled=true;resubmitButton.disabled=true;
+    status.textContent=resubmit?'Saving changes and queuing the task…':'Saving task details…';
+    try {
+      const updated=await api(resubmit?`/api/agent-tasks/${task.id}/edit-rerun`:`/api/agent-tasks/${task.id}/settings`,values,resubmit?'POST':'PATCH');
+      show(updated);
+      if(resubmit) {
+        rerunAcceptedAt=Date.now();
+        if(el('agent-rerun-status'))el('agent-rerun-status').textContent='Task resubmitted from the existing project workspace.';
+        status.textContent='';
+      } else status.textContent='Changes saved. The task has not been resubmitted.';
+    } catch(error) { status.textContent=`${resubmit?'Could not resubmit':'Could not save'}: ${error.message}`; }
+    finally { saveButton.disabled=false;resubmitButton.disabled=false; }
+  }
+  el('agent-edit-form')?.addEventListener('submit',event=>{
+    event.preventDefault();
+    saveEditedTask(false);
+  });
+  el('agent-edit-resubmit')?.addEventListener('click',()=>saveEditedTask(true));
+  el('agent-edit-toggle')?.addEventListener('click',()=>{
+    const panel=el('agent-edit-panel');
+    if(!panel)return;
+    panel.open=true;
+    panel.scrollIntoView({behavior:'smooth',block:'start'});
+    el('agent-edit-form')?.elements.title?.focus({preventScroll:true});
+  });
   function renderShareSelection() {
     const selectedBox=el('agent-share-selected');
     if (!selectedBox) return;

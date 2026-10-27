@@ -172,13 +172,13 @@ class Registry:
                 (self.directory / (job_id + '.json')).unlink(missing_ok=True)
             return True
 
-    def start(self, targets, repair, load, connection, context, *, background=True):
+    def start(self, targets, repair, load, connection, context, *, suite='all', background=True):
         with self.lock:
             self._refresh_from_disk()
             if any(j['status'] in ACTIVE for j in self.jobs.values()):
                 raise ValueError('A model test run is already active. Wait or cancel it first.')
             job = {'id': uuid.uuid4().hex, 'status': 'loading', 'owner_pid': os.getpid(), 'started_at': time.time(),
-                   'finished_at': None, 'auto_repair': repair, 'targets': copy.deepcopy(targets),
+                   'finished_at': None, 'auto_repair': repair, 'suite': suite, 'targets': copy.deepcopy(targets),
                    'results': [], 'repairs': [], 'current_model': None, 'current_check': None, 'error': None}
             self.jobs[job['id']] = job
             cancel = self.cancels[job['id']] = threading.Event()
@@ -209,7 +209,7 @@ class Registry:
                                 job['results'].append({**result, 'backend': backend, 'model': model, 'attempt': attempt})
                                 self.save(job)
                         update(status='running')
-                        results = run_suite(served_model, url, context=window, headers=headers,
+                        results = run_suite(served_model, url, suite=suite, context=window, headers=headers,
                             cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case), guarded=backend == 'fastflowlm',
                             profile=lambda body: profiles.apply(body, backend))
                         # A failed workflow step marks its dependents as skipped. Those
@@ -217,7 +217,7 @@ class Registry:
                         # that a compatibility repair can fix or should count against.
                         failures = {(r['name'], r.get('stream', False)) for r in results
                                     if not r['passed'] and not r.get('skipped')}
-                        if repair and failures:
+                        if repair and suite in ('all', 'core', 'opencode', 'extra') and failures:
                             if any(r.get('backend_unavailable') for r in results):
                                 with self.lock:
                                     job['repairs'].append({'model': model, 'backend': backend,
@@ -233,7 +233,7 @@ class Registry:
                             update(status='repairing')
                             committed = False
                             try:
-                                retried = run_suite(served_model, url, context=window, headers=headers,
+                                retried = run_suite(served_model, url, suite=suite, context=window, headers=headers,
                                     cancel=cancel, on_result=lambda r: record(r, 2), on_case=lambda case: update(current_check=case),
                                     guarded=backend == 'fastflowlm', profile=lambda body: profiles.apply_recipe(body, profiles.RECIPE))
                                 # Keep a recipe only when at least one original assertion now passes.
