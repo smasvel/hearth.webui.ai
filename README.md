@@ -685,7 +685,9 @@ reaches this limit, it summarizes its work; change the setting before starting o
 it on a blocked, stopped, interrupted, or completed task. Resubmit stopped or completed
 tasks, or continue blocked and interrupted tasks, to use the new limit.
 Changing it before continuing a blocked or interrupted task starts a fresh session from
-the saved project files. Use **Clone** on an assignment in **My agents** to start a
+the saved project files. Hearth project agents use OpenCode's direct file and shell tools;
+shell commands still follow the selected **Ask me first** or **Allow automatically** mode.
+Use **Clone** on an assignment in **My agents** to start a
 separate task with its title, prompt, model, and settings copied into the new task form.
 Review the copied settings before starting. The clone gets a fresh project workspace and
 does not copy the source task's code, activity, sharing, or schedules. The **My agents**
@@ -718,6 +720,8 @@ workspace checkpoint and carries forward the previous agent summary. Tasks persi
 reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
 restart can be resumed from the task page. Work that was queued but had not started
 remains queued across a restart and starts when the supervisor is ready.
+When Hearth changes the worker's tool policy, continuing an older session starts a fresh
+OpenCode session from the latest saved project checkpoint.
 Completed assignments show **Run again**. This queues a fresh execution of the same
 assignment from its latest saved project files and returns it to the queue while
 keeping its settings and activity history.
