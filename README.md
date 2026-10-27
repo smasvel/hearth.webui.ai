@@ -710,7 +710,10 @@ paused, blocked, or interrupted, its owner can choose another configured model b
 continuing. The model picker defaults to the currently loaded model when it is available;
 the owner can still select another configured model. Loaded support models such as
 embeddings do not hide the loaded coding model from that default, including LM Studio
-models reported through their loaded-instance list. A model change continues in a fresh OpenCode session from the latest saved
+models reported through their loaded-instance list. The task model picker also includes
+downloaded models from Hearth's current backend inventory, even when OpenCode's saved
+configuration has not yet been refreshed; Hearth loads the chosen model before starting
+the assignment. A model change continues in a fresh OpenCode session from the latest saved
 workspace checkpoint and carries forward the previous agent summary. Tasks persist when you close the browser, and Hearth
 reconnects to existing sessions after restarting. Assignments interrupted by a Hearth
 restart can be resumed from the task page. Work that was queued but had not started
