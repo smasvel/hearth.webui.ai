@@ -38,6 +38,7 @@ SYSTEM_CA_BUNDLES = ('/etc/ssl/certs/ca-certificates.crt',
 _MODEL_CONFIG_CACHE_SECONDS = 15
 _model_config_lock = threading.Lock()
 _model_config_cache = {'loaded_at': 0.0, 'config': None}
+TOOL_POLICY_VERSION = 'native-tools-v1'
 
 
 def _system_ca_bundle():
@@ -505,7 +506,7 @@ class ContainerOpenCode(OpenCode):
                 self._docker('exec', name, 'sh', '-lc',
                              'rm -rf -- /home/node/agents/project && mkdir -p /home/node/agents/project')
                 self._sync_to_container(name, job['owner'], workspace_id=task_id)
-                existing['last_sync'] = 0
+                existing.update(last_sync=0, tool_policy_version=TOOL_POLICY_VERSION)
                 self._write_runtime(name, existing)
                 self._report(job, 'Saved project workspace synced into the reused container.')
                 return name+SESSION_SEPARATOR+result
@@ -518,6 +519,7 @@ class ContainerOpenCode(OpenCode):
         info = {'container': name, 'task_id': task_id, 'password': secrets.token_urlsafe(32),
                 'owner': job['owner'], 'model': job['model'], 'model_proxy': proxy.info,
                 'opencode_config': config,
+                'tool_policy_version': TOOL_POLICY_VERSION,
                 'last_sync': 0, 'manifest': [], 'project_directory': '/home/node/agents/project'}
         self._write_runtime(name, info)
         self._start_container(name, info, task_dir, job)
@@ -574,6 +576,10 @@ class ContainerOpenCode(OpenCode):
         session_id = job.get('session_id')
         if not session_id or SESSION_SEPARATOR not in str(session_id):
             return self.create(job)
+        _name, _raw, info = self._split(session_id)
+        if info.get('tool_policy_version') != TOOL_POLICY_VERSION:
+            self._report(job, 'Starting a fresh session with the current native tool policy from the saved workspace.')
+            return self.create(job)
         try:
             self.snapshot(session_id)
             return session_id
@@ -601,7 +607,10 @@ class ContainerOpenCode(OpenCode):
             {'action': 'edit', 'resource': '.env', 'effect': 'deny'},
             {'action': 'edit', 'resource': '.env.*', 'effect': 'deny'},
             {'action': 'external_directory', 'resource': '*', 'effect': 'deny'},
-            {'action': 'subagent', 'resource': '*', 'effect': 'deny'}]
+            {'action': 'subagent', 'resource': '*', 'effect': 'deny'},
+            # Code Mode exposes only MCP catalog tools; project agents need OpenCode's
+            # direct file and shell tools instead of nesting calls through execute.
+            {'action': 'execute', 'resource': '*', 'effect': 'deny'}]
         return permissions
 
     def _split(self, session_id):

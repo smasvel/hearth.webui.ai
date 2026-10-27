@@ -146,6 +146,8 @@ optional. **More options** lets you set the OpenCode step limit before launch
 edit this limit on a blocked, stopped, completed, or interrupted task; continuing a
 blocked or interrupted task with a changed limit starts a fresh OpenCode session from
 its saved project files.
+Hearth project agents use OpenCode's direct file and shell tools. Shell commands still
+follow the task's **Ask me first** or **Allow automatically** approval mode.
 **My agents** shows task status. In automatic shell mode, allowed
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
@@ -223,6 +225,8 @@ synchronized project checkpoint and continues the assignment.
 Assignments already running when Hearth restarts are marked interrupted and can be
 resumed from the task page. Assignments that were still queued remain queued and start
 when the worker is ready.
+After an update changes the agent worker's tool policy, continuing an older task starts
+a fresh OpenCode session from its latest saved project checkpoint.
 Completed, stopped, or interrupted assignments can be edited with **Edit task** in the task header
 and resubmitted.
 **Save changes** updates the task without starting a run. **Resubmit** saves the
