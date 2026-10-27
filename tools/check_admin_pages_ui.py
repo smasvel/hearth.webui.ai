@@ -83,6 +83,29 @@ with contextlib.ExitStack() as stack:
             expect(page.get_by_role('heading', name=heading).first).to_be_visible()
             expect(page.locator(selector).first).to_be_visible()
 
+        # Local GGUF upload belongs to Models, reports progress, refreshes the model
+        # inventory after registration, and is absent from Downloads.
+        page.goto(base + '/models')
+        expect(page.get_by_role('heading', name='Upload a local GGUF model')).to_be_visible()
+        expect(page.locator('#local-model-file')).to_have_attribute('accept', '.gguf,application/octet-stream')
+        expect(page.locator('#local-model-upload-progress')).to_have_class(__import__('re').compile(r'progress-bar-track hidden'))
+        upload_requests = []
+        def mock_upload(route):
+            upload_requests.append(route.request.headers.get('x-csrf-token'))
+            route.fulfill(status=200, content_type='application/json', body='{"ok":true,"model_id":"user.fixture-model","size_bytes":2097152}')
+        page.route('**/api/models/upload-local', mock_upload)
+        page.set_input_files('#local-model-file', {'name': 'fixture-model.gguf', 'mimeType': 'application/octet-stream', 'buffer': b'GGUFfixture'})
+        page.get_by_role('button', name='Upload model').click()
+        expect(page.locator('#local-model-upload-status')).to_contain_text('user.fixture-model uploaded and registered (2 MB).')
+        expect(page.locator('#local-model-upload-progress')).not_to_have_class(__import__('re').compile(r'\bhidden\b'))
+        expect(page.locator('#local-model-file')).to_have_value('')
+        expect(page.locator('#model-summary')).to_be_visible()
+        assert upload_requests == ['browser-pages-csrf'], upload_requests
+        page.unroute('**/api/models/upload-local')
+        page.goto(base + '/downloads')
+        expect(page.get_by_role('heading', name='Upload a local GGUF model')).to_have_count(0)
+        expect(page.locator('#local-model-upload-form')).to_have_count(0)
+
         # Use a fresh browser context so a prior Metrics visit cannot hide a page-specific
         # script initialization problem behind the browser cache.
         live_context = browser.new_context()

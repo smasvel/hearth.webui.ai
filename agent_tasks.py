@@ -19,6 +19,7 @@ import database
 
 WORKING = {'queued', 'running', 'waiting_input', 'verifying'}
 ACTIVE = WORKING | {'pausing', 'stopping'}
+INTERRUPTED_ON_RESTART = {'running', 'waiting_input', 'verifying', 'pausing', 'stopping'}
 RESUMABLE = {'paused', 'blocked', 'interrupted'}
 MARKER = '[HEARTH_TASK_COMPLETE]'
 
@@ -76,7 +77,7 @@ class Manager:
                         legacy_projects.add(project)
                     continue
                 if project.is_relative_to(agents_root) and project.is_dir():
-                    if agent_store.import_legacy_workspace(job['owner'], project):
+                    if agent_store.import_legacy_workspace(job['owner'], project, workspace_id=job['id']):
                         legacy_projects.add(project)
                 job['project'] = 'PostgreSQL private workspace'
                 if not agent_store.get_task(job['id']):
@@ -101,6 +102,11 @@ class Manager:
             else:
                 logging.error('Legacy shared agent workspace was left unmigrated because its owner cannot be determined safely.')
         self.jobs = {job['id']: job for job in agent_store.list_tasks()}
+        owners = {job['owner'] for job in self.jobs.values()}
+        for owner in owners:
+            owned = [job for job in self.jobs.values() if job.get('owner') == owner]
+            if len(owned) == 1:
+                agent_store.assign_legacy_workspace(owner, owned[0]['id'])
         for job in self.jobs.values():
             changed = False
             if job.get('project') != 'PostgreSQL private workspace':
@@ -128,7 +134,7 @@ class Manager:
         # worker that was interrupted by a Hearth restart or an unclean shutdown.
         with self.lock:
             for job in self.jobs.values():
-                if job.get('status') in ACTIVE:
+                if job.get('status') in INTERRUPTED_ON_RESTART:
                     job.update(status='interrupted', resume_session=bool(job.get('session_id')),
                                error='Hearth restarted while this assignment was active. Resume to continue.')
                     self.note(job, 'Assignment interrupted by Hearth restart; it can be resumed.')
@@ -137,6 +143,16 @@ class Manager:
     def save(self, job):
         job['updated_at'] = time.time()
         agent_store.save_task(job)
+
+    def park_container(self, job):
+        """Release container resources while retaining this task's reusable runtime."""
+        park = getattr(type(self.client), 'park', None)
+        if park:
+            park(self.client, job)
+            return
+        cleanup = getattr(type(self.client), 'cleanup', None)
+        if cleanup:
+            cleanup(self.client, job)
 
     def note(self, job, text):
         job['activity'] = (job.get('activity', [])+[{'time': time.time(), 'text': text}])[-200:]
@@ -186,6 +202,7 @@ class Manager:
                 with self.lock:
                     self.jobs.pop(job['id'], None)
                     agent_store.delete_task(job['id'])
+            agent_store.delete_workspace(owner_id)
 
     def download(self, key):
         job = self.get(key)
@@ -193,7 +210,7 @@ class Manager:
             raise KeyError(key)
         if job['status'] != 'completed':
             raise ValueError('Project download is available after the assignment completes.')
-        files = agent_store.list_workspace_files(job['owner'])
+        files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'])
         if not files:
             raise ValueError('The completed project folder is no longer available.')
         output = io.BytesIO()
@@ -266,8 +283,8 @@ class Manager:
         task = self.get(task_id) if task_id else None
         if not task or task.get('owner') != owner:
             raise ValueError('Choose an existing assignment you own or can manage.')
-        if task.get('status') not in ACTIVE | {'completed'}:
-            raise ValueError('Choose an active or completed assignment.')
+        if task.get('status') not in ACTIVE | {'completed', 'stopped'}:
+            raise ValueError('Choose an active, completed, or stopped assignment.')
         timing = self._normalize_schedule_timing(values)
         schedule = {'id': uuid.uuid4().hex, 'owner': owner,
                     'task_id': task_id, 'task_title': task['title'],
@@ -383,7 +400,10 @@ class Manager:
             agent_store.save_schedule(schedule)
             return
         previous = self.get(schedule.get('last_task_id')) if schedule.get('last_task_id') else None
-        if previous and previous.get('status') not in ('completed', 'stopped'):
+        previous_restart_recovery = (previous and previous.get('status') == 'interrupted'
+                                      and previous.get('schedule_id') == schedule['id']
+                                      and previous.get('scheduled_run_at') is not None)
+        if previous and previous.get('status') not in ('completed', 'stopped') and not previous_restart_recovery:
             schedule['last_error'] = 'Run skipped because the previous scheduled assignment is still active.'
             agent_store.save_schedule(schedule)
             return
@@ -397,7 +417,10 @@ class Manager:
                     schedule['last_error'] = 'The scheduled assignment was deleted or is no longer owned by this account.'
                     agent_store.save_schedule(schedule)
                     return
-                if job.get('status') != 'completed':
+                restart_recovery = (job.get('status') == 'interrupted'
+                                    and job.get('schedule_id') == schedule['id']
+                                    and job.get('scheduled_run_at') is not None)
+                if job.get('status') not in ('completed', 'stopped') and not restart_recovery:
                     schedule['last_error'] = f"Run skipped because the selected assignment is {job.get('status', 'unavailable')}. It will be checked again at the next interval."
                     agent_store.save_schedule(schedule)
                     return
@@ -470,12 +493,13 @@ class Manager:
                     with self.lock:
                         job = self.jobs[key]
                         job.update(status='stopped', session_id=None)
-                        self.note(job, 'Agent container was stopped and removed.')
+                        self.note(job, 'Agent container stopped and retained for the next run.')
                         self.save(job)
                     result = self.get(key)
-                cleanup = getattr(type(self.client), 'cleanup', None)
-                if cleanup:
-                    cleanup(self.client, result)
+                sync = getattr(type(self.client), 'sync', None)
+                if sync and result.get('session_id'):
+                    sync(self.client, result)
+                self.park_container(result)
             return result
 
     def change_model(self, key, model):
@@ -504,24 +528,38 @@ class Manager:
                 return copy.deepcopy(job)
 
     def rerun(self, key, *, schedule_id=None, scheduled_at=None):
-        """Queue another run of a completed assignment from its saved workspace."""
+        """Queue another run from its saved workspace, including recovery of a restarted scheduled run."""
+        rerunnable = ('completed', 'stopped', 'interrupted')
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
-                if job.get('status') != 'completed':
-                    raise ValueError('Only completed assignments can be run again.')
+                restart_recovery = (schedule_id and job.get('status') == 'interrupted'
+                                    and job.get('schedule_id') == schedule_id
+                                    and job.get('scheduled_run_at') is not None)
+                if job.get('status') not in rerunnable and not restart_recovery:
+                    raise ValueError('Only completed, stopped, or interrupted assignments can be run again.')
                 if key in self.processing:
                     raise ValueError('The completed assignment is still saving its project. Try again shortly.')
                 if sum(item.get('status') in ACTIVE for item in self.jobs.values()) >= 20:
                     raise ValueError('The agent queue already has 20 active assignments.')
                 snapshot = copy.deepcopy(job)
-            cleanup = getattr(type(self.client), 'cleanup', None)
-            if cleanup:
-                cleanup(self.client, snapshot)
+                previous_summary = job.get('summary', '')
+                previous_messages = copy.deepcopy(job.get('messages', []))
+            if snapshot.get('status') == 'interrupted' and snapshot.get('session_id'):
+                sync = getattr(type(self.client), 'sync', None)
+                if sync:
+                    try:
+                        sync(self.client, snapshot)
+                    except Exception as exc:
+                        logging.warning('Could not sync the interrupted assignment before resubmitting: %s', exc)
+            self.park_container(snapshot)
             with self.lock:
                 job = self.jobs[key]
-                if job.get('status') != 'completed':
-                    raise ValueError('Only completed assignments can be run again.')
+                restart_recovery = (schedule_id and job.get('status') == 'interrupted'
+                                    and job.get('schedule_id') == schedule_id
+                                    and job.get('scheduled_run_at') is not None)
+                if job.get('status') not in rerunnable and not restart_recovery:
+                    raise ValueError('Only completed, stopped, or interrupted assignments can be run again.')
                 job.update(
                     status='queued', cycles=0, started=False, errors=0, stalls=0,
                     idle_polls=0, next_retry=0, awaiting_since=0, error=None,
@@ -535,13 +573,47 @@ class Manager:
                 )
                 if schedule_id:
                     job.update(schedule_id=schedule_id, scheduled_run_at=scheduled_at)
+                    refinements = job.get('instructions', [])
+                    prompt = (
+                        'This is a scheduled continuation of an existing assignment. The project workspace contains code and files '
+                        'built during earlier runs. Inspect and reuse that work; do not start over or recreate completed parts. '
+                        'Continue from the current project state, preserve working code, and make only the changes needed for this occurrence.\n\n'
+                        'Assignment goal:\n'+job['goal']+'\n\nAcceptance criteria:\n'+
+                        (job.get('criteria') or 'Complete and verify the requested goal.')+
+                        ('\n\nSaved progress summary from the previous run:\n'+previous_summary if previous_summary else '')+
+                        ('\n\nUser refinements:\n'+'\n'.join(refinements) if refinements else '')
+                    )
+                    job['summary'] = previous_summary
+                    job['messages'] = previous_messages
+                    job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex, 'text': prompt}
                 else:
                     job.pop('scheduled_run_at', None)
                 job['run_count'] = max(1, int(job.get('run_count', 1))) + 1
-                self.note(job, 'Scheduled run queued from the saved assignment.' if schedule_id else
+                self.note(job, 'Scheduled continuation queued from the saved project workspace.' if schedule_id else
                           'Rerun queued from the completed assignment using its latest saved project files.')
                 self.save(job)
                 return copy.deepcopy(job)
+
+    def update_assignment(self, key, values):
+        """Save edited task settings without starting another run."""
+        assignment = self._normalize_assignment(values)
+        with self.dispatch_lock:
+            with self.lock:
+                job = self.jobs[key]
+                if job.get('status') not in ('completed', 'stopped', 'interrupted'):
+                    raise ValueError('Only completed, stopped, or interrupted assignments can be edited.')
+                if key in self.processing:
+                    raise ValueError('The assignment is still saving its project. Try again shortly.')
+                job.update(assignment, auto_commands=assignment['shell_mode'] == 'auto')
+                self.note(job, 'Task details saved; the assignment was not resubmitted.')
+                self.save(job)
+                return copy.deepcopy(job)
+
+    def edit_and_rerun(self, key, values):
+        """Save edited settings and queue the assignment from its existing workspace."""
+        with self.dispatch_lock:
+            self.update_assignment(key, values)
+            return self.rerun(key)
 
     def _interrupt(self, job):
         self.client.interrupt(job['session_id'])
@@ -595,6 +667,25 @@ class Manager:
             self.save(job)
             return copy.deepcopy(job)
 
+    @staticmethod
+    def _verification_guidance(job):
+        command = str(job.get('verification_command') or '').strip()
+        if not command:
+            return ('Verification plan: No independent verification command is configured. Identify and run the '
+                    'project checks required by the acceptance criteria, and include any necessary verifier files '
+                    'or fixtures in the saved project workspace before claiming completion.')
+        return (
+            'Verification plan (part of this implementation):\n'
+            'Hearth will independently run this exact command after your completion claim:\n'
+            '```sh\n'+command+'\n```\n'
+            'Before implementation, inspect the command and identify every referenced verifier script, test, '
+            'fixture, configuration file, generated input, and dependency. Create or update any required files '
+            'inside the project workspace and keep them in the deliverable. Check that the command uses tools '
+            'and interpreters available in this isolated container; update the command only when needed to invoke '
+            'the equivalent available tool. Run the same command yourself after implementation, fix failures, '
+            'and repeat it. Do not claim completion until the configured command passes independently.'
+        )
+
     def _send(self, job, text):
         with self.dispatch_lock:
             with self.lock:
@@ -611,7 +702,10 @@ class Manager:
                     if refinements:
                         scope += '\nUser refinements (latest takes precedence):\n'+'\n'.join(refinements)
                     job['pending_prompt'] = {'id': 'msg_'+uuid.uuid4().hex, 'text': scope+'\n\n'+text}
-                    self.save(job)
+                verification_guidance = self._verification_guidance(job)
+                if verification_guidance not in job['pending_prompt']['text']:
+                    job['pending_prompt']['text'] += '\n\n'+verification_guidance
+                self.save(job)
                 pending = copy.deepcopy(job['pending_prompt'])
             self.client.prompt(job['session_id'], pending['text'], pending['id'])
             with self.lock:
@@ -717,7 +811,7 @@ class Manager:
                 with self.dispatch_lock:
                     if job['status'] not in WORKING:
                         return
-                    self.note(job, 'Building and starting the isolated Docker agent environment.')
+                    self.note(job, 'Starting or reusing the isolated Docker agent environment.')
                     self.save(job)
                     sid = self.client.create(job)
                     with self.lock:
@@ -854,6 +948,13 @@ class Manager:
             with self.lock:
                 if job['status'] not in ACTIVE:
                     return
+                if 'isolated agent container is missing' in str(exc).lower() and job.get('session_id'):
+                    job.pop('after_interrupt', None)
+                    job.update(status='queued', resume_session=True, errors=0, error=None,
+                               next_retry=time.time()+1)
+                    self.note(job, 'The isolated container was removed; rebuilding it from the latest synchronized project checkpoint.')
+                    self.save(job)
+                    return
                 if is_provider_transport_error(exc):
                     # Socket resets can happen while a provider is responding or while
                     # Hearth is polling OpenCode. Keep the same session and, when a
@@ -896,10 +997,8 @@ class Manager:
                             self.note(job, 'Project synchronization issue: '+str(exc)[:400])
                             self.save(job)
                     if job['status'] in ('completed', 'stopped'):
-                        cleanup = getattr(type(self.client), 'cleanup', None)
-                        if cleanup:
-                            try: cleanup(self.client, job)
-                            except Exception: logging.exception('Could not clean up completed agent container')
+                        try: self.park_container(job)
+                        except Exception: logging.exception('Could not park completed agent container')
                 finally:
                     with self.lock:
                         self.processing.discard(job['id'])

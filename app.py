@@ -1887,7 +1887,8 @@ def api_set_model_thinking():
 
 _model_test_context = threading.local()
 _model_test_registry = model_tests.Registry()
-_agent_container_client = agent_container.ContainerOpenCode(database.DATA_DIR / 'agent-runtime')
+_agent_container_client = agent_container.ContainerOpenCode(
+    Path(os.environ.get('HEARTH_AGENT_RUNTIME_DIR', database.DATA_DIR / 'agent-runtime')))
 _agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks', client=_agent_container_client,
     prepare_model=lambda job: _prepare_agent_model(job))
 _agent_container_client.migrate_legacy_runtime()
@@ -2258,7 +2259,7 @@ def api_agent_tasks_preview(task_id):
         return jsonify({'error': 'This assignment is not configured for an HTML result.'}), 409
     if platform == 'report' and job.get('status') != 'completed':
         return jsonify({'error': 'The accepted agent result is not available until the assignment completes.'}), 409
-    files = agent_store.list_workspace_files(job['owner'])
+    files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'])
     if platform == 'web':
         entry = next((item for item in files if not item['is_dir'] and item['path'] in
                       ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
@@ -2354,6 +2355,52 @@ def api_agent_tasks_rerun(task_id):
     except Exception as exc:
         app.logger.exception('Could not rerun the completed agent assignment')
         return jsonify({'error': f'Could not rerun assignment: {exc}'}), 503
+
+
+@app.post('/api/agent-tasks/<task_id>/edit-rerun')
+@agent_workflow_required
+def api_agent_tasks_edit_rerun(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    if any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
+        return jsonify({'error': 'Wait for model validation to finish before resubmitting an agent.'}), 409
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'Updated task details are required.'}), 400
+    try:
+        if not _agent_tasks.thread or not _agent_tasks.thread.is_alive():
+            _agent_tasks.start_worker(lambda: not any(
+                job['status'] in model_tests.ACTIVE for job in _model_test_registry.list()
+            ))
+        if not _agent_tasks.thread or not _agent_tasks.thread.is_alive():
+            return jsonify({'error': 'The agent supervisor is not running; the task was not queued.'}), 503
+        return jsonify(_agent_tasks.edit_and_rerun(task_id, body))
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not update and resubmit the agent assignment')
+        return jsonify({'error': f'Could not update and resubmit assignment: {exc}'}), 503
+
+
+@app.patch('/api/agent-tasks/<task_id>/settings')
+@agent_workflow_required
+def api_agent_tasks_settings(task_id):
+    if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
+        return jsonify({'error': 'Assignment not found.'}), 404
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'Updated task details are required.'}), 400
+    try:
+        return jsonify(_agent_tasks.update_assignment(task_id, body))
+    except KeyError:
+        return jsonify({'error': 'Assignment not found.'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    except Exception as exc:
+        app.logger.exception('Could not save agent assignment settings')
+        return jsonify({'error': f'Could not save assignment settings: {exc}'}), 503
 
 
 @app.patch('/api/agent-tasks/<task_id>/model')
@@ -2532,6 +2579,9 @@ def api_model_tests_start():
         return jsonify({'error': 'Select between 1 and 128 installed chat models.'}), 400
     if not isinstance(body.get('auto_repair', False), bool):
         return jsonify({'error': 'auto_repair must be a boolean.'}), 400
+    suite = body.get('suite', 'all')
+    if suite not in ('all', 'tools', 'iq', 'security'):
+        return jsonify({'error': 'Choose a supported model test suite.'}), 400
     inventory = {(m.get('backend'), m.get('id')): m for m in _test_model_inventory()}
     targets = []
     seen = set()
@@ -2547,7 +2597,7 @@ def api_model_tests_start():
         targets.append({'backend': pair[0], 'id': pair[1]})
     try:
         job = _model_test_registry.start(targets, body.get('auto_repair', False),
-            _test_load_model, _test_connection, _test_context)
+            _test_load_model, _test_connection, _test_context, suite=suite)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 409
     return jsonify(job), 202
@@ -3194,6 +3244,54 @@ def api_download_catalog_model():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/models/upload-local")
+@admin_required
+def api_upload_local_model():
+    """Save and register a local GGUF for the configured Lemonade server."""
+    # This endpoint intentionally accepts large model files; keep the global form
+    # memory cap for the other multipart endpoints, but allow the upload parser to
+    # stream this one into its temporary file rather than rejecting at 60 MB.
+    request.max_form_memory_size = 100 * 1024**3
+    uploaded = request.files.get("model_file")
+    if not uploaded or not uploaded.filename:
+        return jsonify({"error": "Choose a GGUF model file to upload."}), 400
+    filename = secure_filename(uploaded.filename)
+    if not filename.lower().endswith(".gguf"):
+        return jsonify({"error": "Only .gguf model files are supported for local upload."}), 400
+    stem = secure_filename(Path(filename).stem).strip("._-")[:80]
+    if not stem:
+        return jsonify({"error": "The selected file needs a valid model name."}), 400
+    if request.content_length and request.content_length > 100 * 1024**3:
+        return jsonify({"error": "Model uploads are limited to 100 GB."}), 413
+
+    models_dir = database.DATA_DIR / "local-models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    target = models_dir / f"{uuid.uuid4().hex}-{filename}"
+    try:
+        uploaded.save(target)
+        if target.stat().st_size < 4:
+            raise ValueError("The selected file is empty or incomplete.")
+        with target.open("rb") as model_file:
+            if model_file.read(4) != b"GGUF":
+                raise ValueError("The selected file does not have a valid GGUF header.")
+        result = lemonade.register_local_gguf(stem, str(target.resolve()))
+        return jsonify({
+            "ok": True,
+            "model_id": result.get("model_name") or f"user.{stem}",
+            "filename": filename,
+            "size_bytes": target.stat().st_size,
+        })
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        return jsonify({"error": str(exc)}), 400
+    except lemonade.LemonadeError as exc:
+        target.unlink(missing_ok=True)
+        return jsonify({"error": str(exc)}), 502
+    except OSError as exc:
+        target.unlink(missing_ok=True)
+        return jsonify({"error": f"Could not store the uploaded model: {exc}"}), 500
 
 
 @app.get("/api/models/downloads/active")

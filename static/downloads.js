@@ -35,14 +35,15 @@
   const progressDetail = document.getElementById("download-progress-detail");
   const progressLog = document.getElementById("download-progress-log");
   const cancelBtn = document.getElementById("download-cancel-btn");
-
   // Production may retain an older Jinja template until the server restarts.
   // Keep the versioned script compatible with that page during active downloads.
   let toolFilterEls = [...document.querySelectorAll("[data-tools-backend]")];
+  let unknownToolFilterEl = document.querySelector("[data-exclude-unknown-tools]");
   if (!toolFilterEls.length) {
     const filter = document.createElement("div");
     filter.className = "download-tool-filters";
     filter.innerHTML = '<strong>Tool calling filters:</strong>' +
+      '<label><input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support</label>' +
       [['lemonade','Lemonade'],['vllm','vLLM'],['lmstudio','LM Studio'],['kobold','KoboldCPP'],['fastflowlm','FastFlowLM']]
         .map(([key,label]) => `<label><input data-tools-backend="${key}" type="checkbox" /> ${label}</label>`).join("") +
       '<strong>Model size:</strong>' +
@@ -50,13 +51,24 @@
         .map(([key,label]) => `<label><input data-parameter-band="${key}" type="checkbox" /> ${label}</label>`).join("");
     document.querySelector(".console-head").appendChild(filter);
     toolFilterEls = [...filter.querySelectorAll("[data-tools-backend]")];
+    unknownToolFilterEl = filter.querySelector("[data-exclude-unknown-tools]");
+  }
+  if (!unknownToolFilterEl) {
+    const filter = document.querySelector(".download-tool-filters");
+    if (filter) {
+      const label = document.createElement("label");
+      label.innerHTML = '<input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support';
+      const firstBackendLabel = toolFilterEls[0]?.closest("label");
+      filter.insertBefore(label, firstBackendLabel || filter.firstChild);
+      unknownToolFilterEl = label.querySelector("[data-exclude-unknown-tools]");
+    }
   }
   const searchResults = new Map();
   const parameterFilterEls = [...document.querySelectorAll("[data-parameter-band]")];
   // Browsers may restore checkbox state after a reload. Start a fresh page view with
   // unfiltered catalogs so an empty Search all submission really shows every model.
-  for (const filter of [...toolFilterEls, ...parameterFilterEls]) filter.checked = false;
-  for (const filter of [...toolFilterEls, ...parameterFilterEls]) filter.addEventListener("change", () => {
+  for (const filter of [...toolFilterEls, ...parameterFilterEls, unknownToolFilterEl].filter(Boolean)) filter.checked = false;
+  for (const filter of [...toolFilterEls, ...parameterFilterEls, unknownToolFilterEl].filter(Boolean)) filter.addEventListener("change", () => {
     for (const [container, cached] of searchResults) {
       renderResults(cached.results, { container, onDownload: cached.onDownload });
     }
@@ -262,6 +274,9 @@
     searchResults.set(container, { results, onDownload });
     const activeFilters = new Set(toolFilterEls.filter((el) => el.checked).map((el) => el.dataset.toolsBackend));
     results = results.filter((r) => !activeFilters.has(r.backend) || r.supports_tool_calling === true);
+    if (unknownToolFilterEl?.checked) {
+      results = results.filter((r) => r.supports_tool_calling !== null && r.supports_tool_calling !== undefined);
+    }
     const activeBands = new Set(parameterFilterEls.filter((el) => el.checked).map((el) => el.dataset.parameterBand));
     if (activeBands.size) {
       results = results.filter((r) => {

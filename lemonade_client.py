@@ -685,6 +685,31 @@ def pull_catalog_model(model_id: str):
                 }
 
 
+def register_local_gguf(model_name: str, checkpoint: str) -> dict:
+    """Register a GGUF already stored on the local host with Lemonade."""
+    try:
+        resp = requests.post(
+            f"{base_url()}/v1/models/register",
+            json={
+                "model_name": f"user.{model_name}",
+                "recipe": "llamacpp",
+                "checkpoint": checkpoint,
+                "source": "local",
+            },
+            headers=_auth_headers(),
+            timeout=30,
+        )
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error") or resp.text
+            except ValueError:
+                detail = resp.text
+            raise LemonadeError(f"Lemonade could not register the local model: {detail[:500]}")
+        return resp.json()
+    except requests.RequestException as exc:
+        raise LemonadeError(f"Could not reach Lemonade server at {base_url()}: {exc}") from exc
+
+
 def _extract_readme_description(text: str, max_len: int = 280) -> str | None:
     """Best-effort: the first substantial prose paragraph from a model's README, after
     stripping YAML frontmatter and skipping headers/badges/images/lists. Hugging Face's

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
+import tempfile
 import uuid
 
 from dotenv import load_dotenv
@@ -50,10 +51,13 @@ def temporary_schema():
     name = 'hearth_test_' + uuid.uuid4().hex
     previous = os.environ.get('HEARTH_DATABASE_SCHEMA')
     previous_skip_migration = os.environ.get('HEARTH_SKIP_LEGACY_CONFIG_MIGRATION')
+    previous_agent_runtime = os.environ.get('HEARTH_AGENT_RUNTIME_DIR')
+    agent_runtime = tempfile.TemporaryDirectory(prefix=name+'-agent-runtime-')
     with connect(autocommit=True) as conn:
         conn.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(name)))
     os.environ['HEARTH_DATABASE_SCHEMA'] = name
     os.environ['HEARTH_SKIP_LEGACY_CONFIG_MIGRATION'] = '1'
+    os.environ['HEARTH_AGENT_RUNTIME_DIR'] = agent_runtime.name
     try:
         init_schema()
         yield name
@@ -66,5 +70,10 @@ def temporary_schema():
             os.environ.pop('HEARTH_SKIP_LEGACY_CONFIG_MIGRATION', None)
         else:
             os.environ['HEARTH_SKIP_LEGACY_CONFIG_MIGRATION'] = previous_skip_migration
+        if previous_agent_runtime is None:
+            os.environ.pop('HEARTH_AGENT_RUNTIME_DIR', None)
+        else:
+            os.environ['HEARTH_AGENT_RUNTIME_DIR'] = previous_agent_runtime
+        agent_runtime.cleanup()
         with connect(autocommit=True) as conn:
             conn.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(name)))

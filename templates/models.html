@@ -41,12 +41,25 @@
           <p class="hint">
             View models already on disk and their current state, grouped by backend. Chat models
             can be loaded, unloaded, and deleted; media models load automatically when requested. Need a different
-            model? Get it from the <a href="{{ url_for('downloads_page') }}">Downloads page</a>.
+            model? Upload a local GGUF here or get one from the <a href="{{ url_for('downloads_page') }}">Downloads page</a>.
           </p>
         </div>
 
         <!-- summary strip -->
         <div id="model-summary" class="model-summary"></div>
+
+        <section class="console-card span-all" aria-labelledby="local-model-upload-heading">
+          <h2 id="local-model-upload-heading">Upload a local GGUF model</h2>
+          <p class="hint">Browse for a GGUF file on this device. Hearth uploads it to local model storage and registers it with the configured Lemonade server. The file remains on this host so Lemonade can load it.</p>
+          <form id="local-model-upload-form" class="download-form">
+            <div class="download-row">
+              <input id="local-model-file" class="panel-input" type="file" accept=".gguf,application/octet-stream" required />
+              <button id="local-model-upload-btn" class="panel-btn" type="submit">Upload model</button>
+            </div>
+          </form>
+          <div id="local-model-upload-status" class="hint" role="status" aria-live="polite"></div>
+          <div id="local-model-upload-progress" class="progress-bar-track hidden"><div class="progress-bar-fill"></div></div>
+        </section>
 
         <div class="model-toolbar">
           <input id="model-search" class="panel-input" type="search" aria-label="Filter models by name" placeholder="Filter models by name…" autocomplete="off" />

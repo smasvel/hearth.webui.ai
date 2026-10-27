@@ -61,12 +61,19 @@ COMMENT ON COLUMN agent_tasks.payload IS
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id);
 CREATE TABLE IF NOT EXISTS agent_workspace_files (
     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL,
     content BYTEA NOT NULL DEFAULT ''::bytea,
     is_dir BOOLEAN NOT NULL DEFAULT FALSE,
     executable BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at DOUBLE PRECISION NOT NULL,
-    PRIMARY KEY (owner_id, path)
+    PRIMARY KEY (owner_id, workspace_id, path)
+);
+CREATE TABLE IF NOT EXISTS agent_workspace_checkpoints (
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (owner_id, workspace_id)
 );
 CREATE TABLE IF NOT EXISTS agent_runtime_metadata (
     task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
