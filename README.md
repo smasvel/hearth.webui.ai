@@ -53,6 +53,20 @@ all documented in their own sections below.
 | Learning | In-chat practice tests and quizzes |
 | Performance monitoring | Request metrics, token usage, generation speed, and a dedicated live developer logs page |
 
+## Hearth in action
+
+Screenshots show the chat workspace, local model controls, model evaluation, and
+the agent task editor. Chat content is a sample; machine inventory and saved test
+results shown on the admin pages reflect the installation used for the capture.
+
+| Chat with a local model | Manage local models |
+|---|---|
+| ![Hearth chat workspace](docs/screenshots/chat.png) | ![Hearth model management](docs/screenshots/models.png) |
+
+| Evaluate model behavior | Set up an agent task |
+|---|---|
+| ![Hearth model tests and saved results](docs/screenshots/model-tests.png) | ![Hearth agent task editor](docs/screenshots/agents.png) |
+
 ## Search, download, and manage local AI models
 
 Hearth combines **local model discovery, Hugging Face model search, model downloads,
