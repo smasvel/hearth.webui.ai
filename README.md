@@ -55,9 +55,9 @@ all documented in their own sections below.
 
 ## Hearth in action
 
-Screenshots show the chat workspace, local model controls, model evaluation, and
-the agent task editor. Chat content is a sample; machine inventory and saved test
-results shown on the admin pages reflect the installation used for the capture.
+Screenshots show the chat workspace, local model controls, model evaluation, the
+agent task editor, performance metrics, and live request logs. Metrics and live-log
+screenshots use representative sample requests; chat content is also a sample.
 
 | Chat with a local model | Manage local models |
 |---|---|
@@ -66,6 +66,10 @@ results shown on the admin pages reflect the installation used for the capture.
 | Evaluate model behavior | Set up an agent task |
 |---|---|
 | ![Hearth model tests and saved results](docs/screenshots/model-tests.png) | ![Hearth agent task editor](docs/screenshots/agents.png) |
+
+| Review performance metrics | Inspect live request logs |
+|---|---|
+| ![Hearth performance metrics dashboard](docs/screenshots/metrics.png) | ![Hearth live developer logs with request and response details](docs/screenshots/live-logs.png) |
 
 ## Search, download, and manage local AI models
 
