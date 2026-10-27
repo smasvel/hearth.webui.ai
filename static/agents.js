@@ -21,11 +21,12 @@
     const value=JSON.stringify({providerID:model.providerID,id:model.id});
     let option=[...select.options].find(item=>item.value===value);
     if(!option) {
-      option=new Option(`${model.providerID} · ${model.id} (saved model; not in current list)`,value);
+      option=new Option(`Saved model: ${model.id} (not currently available)`,value);
       option.dataset.savedModel='true';
       select.add(option,0);
     }
     option.disabled=false;
+    option.title=`Saved from ${model.providerID}; it is no longer in the current model list.`;
     return value;
   }
   function agentDate(value) {

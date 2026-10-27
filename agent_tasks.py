@@ -234,8 +234,17 @@ class Manager:
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
         model = values.get('model')
-        if not isinstance(model, dict) or (model != existing_model and not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True))):
+        same_as_existing = (
+            isinstance(model, dict) and isinstance(existing_model, dict) and
+            model.get('providerID') == existing_model.get('providerID') and
+            model.get('id') == existing_model.get('id')
+        )
+        if not isinstance(model, dict) or (not same_as_existing and not any(
+            model == {'providerID': m['providerID'], 'id': m['id']}
+            for m in self.client.models() if m.get('usable', True)
+        )):
             raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
+        model = {'providerID': model['providerID'], 'id': model['id']}
         cycles = values.get('max_cycles', 50)
         opencode_steps = values.get('opencode_steps', 40)
         timeout = values.get('verification_timeout', 300)
