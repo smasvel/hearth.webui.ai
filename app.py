@@ -1456,12 +1456,10 @@ def api_metrics_recent():
 @admin_required
 def api_metrics_live():
     """Currently-streaming (plus just-finished) generations, for the metrics page's live
-    activity feed. Polled every ~1s. Webui-chat rows are reported directly by this app's own
-    streaming worker below; Lemonade/FastFlowLM LAN rows (OpenCode, Continue) are reported by
-    lemonade_guard_shim.py/flm_tool_shim.py via the /api/internal/live/* routes below, since
-    they're the only LAN-facing processes that actually read each SSE chunk as it arrives.
-    LM Studio/vLLM/KoboldCPP LAN traffic still can't appear here — no shim sits inline for
-    those, so nothing on this app's side ever sees their streaming bodies (see live_requests.py)."""
+    activity feed. Polled every ~1s. Webui-chat rows are reported by this app's streaming
+    worker; project-agent rows are reported by the host-side model relay, which also reads
+    each upstream SSE chunk and labels the row with the task's agent name. Other supported
+    LAN traffic may be reported by the Lemonade/FastFlowLM/LM Studio shims."""
     try:
         limit = int(request.args.get("limit", 100))
     except ValueError:

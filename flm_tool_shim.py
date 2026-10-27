@@ -1088,7 +1088,11 @@ _ID_PREFIX = "flm/"
 
 
 def _forward_headers(headers) -> dict:
-    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP and k.lower() != "host"}
+    # Hearth uses this label for local metrics attribution only. Do not expose it
+    # to the model server, which may reject or interpret unknown request headers.
+    return {k: v for k, v in headers.items()
+            if k.lower() not in _HOP_BY_HOP
+            and k.lower() not in {"host", "x-hearth-agent-name", "x-hearth-agent-relay"}}
 
 
 def _source_from_headers(headers) -> str:
@@ -1205,7 +1209,7 @@ def chat_completions():
     # traffic, so it's the only place that can see it streaming in real time. is_npu=True
     # unconditionally: FastFlowLM is the standalone NPU runtime, not a multi-recipe server
     # like Lemonade - every request that reaches it runs on the NPU, full stop.
-    live_id = live_report.start(
+    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
         source=source, backend="fastflowlm",
         model=model, max_tokens=body.get("max_tokens"), is_npu=True,
         request_content=_request_trace(body),

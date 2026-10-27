@@ -143,11 +143,15 @@ name the task, and describe what you want in everyday language; the agent name i
 its model requests in **Live logs**. Advanced model and command approval settings are
 optional. **More options** lets you set the OpenCode step limit before launch
 (default 40, range 1–10,000), separately from the assignment work-cycle budget. You can
-edit this limit on a blocked, stopped, completed, or interrupted task; continuing a
+edit this limit on a paused, blocked, stopped, completed, or interrupted task; continuing a
 blocked or interrupted task with a changed limit starts a fresh OpenCode session from
 its saved project files.
 Hearth project agents use OpenCode's direct file and shell tools. Shell commands still
 follow the task's **Ask me first** or **Allow automatically** approval mode.
+Transient provider connection resets are retried automatically in the same task cycle.
+The model relay avoids sending a second HTTP response after a streamed response has begun.
+The agent label is used for Hearth's request attribution and is removed by compatibility
+shims before requests are forwarded to model servers.
 **My agents** shows task status. In automatic shell mode, allowed
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
@@ -336,7 +340,8 @@ that ordinary users cannot open admin-only pages or APIs.
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
 automatically, shows the latest 100 requests, and loads trace text only when opened.
-Completed rows remain available for two days. No additional setup is required.
+Completed rows remain available for two days. Project-agent model requests appear with
+the task's agent name through Hearth's model relay. No additional setup is required.
 Administrators can use **Reset all metrics** to erase saved request history and coding
 reviews after two confirmation warnings; subsequent requests are recorded normally.
 The **Live logs** page also has **Reset live logs**, which clears completed history and

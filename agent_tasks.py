@@ -647,8 +647,8 @@ class Manager:
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
-                if job.get('status') not in ('completed', 'stopped', 'interrupted', 'blocked'):
-                    raise ValueError('Only completed, stopped, interrupted, or blocked assignments can be edited.')
+                if job.get('status') not in ('completed', 'stopped', 'interrupted', 'blocked', 'paused'):
+                    raise ValueError('Only completed, stopped, interrupted, blocked, or paused assignments can be edited.')
                 if key in self.processing:
                     raise ValueError('The assignment is still saving its project. Try again shortly.')
                 steps_changed = job.get('opencode_steps', 40) != assignment['opencode_steps']
