@@ -313,7 +313,7 @@ class ContainerOpenCode(OpenCode):
         provider['options'] = provider_options
         return config, provider, proxy_info
 
-    def _agent_config(self, original, provider_id, model_id, provider):
+    def _agent_config(self, original, provider_id, model_id, provider, opencode_steps=40):
         # This provider option is understood by compatible chat-template providers
         # such as Lemonade. Preserve other provider options and custom extraBody keys.
         extra_body = provider['options'].get('extraBody')
@@ -339,7 +339,8 @@ class ContainerOpenCode(OpenCode):
         return {'$schema': 'https://opencode.ai/config.json', 'model': f'{provider_id}/{model_id}',
                 'provider': {provider_id: provider},
                 'agents': {AGENT: {'description': 'Isolated persistent Hearth project worker',
-                    'mode': 'primary', 'system': SYSTEM, 'steps': 40}},
+                    'mode': 'primary', 'system': SYSTEM,
+                    'steps': opencode_steps}},
                 'compaction': original.get('compaction', {'auto': True})}
 
     def _make_proxy(self, name, info):
@@ -424,7 +425,8 @@ class ContainerOpenCode(OpenCode):
         (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
         proxy_path = task_dir/'model.sock'
         original, provider, proxy_info = self._host_provider(job['model']['providerID'], job['model']['id'], proxy_path)
-        config = self._agent_config(original, job['model']['providerID'], job['model']['id'], provider)
+        config = self._agent_config(original, job['model']['providerID'], job['model']['id'], provider,
+                                    job.get('opencode_steps', 40))
         existing = agent_store.get_runtime(task_id)
         if existing:
             can_reuse = self._can_reuse_container(existing, job, config, proxy_info)
