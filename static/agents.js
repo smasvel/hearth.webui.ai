@@ -6,6 +6,7 @@
   let selected = null, task = null, pendingSignature = '', timer;
   let rerunAcceptedAt = 0;
   let editingScheduleId = null;
+  let cloneDraft = null;
   let agentEventSource=null, agentEventTaskId=null;
   const selectedShareUsers = new Map();
   let shareTaskId = null, shareSearchTimer;
@@ -316,10 +317,13 @@
         for(const t of tasks) {
           const cycleText=`${t.cycles || 0}/${t.max_cycles || 0} cycles`;
           const latest=t.latest_activity ? ` · ${t.latest_activity}` : '';
-          const card=node('a',undefined,list); card.className='agent-task-card'; card.href=`/agents/${t.id}`;
-          const top=node('div',undefined,card); top.className='agent-task-card-top';
+          const card=node('div',undefined,list); card.className='agent-task-card';
+          const row=node('div',undefined,card); row.className='agent-task-card-row';
+          const link=node('a',undefined,row); link.className='agent-task-card-link'; link.href=`/agents/${t.id}`;
+          const top=node('div',undefined,link); top.className='agent-task-card-top';
           node('strong',t.title,top); const badge=node('span',friendlyStatus(t.status),top); badge.className=`agent-status-badge status-${t.status}`;
-          node('p',`${t.schedule_id ? 'Scheduled · ' : ''}${cycleText}${latest}`,card).className='agent-task-meta';
+          node('p',`${t.schedule_id ? 'Scheduled · ' : ''}${cycleText}${latest}`,link).className='agent-task-meta';
+          const clone=button('Clone',row,()=>cloneAgentTask(t.id)); clone.classList.add('agent-task-clone');
         }
         if(!tasks.length) { const empty=node('div',undefined,list);empty.className='agent-empty';node('strong','No assignments yet',empty);node('p','Create an agent and its progress will appear here.',empty);node('a','Create an agent',empty).href='/agents/new'; }
       }
@@ -327,6 +331,24 @@
     } catch(e) { if(el('agent-network'))el('agent-network').textContent=e.message+' — reconnecting…'; }
     if(page==='execution')timer=setTimeout(refresh,2500);
     else if(el('agent-list'))timer=setTimeout(refresh,10000);
+  }
+  async function cloneAgentTask(taskId) {
+    try {
+      const source=await api(`/api/agent-tasks/${encodeURIComponent(taskId)}`);
+      const draft={
+        title:`${source.title} (copy)`.slice(0,120), goal:source.goal, assignee:source.assignee,
+        criteria:source.criteria || '', result_label:source.result_label || '',
+        result_platform:source.result_platform || 'web', verification_command:source.verification_command || '',
+        shell_mode:source.shell_mode || (source.auto_commands ? 'auto' : 'ask'),
+        max_cycles:source.max_cycles || 50, opencode_steps:source.opencode_steps || 40,
+        verification_timeout:source.verification_timeout || 300,
+        enable_thinking:source.enable_thinking !== false, model:source.model,
+      };
+      sessionStorage.setItem('hearth-agent-clone-draft',JSON.stringify(draft));
+      window.location.assign('/agents/new?clone=1');
+    } catch(error) {
+      if(el('agent-network'))el('agent-network').textContent=`Could not copy task settings: ${error.message}`;
+    }
   }
   function friendlyStatus(status) {
     return ({queued:'Starting',running:'Working',waiting_input:'Needs your help',verifying:'Checking the result',pausing:'Pausing',stopping:'Stopping',paused:'Paused',blocked:'Needs review',interrupted:'Interrupted',completed:'Done',stopped:'Stopped'})[status] || status;
@@ -433,6 +455,22 @@
     catch(error){el('agent-create-status').textContent=error.message;}
     finally{if(el('agent-assign'))el('agent-assign').disabled=false;}
   });
+  if(page==='new' && new URLSearchParams(window.location.search).has('clone')) {
+    try {
+      cloneDraft=JSON.parse(sessionStorage.getItem('hearth-agent-clone-draft') || 'null');
+      sessionStorage.removeItem('hearth-agent-clone-draft');
+      const form=el('agent-create');
+      if(cloneDraft && form) {
+        for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
+          if(form.elements[name] && cloneDraft[name] != null)form.elements[name].value=cloneDraft[name];
+        }
+        form.elements.enable_thinking.checked=cloneDraft.enable_thinking !== false;
+        if(el('agent-create-status'))el('agent-create-status').textContent='Copied task settings into a new assignment. Review them before starting; the new task will have a separate project workspace.';
+      }
+    } catch(error) {
+      if(el('agent-create-status'))el('agent-create-status').textContent='The copied task settings could not be loaded. You can still create a new assignment.';
+    }
+  }
   el('agent-steer')?.addEventListener('submit',async e=>{
     e.preventDefault();
     try { show(await api(`/api/agent-tasks/${task.id}/steer`,{text:el('agent-steering').value}));el('agent-steering').value=''; }
@@ -499,6 +537,12 @@
       el('agent-edit-model').value=retainSavedModel(el('agent-edit-model'),task.model);
       const editForm=el('agent-edit-form');
       if(editForm)editForm.dataset.modelTask=task.id;
+    }
+    if(el('agent-model') && cloneDraft?.model) {
+      const cloneModel=JSON.stringify({providerID:cloneDraft.model.providerID,id:cloneDraft.model.id});
+      if([...el('agent-model').options].some(option=>option.value===cloneModel && !option.disabled))el('agent-model').value=cloneModel;
+      else if(el('agent-create-status'))el('agent-create-status').textContent='Copied task settings. Its saved model is unavailable; choose an available model before starting.';
+      cloneDraft=null;
     }
     if(!models.some(m=>m.usable !== false)) throw new Error('Configure a local model in OpenCode first.');
   }).catch(e=>{

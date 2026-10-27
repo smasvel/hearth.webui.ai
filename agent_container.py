@@ -285,7 +285,7 @@ class ContainerOpenCode(OpenCode):
                 self._write_runtime(name, info)
         return info
 
-    def _host_provider(self, provider_id, model_id, socket_path):
+    def _host_provider(self, provider_id, model_id, socket_path, agent_name):
         config_path = Path.home()/'.config/opencode/opencode.jsonc'
         config = parse_jsonc(config_path)
         source = (config.get('provider') or {}).get(provider_id)
@@ -302,8 +302,13 @@ class ContainerOpenCode(OpenCode):
         parsed = urlsplit(base_url)
         if parsed.scheme not in ('http', 'https') or not parsed.netloc or not parsed.path.endswith('/v1'):
             raise ValueError('The selected model provider has an unsupported API endpoint.')
+        headers = dict(options.get('headers') or {})
+        agent_name = str(agent_name or '').strip()
+        if not agent_name or len(agent_name) > 120 or any(ord(char) < 32 for char in agent_name):
+            agent_name = 'Project agent'
+        headers['X-Hearth-Agent-Name'] = agent_name
         proxy_info = {'base_url': base_url, 'api_key': options.get('apiKey'),
-                      'headers': options.get('headers') or {}, 'verify_tls': _system_ca_bundle(),
+                      'headers': headers, 'verify_tls': _system_ca_bundle(),
                       'socket_path': str(socket_path), 'token': secrets.token_urlsafe(32)}
         provider = copy.deepcopy(source)
         provider['models'] = {model_id: copy.deepcopy(model)}
@@ -424,7 +429,9 @@ class ContainerOpenCode(OpenCode):
         task_dir.chmod(0o700)
         (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
         proxy_path = task_dir/'model.sock'
-        original, provider, proxy_info = self._host_provider(job['model']['providerID'], job['model']['id'], proxy_path)
+        original, provider, proxy_info = self._host_provider(
+            job['model']['providerID'], job['model']['id'], proxy_path,
+            job.get('assignee') or 'Project agent')
         config = self._agent_config(original, job['model']['providerID'], job['model']['id'], provider,
                                     job.get('opencode_steps', 40))
         existing = agent_store.get_runtime(task_id)

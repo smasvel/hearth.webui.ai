@@ -138,8 +138,9 @@ page-changing actions, Hearth waits for content, lists and visits each open tab
 (including popups), captures snapshots, and returns an explicit confirmation to the
 model. The model can continue to inspect, find text, click, or navigate back.
 
-After signing in, open **Agents**. Use **New agent** to name a task and describe what
-you want in everyday language; advanced model and command approval settings are
+After signing in, open **Agents**. Use **New agent** to enter a required agent name,
+name the task, and describe what you want in everyday language; the agent name identifies
+its model requests in **Live logs**. Advanced model and command approval settings are
 optional. **More options** lets you set the OpenCode step limit before launch
 (default 40, range 1–10,000), separately from the assignment work-cycle budget. You can
 edit this limit on a blocked, stopped, completed, or interrupted task; continuing a
@@ -152,6 +153,10 @@ decision. Open a task to follow its live **Activity** feed.
 When editing a task, its saved model stays selected even if it is missing from the
 current model list or that list cannot load. You can save other task edits while
 retaining that model; choosing a different model requires one currently available.
+Choose **Clone** beside an assignment to open a new task form prefilled with its
+prompt and settings. Review the copied values before starting. The cloned assignment
+uses a new project workspace and does not copy project files, activity, sharing, or
+schedules.
 New assignments also accept a result label and platform/output type. Web-page
 assignments preview a completed `index.html`, `dist/index.html`, or
 `build/index.html` in a sandboxed frame on the task page. Choose **JSON results

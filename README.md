@@ -677,14 +677,19 @@ Shared users can also create, edit, pause, resume, and delete recurring schedule
 for assignments shared with them. Sharing grants assignment access, including its
 task files and project download.
 
-Create an agent from **New agent** by giving the task a name and describing the result
-you want in everyday language. **More options** includes an editable OpenCode step limit
+Create an agent from **New agent** by entering a required agent name, naming the task,
+and describing the result you want in everyday language. Agent names also identify that
+task's model requests in **Live logs**. **More options** includes an editable OpenCode step limit
 per turn (40 by default, range 1–10,000), separate from the assignment work-cycle budget. If OpenCode
 reaches this limit, it summarizes its work; change the setting before starting or edit
 it on a blocked, stopped, interrupted, or completed task. Resubmit stopped or completed
 tasks, or continue blocked and interrupted tasks, to use the new limit.
 Changing it before continuing a blocked or interrupted task starts a fresh session from
-the saved project files. The **My agents** page lists tasks and their plain-language status;
+the saved project files. Use **Clone** on an assignment in **My agents** to start a
+separate task with its title, prompt, model, and settings copied into the new task form.
+Review the copied settings before starting. The clone gets a fresh project workspace and
+does not copy the source task's code, activity, sharing, or schedules. The **My agents**
+page lists tasks and their plain-language status;
 open one to see its separate execution page. There, the **Activity** feed streams the
 agent progress, container tool inputs and outputs, and user-facing model responses
 from the active OpenCode session over a task-scoped live event stream, with correctly

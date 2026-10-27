@@ -247,9 +247,11 @@ class Manager:
             raise ValueError('Verification timeout must be 10–3600 seconds.')
         criteria = str(values.get('criteria', '')).strip()
         command = str(values.get('verification_command', '')).strip()
-        assignee = str(values.get('assignee', 'Project agent')).strip()
-        if len(criteria) > 10000 or len(command) > 4000 or not assignee or len(assignee) > 120:
-            raise ValueError('Acceptance criteria, verification command or agent name is too long.')
+        assignee = str(values.get('assignee', '')).strip()
+        if not assignee or len(assignee) > 120 or any(ord(char) < 32 for char in assignee):
+            raise ValueError('Enter an agent name (up to 120 characters).')
+        if len(criteria) > 10000 or len(command) > 4000:
+            raise ValueError('Acceptance criteria or verification command is too long.')
         shell_mode = values.get('shell_mode', 'auto' if values.get('auto_commands') is True else 'ask')
         if shell_mode not in ('ask', 'auto'):
             raise ValueError('Choose whether shell commands should ask or run automatically.')

@@ -1095,6 +1095,9 @@ def _source_from_headers(headers) -> str:
     """Same X-Hearth-Client convention caddy_metrics.py uses for the historical metrics
     rows - see help_data.build_continue_yaml/build_opencode_config for where this header
     gets set. Falls back to "lan" for anything else (a manual curl test, etc.)."""
+    agent_name = (headers.get("X-Hearth-Agent-Name") or headers.get("x-hearth-agent-name") or "").strip()
+    if agent_name and len(agent_name) <= 120 and not any(ord(char) < 32 for char in agent_name):
+        return agent_name
     client = (headers.get("X-Hearth-Client") or "").lower()
     return client if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", client) else "lan"
 

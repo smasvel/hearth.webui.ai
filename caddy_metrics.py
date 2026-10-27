@@ -72,6 +72,12 @@ def _source_from_headers(headers: dict, ua: str) -> str:
     client sends directly isn't on Caddy's redaction list and comes through untouched, so that's
     what carries the label instead. Falls back to the original UA-sniffing for anything that
     doesn't send it (older configs, ad-hoc curl/other LAN tools)."""
+    agent_list = headers.get("X-Hearth-Agent-Name") or headers.get("x-hearth-agent-name")
+    if agent_list:
+        agent_name = agent_list[0] if isinstance(agent_list, list) else str(agent_list)
+        agent_name = agent_name.strip()
+        if agent_name and len(agent_name) <= 120 and not any(ord(char) < 32 for char in agent_name):
+            return agent_name
     label_list = headers.get("X-Hearth-Client") or headers.get("x-hearth-client")
     if label_list:
         label = label_list[0] if isinstance(label_list, list) else str(label_list)
