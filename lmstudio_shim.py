@@ -64,7 +64,11 @@ _HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "content-encodin
 
 
 def _forward_headers(headers) -> dict:
-    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP and k.lower() != "host"}
+    # Hearth uses this label for local metrics attribution only. Do not expose it
+    # to the model server, which may reject or interpret unknown request headers.
+    return {k: v for k, v in headers.items()
+            if k.lower() not in _HOP_BY_HOP
+            and k.lower() not in {"host", "x-hearth-agent-name", "x-hearth-agent-relay"}}
 
 
 def _source_from_headers(headers) -> str:
@@ -143,7 +147,7 @@ def chat_completions():
     model = body.get("model") or "unknown"
     client_ip = _client_ip(request.headers, request.remote_addr)
     streamed = bool(body.get("stream"))
-    live_id = live_report.start(
+    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
         source=source, backend="lmstudio",
         model=model, max_tokens=body.get("max_tokens"), is_npu=False,
         request_content=_request_trace(body),

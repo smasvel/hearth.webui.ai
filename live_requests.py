@@ -5,11 +5,10 @@ Active streams are RAM-only. Finished request/response traces are persisted in t
 PostgreSQL database for two days so an administrator can debug a request after a restart;
 they are automatically deleted after that retention window.
 
-Only the webui-chat streaming path (app.py's /api/chat worker) can report live token-
-by-token progress, because it's the only place this app actually reads each SSE chunk
-as it arrives. LAN traffic (OpenCode/VSCode via the Caddy proxy) is invisible here -
-caddy_metrics.py only sees a request after Caddy has already written the completed
-access-log line, with no per-token body access - so it never appears in this feed.
+The webui-chat worker and Hearth's agent model relay report streaming progress directly.
+Lemonade, FastFlowLM, and LM Studio use their inline shims for other clients. Ordinary
+LAN requests without an inline reporting shim remain invisible here; Caddy only sees
+them after writing a completed access-log line.
 """
 
 from __future__ import annotations

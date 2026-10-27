@@ -682,11 +682,15 @@ and describing the result you want in everyday language. Agent names also identi
 task's model requests in **Live logs**. **More options** includes an editable OpenCode step limit
 per turn (40 by default, range 1–10,000), separate from the assignment work-cycle budget. If OpenCode
 reaches this limit, it summarizes its work; change the setting before starting or edit
-it on a blocked, stopped, interrupted, or completed task. Resubmit stopped or completed
+it on a paused, blocked, stopped, interrupted, or completed task. Resubmit stopped or completed
 tasks, or continue blocked and interrupted tasks, to use the new limit.
 Changing it before continuing a blocked or interrupted task starts a fresh session from
 the saved project files. Hearth project agents use OpenCode's direct file and shell tools;
 shell commands still follow the selected **Ask me first** or **Allow automatically** mode.
+Transient provider connection resets are retried automatically in the same task cycle;
+the model relay avoids sending a second HTTP response after a streamed response has begun.
+The agent label is used only for Hearth's request attribution and is removed before
+compatibility shims forward requests to model servers.
 Use **Clone** on an assignment in **My agents** to start a
 separate task with its title, prompt, model, and settings copied into the new task form.
 Review the copied settings before starting. The clone gets a fresh project workspace and
@@ -831,7 +835,8 @@ backend/client breakdowns, and supported NPU statistics. Open **Live logs** for
 timestamped request lifecycle details, streaming progress, errors, and request/response
 traces. The feed refreshes about once per second, shows the latest 100 requests, and
 loads request/response text only when a trace is opened. Completed rows remain available
-for two days. Administrators can use **Reset all metrics** to erase saved request history
+for two days. Agent model requests are reported by Hearth's relay and labeled with the
+task's agent name. Administrators can use **Reset all metrics** to erase saved request history
 and coding reviews after two confirmation warnings; new requests begin accumulating again
 immediately. On **Live logs**, **Reset live logs** clears completed history and saved
 request/response traces after two warnings. It preserves in-flight rows; their completed

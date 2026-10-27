@@ -24,6 +24,7 @@ from socketserver import ThreadingMixIn, UnixStreamServer
 from urllib.parse import unquote, urlsplit
 
 import requests
+import live_requests
 
 from agent_opencode import AGENT, OpenCode, SYSTEM
 import agent_store
@@ -101,12 +102,36 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
         headers['Accept-Encoding'] = 'identity'
         key = proxy.get('api_key')
         if key: headers['Authorization'] = 'Bearer '+key
+        response_started = False
+        response = None
+        live_id = None
+        request_body = None
         try:
             length = int(self.headers.get('Content-Length', '0'))
             if length > 128 * 1024 * 1024:
                 self.send_error(413)
                 return
             body = self.rfile.read(length) if length else None
+            try:
+                request_body = json.loads(body or b'{}')
+            except (TypeError, ValueError):
+                request_body = {}
+            if not isinstance(request_body, dict):
+                request_body = {}
+            messages = request_body.get('messages') or []
+            request_text = '\n'.join(
+                f"{item.get('role') or 'unknown'}: {item.get('content') or ''}"
+                for item in messages if isinstance(item, dict)
+            )[-4000:]
+            source = (proxy.get('headers') or {}).get('X-Hearth-Agent-Name') or 'agent'
+            if self.command == 'POST' and request_path.endswith('/chat/completions'):
+                live_id = live_requests.start(
+                    source=source, backend=proxy.get('provider_id') or 'agent',
+                    model=proxy.get('model_id') or request_body.get('model') or 'unknown',
+                    max_tokens=request_body.get('max_tokens') or request_body.get('max_completion_tokens'),
+                    is_npu=proxy.get('provider_id') == 'fastflowlm',
+                    request_content=request_text,
+                )
             response = requests.request(self.command, proxy['base_url']+suffix,
                 params=None, headers=headers, data=body, stream=True,
                 timeout=(15, 3600), verify=proxy.get('verify_tls', True))
@@ -119,17 +144,77 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             self.send_header('Connection', 'close')
             self.close_connection = True
             self.end_headers()
+            response_started = True
+            event_stream = 'text/event-stream' in response.headers.get('Content-Type', '').lower()
+            pending = b''
+            captured = bytearray()
+
+            def record_event(line):
+                if not line.startswith(b'data:'):
+                    return
+                raw = line[5:].strip()
+                if not raw or raw == b'[DONE]':
+                    return
+                try:
+                    event = json.loads(raw)
+                    delta = ((event.get('choices') or [{}])[0].get('delta') or {})
+                    pieces = []
+                    for field in ('reasoning', 'reasoning_content', 'content'):
+                        value = delta.get(field)
+                        if isinstance(value, str):
+                            pieces.append(value)
+                        elif isinstance(value, list):
+                            pieces.extend(str(part.get('text') or '') for part in value if isinstance(part, dict))
+                    text = ''.join(pieces)
+                    if text:
+                        live_requests.update(live_id, delta_chars=len(text), delta_content=text)
+                except (ValueError, TypeError, AttributeError, IndexError):
+                    pass
+
             for chunk in response.iter_content(64 * 1024):
                 if chunk:
                     self.wfile.write(chunk)
                     self.wfile.flush()
-            response.close()
+                    if event_stream:
+                        pending += chunk
+                        while b'\n' in pending:
+                            line, pending = pending.split(b'\n', 1)
+                            record_event(line.rstrip(b'\r'))
+                    elif len(captured) < 8 * 1024 * 1024:
+                        captured.extend(chunk[:8 * 1024 * 1024 - len(captured)])
+            if event_stream:
+                if pending:
+                    record_event(pending.rstrip(b'\r'))
+            elif captured:
+                try:
+                    payload = json.loads(captured)
+                    choice = (payload.get('choices') or [{}])[0]
+                    message = choice.get('message') or choice.get('delta') or {}
+                    result_text = message.get('reasoning_content') or message.get('reasoning') or message.get('content')
+                    if isinstance(result_text, str) and result_text:
+                        live_requests.update(live_id, delta_chars=len(result_text), delta_content=result_text)
+                except (ValueError, TypeError, AttributeError, IndexError):
+                    pass
+            live_requests.finish(live_id, status='done' if response.ok else 'error',
+                                 status_code=response.status_code)
         except (requests.RequestException, OSError, ValueError) as exc:
             logging.warning('Agent model relay failed for %s (%s bytes): %s: %s',
                             request_path, length if 'length' in locals() else 0,
                             type(exc).__name__, str(exc)[:500])
-            try: self.send_error(502)
-            except OSError: pass
+            # Once streaming headers or body bytes have been sent, a second HTTP
+            # error response corrupts the stream and can surface as ECONNRESET in
+            # OpenCode. Only send a 502 before the response has started; otherwise
+            # close this response cleanly and let the task retry the transport error.
+            if not response_started:
+                try: self.send_error(502)
+                except OSError: pass
+            if live_id is not None:
+                live_requests.finish(live_id, status='error',
+                                     status_code=getattr(response, 'status_code', None),
+                                     error_detail=str(exc))
+        finally:
+            if response is not None:
+                response.close()
 
 
 class _ModelProxy:
@@ -358,9 +443,12 @@ class ContainerOpenCode(OpenCode):
         if not agent_name or len(agent_name) > 120 or any(ord(char) < 32 for char in agent_name):
             agent_name = 'Project agent'
         headers['X-Hearth-Agent-Name'] = agent_name
+        if provider_id in ('lemonade', 'fastflowlm', 'lmstudio'):
+            headers['X-Hearth-Agent-Relay'] = '1'
         proxy_info = {'base_url': base_url, 'api_key': options.get('apiKey'),
                       'headers': headers, 'verify_tls': _system_ca_bundle(),
-                      'socket_path': str(socket_path), 'token': secrets.token_urlsafe(32)}
+                      'socket_path': str(socket_path), 'token': secrets.token_urlsafe(32),
+                      'provider_id': provider_id, 'model_id': model_id}
         provider = copy.deepcopy(source)
         provider['models'] = {model_id: copy.deepcopy(model)}
         provider_options = dict(provider.get('options') or {})

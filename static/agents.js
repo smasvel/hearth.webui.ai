@@ -69,9 +69,10 @@
     for (const id of ['agent-pause','agent-resume','agent-stop','agent-delete','agent-send-instructions']) if(el(id))el(id).hidden = false;
     if(el('agent-rerun'))el('agent-rerun').hidden=!['completed','stopped'].includes(task.status);
     const editPanel=el('agent-edit-panel');
-    if(editPanel)editPanel.hidden=!['completed','stopped','interrupted','blocked'].includes(task.status);
+    if(editPanel)editPanel.hidden=!['completed','stopped','interrupted','blocked','paused'].includes(task.status);
     const editToggle=el('agent-edit-toggle');
-    if(editToggle)editToggle.hidden=!['completed','stopped','interrupted','blocked'].includes(task.status);
+    if(editToggle)editToggle.hidden=!['completed','stopped','interrupted','blocked','paused'].includes(task.status);
+    if(el('agent-edit-resubmit'))el('agent-edit-resubmit').hidden=task.status==='paused';
     const editForm=el('agent-edit-form');
     if(editForm && editForm.dataset.loadedTask!==task.id) {
       for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
