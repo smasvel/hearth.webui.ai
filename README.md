@@ -57,8 +57,12 @@ all documented in their own sections below.
 
 Screenshots show the chat workspace, local model controls, model evaluation, the
 agent task editor, performance metrics, live request logs, and AI browser history.
-Metrics, live-log, and browser-history screenshots use representative sample data;
-chat content is also a sample.
+Chat and agent setup use fictional demo text. Metrics, live-log, and browser-history
+screenshots show their empty states.
+
+| Sign in to Hearth | Agents moving between workflow steps |
+|---|---|
+| ![Hearth animated AI login page screenshot](docs/screenshots/login.png) | ![Animated preview of robot agents travelling along connected paths on the Hearth login page](docs/screenshots/login-animation.gif) |
 
 | Find and download a model |
 |---|
@@ -74,11 +78,11 @@ chat content is also a sample.
 
 | Review performance metrics | Inspect live request logs |
 |---|---|
-| ![Hearth performance metrics dashboard](docs/screenshots/metrics.png) | ![Hearth live developer logs with request and response details](docs/screenshots/live-logs.png) |
+| ![Hearth performance metrics dashboard](docs/screenshots/metrics.png) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
 
 | Review AI browser history |
 |---|
-| ![Hearth AI browser history with visited pages, source labels, and failed visits](docs/screenshots/browse-history.png) |
+| ![Hearth AI browser history page showing its empty history table](docs/screenshots/browse-history.png) |
 
 ## Search, download, and manage local AI models
 
@@ -409,6 +413,8 @@ For editor and terminal workflows, Hearth also provides integration with
 endpoints. Compatibility layers address supported tool-call formats, argument
 handling, and request metrics. Actual coding reliability depends on the model,
 available context, runtime, and task; the saved reports document remaining failures.
+On mobile, the Agents page keeps its workflow navigation visible while scrolling;
+the header shows the tabs available to the signed-in user's role.
 
 ## A personal AI assistant on your own hardware
 
@@ -534,6 +540,11 @@ self-signed certificate warning (one-time per browser).
 The UI is protected by a login page backed by a `users` table. Login uses a browser-session
 cookie (closing the browser requires a fresh login) and expires after 30 minutes without a
 request.
+The sign-in and first administrator setup screens use a responsive AI workspace design,
+with animated connecting paths, travelling robot agents, and signal dots on larger screens.
+The animation respects reduced-motion preferences. The rest of Hearth uses the same
+deep charcoal surfaces, layered slate panels, soft mint accents, and bright neutral text
+across its pages and controls.
 
 Chat responses continue when you switch tabs, change conversations, navigate to another
 page, or close the browser. You can ask Hearth a question, close the browser, and sign
@@ -543,6 +554,9 @@ chat history even after the browser disconnects. The Stop button explicitly canc
 text response and keeps its partial answer. Answer text and supported separate reasoning
 content appear as the backend streams them; models that emit no separate reasoning
 events show the answer as it arrives.
+If you regenerate a reply and the new generation fails, Chat shows the previous reply
+in a dimmed, dashed bubble labeled with the regeneration error. A successful regeneration
+replaces the old reply normally.
 
 Keep the machine hosting Hearth awake and its web service running while a response is
 generating. Closing a browser does not stop the server-side response, but if the same
@@ -711,8 +725,11 @@ details have not loaded, use **Refresh request** in the notice to reload them.
 You can also add instructions and pause, continue, or stop work from the same
 page. Detailed activity
 The activity feed and full activity history always put the newest timestamp at the top,
-including when live events arrive out of order. When an assignment is
-paused, blocked, or interrupted, its owner can choose another configured model before
+including when live events arrive out of order. While an assignment runs, the feed
+reports agent tool starts and completions and periodically notes
+that the OpenCode session remains active during long model turns. These progress notes
+omit prompts and tool output. When an assignment is paused, blocked, or interrupted,
+its owner can choose another configured model before
 continuing. The model picker defaults to the currently loaded model when it is available;
 the owner can still select another configured model. Loaded support models such as
 embeddings do not hide the loaded coding model from that default, including LM Studio
@@ -841,9 +858,16 @@ and coding reviews after two confirmation warnings; new requests begin accumulat
 immediately. On **Live logs**, **Reset live logs** clears completed history and saved
 request/response traces after two warnings. It preserves in-flight rows; their completed
 entries are recorded after they finish.
+Rejected Hearth agent relay chat requests also appear as failed 403 rows with the
+agent name and model. Their prompt body is not read or saved.
 Streaming token detail is available for Hearth chat and OpenCode/Continue traffic through
 Lemonade or FastFlowLM; other LAN backends do not expose per-token proxy visibility.
 Available measurements depend on the backend and configured proxy instrumentation.
+Metrics tables scroll horizontally within their own panels on phones. The model report
+uses fixed shared column widths so each header stays aligned with its values; dashboard
+cards and filters fit the screen width.
+Agent HTML previews recognize saved workspace entry files whether their stored path
+includes a leading `./` or not.
 
 For coding clients, send a stable attribution header such as:
 

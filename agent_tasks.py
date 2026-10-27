@@ -158,6 +158,39 @@ class Manager:
     def note(self, job, text):
         job['activity'] = (job.get('activity', [])+[{'time': time.time(), 'text': text}])[-200:]
 
+    def _record_live_progress(self, job, snap):
+        """Make ongoing OpenCode work visible in Activity without exposing task content."""
+        latest_tool = None
+        for message in snap.get('messages', []):
+            for index, part in reversed(list(enumerate(message.get('content', [])))):
+                if part.get('type') == 'tool':
+                    latest_tool = (str(message.get('id', '')), index, part)
+                    break
+            if latest_tool:
+                break
+        if latest_tool:
+            message_id, index, part = latest_tool
+            state = part.get('state') or {}
+            status = state.get('status')
+            key = f'{message_id}:{index}:{part.get("name", "tool")}'
+            if status in ('running', 'completed', 'error'):
+                seen = job.get('activity_tool_state') or {}
+                if seen.get(key) != status:
+                    seen[key] = status
+                    job['activity_tool_state'] = dict(list(seen.items())[-100:])
+                    name = str(part.get('name') or 'agent')
+                    if status == 'running':
+                        self.note(job, f'Agent started a {name} step.')
+                    elif status == 'completed':
+                        self.note(job, f'Agent completed a {name} step.')
+                    else:
+                        self.note(job, f'Agent {name} step needs attention.')
+                    return
+        activity = job.get('activity') or []
+        last_update = activity[-1].get('time', 0) if activity else 0
+        if time.time() - last_update >= 90:
+            self.note(job, 'Agent session is active; waiting for its next response or tool update.')
+
     def report_progress(self, job, text):
         with self.lock:
             current = self.jobs.get(job.get('id'))
@@ -941,6 +974,7 @@ class Manager:
                 latest = next((m for m in snap['messages'] if m.get('type') == 'assistant'), None)
                 if snap['active'] or snap['inbox']:
                     job.update(status='running', idle_polls=0)
+                    self._record_live_progress(job, snap)
                     self.save(job)
                     return
                 if not job.get('started', bool(job['cycles'] or job.get('session_id') or job.get('handled_message'))):
