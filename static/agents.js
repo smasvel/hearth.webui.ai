@@ -15,6 +15,18 @@
     const data = await r.json(); if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`); return data;
   }
   function node(tag, text, parent) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (parent) parent.append(n); return n; }
+  function retainSavedModel(select, model) {
+    if(!select || !model || typeof model.providerID!=='string' || typeof model.id!=='string')return;
+    const value=JSON.stringify({providerID:model.providerID,id:model.id});
+    let option=[...select.options].find(item=>item.value===value);
+    if(!option) {
+      option=new Option(`${model.providerID} · ${model.id} (saved model; not in current list)`,value);
+      option.dataset.savedModel='true';
+      select.add(option,0);
+    }
+    option.disabled=false;
+    return value;
+  }
   function agentDate(value) {
     if(value && typeof value==='object')value=value.completed ?? value.streamed ?? value.created ?? value.updated ?? value.time ?? null;
     if(typeof value==='string' && /^\d+(\.\d+)?$/.test(value))value=Number(value);
@@ -55,26 +67,26 @@
     for (const id of ['agent-pause','agent-resume','agent-stop','agent-delete','agent-send-instructions']) if(el(id))el(id).hidden = false;
     if(el('agent-rerun'))el('agent-rerun').hidden=!['completed','stopped'].includes(task.status);
     const editPanel=el('agent-edit-panel');
-    if(editPanel)editPanel.hidden=!['completed','stopped','interrupted'].includes(task.status);
+    if(editPanel)editPanel.hidden=!['completed','stopped','interrupted','blocked'].includes(task.status);
     const editToggle=el('agent-edit-toggle');
-    if(editToggle)editToggle.hidden=!['completed','stopped','interrupted'].includes(task.status);
+    if(editToggle)editToggle.hidden=!['completed','stopped','interrupted','blocked'].includes(task.status);
     const editForm=el('agent-edit-form');
     if(editForm && editForm.dataset.loadedTask!==task.id) {
-      for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','verification_timeout']) {
-        if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,verification_timeout:300}[name] ?? '');
+      for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
+        if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,opencode_steps:40,verification_timeout:300}[name] ?? '');
       }
       editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
       editForm.dataset.loadedTask=task.id;
     }
     const editModel=el('agent-edit-model');
-    if(editModel && editModel.options.length && task.model && editForm?.dataset.modelTask!==task.id) {
-      editModel.value=JSON.stringify(task.model);
+    if(editModel && task.model && editForm?.dataset.modelTask!==task.id) {
+      editModel.value=retainSavedModel(editModel,task.model);
       editForm.dataset.modelTask=task.id;
     }
     if(el('agent-reset-cycles'))el('agent-reset-cycles').hidden=!['running','waiting_input','paused','blocked','interrupted'].includes(task.status);
     if(el('agent-prompts'))el('agent-prompts').hidden = false;
     if(el('agent-title'))el('agent-title').textContent = task.title;
-    if(el('agent-status'))el('agent-status').textContent = `${task.status}${task.shared ? ' · shared access' : ''} · ${task.assignee} · ${task.cycles}/${task.max_cycles} cycles`;
+    if(el('agent-status'))el('agent-status').textContent = `${task.status}${task.shared ? ' · shared access' : ''} · ${task.assignee} · ${task.cycles}/${task.max_cycles} cycles · ${task.opencode_steps || 40} OpenCode steps/turn`;
     const recentActivity=newestFirst(task.activity);
     const latestActivity=recentActivity[0] || null;
     const latestTime=el('agent-latest-time');
@@ -415,7 +427,7 @@
   el('agent-create')?.addEventListener('submit',async e=>{
     e.preventDefault();const form=e.currentTarget;const values=Object.fromEntries(new FormData(form));
     values.enable_thinking=form.elements.enable_thinking.checked;
-    values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.verification_timeout=Number(values.verification_timeout);values.shell_mode=form.elements.shell_mode.value;
+    values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.opencode_steps=Number(values.opencode_steps);values.verification_timeout=Number(values.verification_timeout);values.shell_mode=form.elements.shell_mode.value;
     el('agent-assign').disabled=true;
     try { const created=await api('/api/agent-tasks',values);window.location.assign(`/agents/${created.id}`); }
     catch(error){el('agent-create-status').textContent=error.message;}
@@ -463,8 +475,15 @@
     for(const m of models) {
       const value=JSON.stringify({providerID:m.providerID,id:m.id});
       for(const select of [el('agent-model'),el('agent-resume-model'),el('agent-edit-model')].filter(Boolean)) {
-        const option=node('option',m.name+(m.usable === false ? ' — needs larger context' : ''),select);
-        option.value=value; option.disabled=m.usable === false; option.title=m.reason || '';
+        let option=[...select.options].find(item=>item.value===value);
+        if(!option) { option=node('option',m.name,select); option.value=value; }
+        option.textContent=m.name+(m.usable === false ? ' — needs larger context' : '');
+        option.disabled=m.usable === false; option.title=m.reason || '';
+        if(select===el('agent-edit-model') && task?.model && value===JSON.stringify(task.model)) {
+          option.disabled=false;
+          if(m.usable===false)option.textContent=m.name+' — saved model (needs larger context)';
+          delete option.dataset.savedModel;
+        }
       }
     }
     const availableSelect=el('agent-model') || el('agent-resume-model');
@@ -477,7 +496,7 @@
       el('agent-resume-model').value=(preferred || ([...el('agent-resume-model').options].find(o=>o.value===current && !o.disabled)) || available[0] || {}).value || '';
     }
     if(el('agent-edit-model') && task?.model) {
-      el('agent-edit-model').value=JSON.stringify(task.model);
+      el('agent-edit-model').value=retainSavedModel(el('agent-edit-model'),task.model);
       const editForm=el('agent-edit-form');
       if(editForm)editForm.dataset.modelTask=task.id;
     }
@@ -487,19 +506,20 @@
     if(el('agent-assign'))el('agent-assign').disabled=true;
     if(el('agent-schedule-create'))el('agent-schedule-create').disabled=true;
     const editModel=el('agent-edit-model');
-    if(editModel){editModel.replaceChildren(new Option('Could not load available models',''));editModel.disabled=true;}
-    if(el('agent-edit-status'))el('agent-edit-status').textContent=`Models could not be loaded: ${e.message}`;
+    if(editModel && task?.model)editModel.value=retainSavedModel(editModel,task.model);
+    if(el('agent-edit-status'))el('agent-edit-status').textContent=`Available models could not be loaded. The task’s saved model is retained; ${e.message}`;
   });
   function readEditValues(form) {
     const values=Object.fromEntries(new FormData(form));
     values.model=JSON.parse(values.model);
     values.max_cycles=Number(values.max_cycles);
+    values.opencode_steps=Number(values.opencode_steps);
     values.verification_timeout=Number(values.verification_timeout);
     values.enable_thinking=form.elements.enable_thinking.checked;
     return values;
   }
   async function saveEditedTask(resubmit) {
-    if(!task || !['completed','stopped','interrupted'].includes(task.status))return;
+    if(!task || !['completed','stopped','interrupted','blocked'].includes(task.status))return;
     if(resubmit && !window.confirm('Save these task details and resubmit from the latest saved project files? Existing code and activity history will be retained.'))return;
     const form=el('agent-edit-form'), status=el('agent-edit-status');
     const saveButton=el('agent-edit-save'), resubmitButton=el('agent-edit-resubmit');

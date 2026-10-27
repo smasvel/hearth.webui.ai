@@ -140,10 +140,18 @@ model. The model can continue to inspect, find text, click, or navigate back.
 
 After signing in, open **Agents**. Use **New agent** to name a task and describe what
 you want in everyday language; advanced model and command approval settings are
-optional. **My agents** shows task status. In automatic shell mode, allowed
+optional. **More options** lets you set the OpenCode step limit before launch
+(default 40, range 1–10,000), separately from the assignment work-cycle budget. You can
+edit this limit on a blocked, stopped, completed, or interrupted task; continuing a
+blocked or interrupted task with a changed limit starts a fresh OpenCode session from
+its saved project files.
+**My agents** shows task status. In automatic shell mode, allowed
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
 decision. Open a task to follow its live **Activity** feed.
+When editing a task, its saved model stays selected even if it is missing from the
+current model list or that list cannot load. You can save other task edits while
+retaining that model; choosing a different model requires one currently available.
 New assignments also accept a result label and platform/output type. Web-page
 assignments preview a completed `index.html`, `dist/index.html`, or
 `build/index.html` in a sandboxed frame on the task page. Choose **JSON results
@@ -186,7 +194,12 @@ model in that picker. LM Studio's loaded-instance data is included when detectin
 loaded coding model.
 If OpenCode reports idle before its assistant result is available, Hearth continues
 polling for up to 30 minutes. A session that stays idle is then marked **Needs review**
-without repeated worker errors; resuming keeps the assignment's selected model.
+without repeated worker errors. OpenCode's **CRITICAL - MAXIMUM STEPS REACHED** response
+also marks the assignment **Needs review** even if the session still reports active; use
+**Continue** after reviewing the saved work to resume it. Resuming keeps the assignment's
+selected model. If OpenCode does not acknowledge a requested pause or stop, Hearth marks
+the assignment **Interrupted** (or **Needs review** after a worker failure) and enables
+**Continue** so the saved work remains recoverable.
 Provider transport resets such as `ECONNRESET` retry automatically in the same
 assignment session with backoff. A failed assistant response retries the same work
 cycle, so provider resets do not use up the task's cycle budget. Existing relay sockets

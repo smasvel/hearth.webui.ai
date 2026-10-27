@@ -45,9 +45,9 @@ all documented in their own sections below.
 | Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, response copy-to-clipboard, model switching, and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
-| Agentic coding | OpenCode project tasks, progress monitoring, user-input handling, and configured verification commands |
+| Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
-| Web research | Web search and page retrieval, optional Chromium scraping, and Playwright browser actions in Hearth chat |
+| Web research | Web search and page retrieval, optional Chromium scraping, Playwright browser actions, and searchable AI browser history |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
@@ -56,8 +56,13 @@ all documented in their own sections below.
 ## Hearth in action
 
 Screenshots show the chat workspace, local model controls, model evaluation, the
-agent task editor, performance metrics, and live request logs. Metrics and live-log
-screenshots use representative sample requests; chat content is also a sample.
+agent task editor, performance metrics, live request logs, and AI browser history.
+Metrics, live-log, and browser-history screenshots use representative sample data;
+chat content is also a sample.
+
+| Find and download a model |
+|---|
+| ![Hearth model downloads with backend search and model results](docs/screenshots/downloads.png) |
 
 | Chat with a local model | Manage local models |
 |---|---|
@@ -70,6 +75,10 @@ screenshots use representative sample requests; chat content is also a sample.
 | Review performance metrics | Inspect live request logs |
 |---|---|
 | ![Hearth performance metrics dashboard](docs/screenshots/metrics.png) | ![Hearth live developer logs with request and response details](docs/screenshots/live-logs.png) |
+
+| Review AI browser history |
+|---|
+| ![Hearth AI browser history with visited pages, source labels, and failed visits](docs/screenshots/browse-history.png) |
 
 ## Search, download, and manage local AI models
 
@@ -334,10 +343,10 @@ configured separately. The first-time Hearth installer does not perform that set
 | Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Guided task creation with per-run model thinking control, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
-| Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and browsing history | [Web search](#web-search-and-browsing); Browse history |
+| Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
 | Voice | Microphone transcription, spoken replies, and hands-free conversation with configured speech models | [Voice](#voice-translation-images-and-video) |
 | Translation | Local voice, image, and video translation with configured compatible models | Chat translation controls |
 | Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
@@ -599,9 +608,12 @@ conversation or account also deletes its associated memory chunks.
 
 ### Browse history
 
-Administrators can open **Browse history** to search and page through visited URLs.
-Delete an individual visit from its row, or use **Delete all history** to clear the
-entire browser visit log. Both actions require confirmation.
+Administrators can open **Browse history** to review the pages Hearth's headless browser
+visited through web searches, explicit browse requests, pasted URLs, and shopping checks.
+The newest visits appear first, including failed attempts, which are dimmed and marked
+failed. Search matches URLs, page titles, and the chat query that triggered a visit; the
+results are paginated. Delete an individual visit from its row, or use **Delete all
+history** to clear the complete log. Both actions require confirmation.
 
 ## Voice, translation, images, and video
 
@@ -666,8 +678,13 @@ for assignments shared with them. Sharing grants assignment access, including it
 task files and project download.
 
 Create an agent from **New agent** by giving the task a name and describing the result
-you want in everyday language. Optional model and control settings are grouped under
-**More options**. The **My agents** page lists tasks and their plain-language status;
+you want in everyday language. **More options** includes an editable OpenCode step limit
+per turn (40 by default, range 1–10,000), separate from the assignment work-cycle budget. If OpenCode
+reaches this limit, it summarizes its work; change the setting before starting or edit
+it on a blocked, stopped, interrupted, or completed task. Resubmit stopped or completed
+tasks, or continue blocked and interrupted tasks, to use the new limit.
+Changing it before continuing a blocked or interrupted task starts a fresh session from
+the saved project files. The **My agents** page lists tasks and their plain-language status;
 open one to see its separate execution page. There, the **Activity** feed streams the
 agent progress, container tool inputs and outputs, and user-facing model responses
 from the active OpenCode session over a task-scoped live event stream, with correctly
@@ -705,7 +722,9 @@ criteria, model, output settings, and work limits. **Save changes** stores the e
 without starting a run; **Resubmit** saves the current edits and queues the same
 assignment from its latest saved project files. Use **Edit task** in the assignment
 header to open the editor. This does not create a second assignment or discard the
-existing code and activity history.
+existing code and activity history. The saved model remains selected if it is no longer
+in the available model list or the list cannot load; you can keep that model while
+editing other settings. Selecting a different model still requires an available model.
 When a run finishes, Hearth stops and retains that assignment's Docker container.
 Reruns with the same model and provider settings reuse it, create a fresh OpenCode
 session, and restore the latest PostgreSQL project files. Changing the model or
@@ -721,7 +740,12 @@ and continues the assignment.
 If OpenCode reports an idle session before a new assistant result is available, Hearth
 keeps polling for up to 30 minutes. A session that remains idle after that is marked
 **Needs review** once, rather than accumulating repeated worker errors; the selected
-model remains attached to the assignment when it is resumed.
+model remains attached to the assignment when it is resumed. OpenCode's
+**CRITICAL - MAXIMUM STEPS REACHED** response also marks the assignment **Needs review**
+even if its session still reports active; review the saved work, then choose **Continue**.
+If OpenCode does not acknowledge a requested pause or stop, Hearth marks the assignment
+**Interrupted** (or **Needs review** after a worker failure) and enables **Continue** so
+the saved work remains recoverable.
 Provider transport resets such as `ECONNRESET` are retried automatically in the same
 assignment session with backoff. A failed assistant response retries the same work
 cycle, so provider resets do not use up the task's cycle budget. Existing relay sockets

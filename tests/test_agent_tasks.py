@@ -84,6 +84,23 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(resumed['status'], 'queued')
         self.assertTrue(resumed['resume_session'])
 
+    def test_maximum_steps_response_is_blocked_and_resumable_even_if_session_active(self):
+        key = self.create()
+        self.snap['active'] = True
+        self.snap['messages'] = [assistant('max-steps', 'CRITICAL - MAXIMUM STEPS REACHED')]
+        self.manager.tick()
+        blocked = self.manager.get(key)
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertEqual(blocked['handled_message'], 'max-steps')
+        resumed = self.manager.control(key, 'resume')
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertEqual(resumed['max_steps_reviewed_message'], 'max-steps')
+        self.manager.jobs[key]['model_prepared'] = True
+        self.snap['active'] = False
+        self.manager.tick()
+        self.assertEqual(self.manager.get(key)['status'], 'running')
+        self.assertIn('continue the assigned goal', self.client.prompt.call_args.args[1].lower())
+
     def test_interrupted_assignment_can_resume_without_existing_session(self):
         job = self.manager.create(self.values, self.owner)
         self.manager.jobs[job['id']].update(status='interrupted', session_id=None)
@@ -98,7 +115,7 @@ class AgentTaskTests(unittest.TestCase):
         job = self.manager.create(self.values,self.owner);self.manager.tick()
         first = self.client.prompt.call_args.args[2]
         restored=Manager(self.manager.directory,self.client)
-        restored.control(job['id'], 'resume')
+        self.assertEqual(restored.get(job['id'])['status'], 'queued')
         restored.jobs[job['id']]['next_retry']=0;restored.tick()
         self.assertEqual(self.client.prompt.call_args.args[2],first)
         self.assertEqual(restored.get(job['id'])['cycles'],1)
@@ -199,7 +216,7 @@ class AgentTaskTests(unittest.TestCase):
 
     def test_only_completed_assignments_can_rerun(self):
         key=self.create()
-        with self.assertRaisesRegex(ValueError,'Only completed assignments'):
+        with self.assertRaisesRegex(ValueError,'Only completed, stopped, interrupted, or blocked assignments'):
             self.manager.rerun(key)
 
     def test_missing_agent_container_is_queued_for_checkpoint_recovery(self):
@@ -251,12 +268,33 @@ class AgentTaskTests(unittest.TestCase):
     def test_pause_cannot_falsely_acknowledge_failed_interrupt(self):
         key=self.create();self.client.interrupt.side_effect=RuntimeError('offline')
         self.manager.control(key,'pause')
-        self.assertEqual(self.manager.get(key)['status'],'pausing')
-        self.assertTrue(self.manager.busy())
+        self.assertEqual(self.manager.get(key)['status'],'interrupted')
+        self.assertFalse(self.manager.busy())
+        self.assertTrue(self.manager.get(key)['resume_session'])
         self.client.interrupt.side_effect=None
-        self.manager.tick();self.assertEqual(self.manager.get(key)['status'],'paused')
-        self.manager.tick();self.client.prompt.assert_called_once()
-        self.manager.control(key,'resume');self.assertEqual(self.manager.get(key)['status'],'queued')
+        self.manager.control(key,'resume')
+        self.assertEqual(self.manager.get(key)['status'],'queued')
+
+    def test_failed_stop_acknowledgement_leaves_assignment_resumable(self):
+        key = self.create()
+        self.client.interrupt.side_effect = RuntimeError('offline')
+        stopped = self.manager.control(key, 'stop')
+        self.assertEqual(stopped['status'], 'interrupted')
+        self.assertTrue(stopped['resume_session'])
+        self.manager.control(key, 'resume')
+        self.assertEqual(self.manager.get(key)['status'], 'queued')
+
+    def test_worker_interrupt_failure_blocks_with_continue_available(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job.update(status='stopping', after_interrupt='blocked', model_prepared=True)
+        self.manager.save(job)
+        self.client.interrupt.side_effect = RuntimeError('offline')
+        self.manager.tick()
+        blocked = self.manager.get(key)
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertTrue(blocked['resume_session'])
+        self.assertNotIn('after_interrupt', blocked)
 
     def test_repeated_error_blocks_instead_of_looping(self):
         key=self.create()

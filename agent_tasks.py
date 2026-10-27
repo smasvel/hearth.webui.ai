@@ -22,6 +22,7 @@ ACTIVE = WORKING | {'pausing', 'stopping'}
 INTERRUPTED_ON_RESTART = {'running', 'waiting_input', 'verifying', 'pausing', 'stopping'}
 RESUMABLE = {'paused', 'blocked', 'interrupted'}
 MARKER = '[HEARTH_TASK_COMPLETE]'
+MAX_STEPS_MARKER = 'CRITICAL - MAXIMUM STEPS REACHED'
 
 
 def text_of(message):
@@ -226,19 +227,24 @@ class Manager:
         output.seek(0)
         return output, 'project'
 
-    def _normalize_assignment(self, values):
+    def _normalize_assignment(self, values, existing_model=None):
         title, goal = str(values.get('title', '')).strip(), str(values.get('goal', '')).strip()
         if 'project' in values or 'create_project' in values:
             raise ValueError('Project path is managed by the server and cannot be supplied.')
         if not title or len(title) > 120 or not goal or len(goal) > 20000:
             raise ValueError('Enter a title (up to 120 characters) and a goal (up to 20,000 characters).')
         model = values.get('model')
-        if not isinstance(model, dict) or not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True)):
+        if not isinstance(model, dict) or (model != existing_model and not any(model == {'providerID': m['providerID'], 'id': m['id']} for m in self.client.models() if m.get('usable', True))):
             raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
         cycles = values.get('max_cycles', 50)
+        opencode_steps = values.get('opencode_steps', 40)
         timeout = values.get('verification_timeout', 300)
-        if type(cycles) is not int or not 1 <= cycles <= 1000 or type(timeout) is not int or not 10 <= timeout <= 3600:
-            raise ValueError('Cycle budget must be 1–1000 and verification timeout 10–3600 seconds.')
+        if type(cycles) is not int or not 1 <= cycles <= 1000:
+            raise ValueError('Assignment work-cycle budget must be 1–1000.')
+        if type(opencode_steps) is not int or not 1 <= opencode_steps <= 10000:
+            raise ValueError('OpenCode step limit must be 1–10000.')
+        if type(timeout) is not int or not 10 <= timeout <= 3600:
+            raise ValueError('Verification timeout must be 10–3600 seconds.')
         criteria = str(values.get('criteria', '')).strip()
         command = str(values.get('verification_command', '')).strip()
         assignee = str(values.get('assignee', 'Project agent')).strip()
@@ -257,6 +263,7 @@ class Manager:
         if type(enable_thinking) is not bool:
             raise ValueError('Choose whether model thinking is enabled.')
         return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
+                'opencode_steps': opencode_steps,
                 'verification_timeout': timeout, 'criteria': criteria,
                 'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode,
                 'enable_thinking': enable_thinking, 'result_label': result_label,
@@ -467,6 +474,12 @@ class Manager:
                         raise ValueError('Only paused, blocked, or interrupted assignments can resume.')
                     if job['cycles'] >= job['max_cycles']:
                         job['max_cycles'] += 50
+                    max_steps_message = next((message for message in reversed(job.get('messages', []))
+                        if message.get('type') == 'assistant'
+                        and MAX_STEPS_MARKER in text_of(message).upper()), None)
+                    resume_after_step_limit = bool(max_steps_message)
+                    if resume_after_step_limit:
+                        job['max_steps_reviewed_message'] = max_steps_message['id']
                     job.update(status='queued', errors=0, stalls=0, error=None, next_retry=0,
                                awaiting_since=0, idle_polls=0, model_prepared=False)
                     if job.get('session_id'):
@@ -479,17 +492,38 @@ class Manager:
                 self.note(job, 'User requested '+action+'.')
                 self.save(job)
                 sid, verification = job['session_id'], job.get('verification_id')
-            if action != 'resume' and sid:
+            if sid and (action != 'resume' or resume_after_step_limit):
                 try:
-                    self._interrupt(job)
+                    if action == 'resume':
+                        self.client.interrupt(sid)
+                    else:
+                        self._interrupt(job)
                 except Exception as exc:
                     with self.lock:
-                        self.note(job, 'Interruption is pending: '+str(exc)[:400])
-                        job['error'] = 'Waiting for OpenCode to acknowledge interruption; execution may still be active.'
+                        if action == 'resume':
+                            self.note(job, 'Could not stop the exhausted OpenCode session; continuing from the saved workspace in a fresh session.')
+                            checkpoint = job.get('summary', '')
+                            job.update(
+                                session_id=None,
+                                resume_session=False,
+                                pending_prompt={
+                                    'id': 'msg_'+uuid.uuid4().hex,
+                                    'text': 'Continue this assignment from the latest synchronized project files. Preserve completed work, inspect the current state, and continue unfinished work. Previous response before the step limit:\n'+checkpoint,
+                                },
+                            )
+                        else:
+                            target = 'blocked' if job.get('after_interrupt') == 'blocked' else 'interrupted'
+                            job.pop('after_interrupt', None)
+                            job.update(
+                                status=target,
+                                resume_session=bool(sid),
+                                error='OpenCode did not acknowledge the interruption. Review the saved work, then continue to resume.'
+                            )
+                            self.note(job, 'OpenCode did not acknowledge the interruption; the assignment is ready for review and can be continued.')
                         self.save(job)
             result = self.get(key)
             if action == 'stop' and result:
-                if result['status'] != 'stopped':
+                if result['status'] not in ('stopped', 'interrupted', 'blocked'):
                     with self.lock:
                         job = self.jobs[key]
                         job.update(status='stopped', session_id=None)
@@ -529,7 +563,7 @@ class Manager:
 
     def rerun(self, key, *, schedule_id=None, scheduled_at=None):
         """Queue another run from its saved workspace, including recovery of a restarted scheduled run."""
-        rerunnable = ('completed', 'stopped', 'interrupted')
+        rerunnable = ('completed', 'stopped', 'interrupted', 'blocked')
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
@@ -537,7 +571,7 @@ class Manager:
                                     and job.get('schedule_id') == schedule_id
                                     and job.get('scheduled_run_at') is not None)
                 if job.get('status') not in rerunnable and not restart_recovery:
-                    raise ValueError('Only completed, stopped, or interrupted assignments can be run again.')
+                    raise ValueError('Only completed, stopped, interrupted, or blocked assignments can be run again.')
                 if key in self.processing:
                     raise ValueError('The completed assignment is still saving its project. Try again shortly.')
                 if sum(item.get('status') in ACTIVE for item in self.jobs.values()) >= 20:
@@ -545,7 +579,7 @@ class Manager:
                 snapshot = copy.deepcopy(job)
                 previous_summary = job.get('summary', '')
                 previous_messages = copy.deepcopy(job.get('messages', []))
-            if snapshot.get('status') == 'interrupted' and snapshot.get('session_id'):
+            if snapshot.get('status') in ('interrupted', 'blocked') and snapshot.get('session_id'):
                 sync = getattr(type(self.client), 'sync', None)
                 if sync:
                     try:
@@ -559,7 +593,7 @@ class Manager:
                                     and job.get('schedule_id') == schedule_id
                                     and job.get('scheduled_run_at') is not None)
                 if job.get('status') not in rerunnable and not restart_recovery:
-                    raise ValueError('Only completed, stopped, or interrupted assignments can be run again.')
+                    raise ValueError('Only completed, stopped, interrupted, or blocked assignments can be run again.')
                 job.update(
                     status='queued', cycles=0, started=False, errors=0, stalls=0,
                     idle_polls=0, next_retry=0, awaiting_since=0, error=None,
@@ -596,15 +630,30 @@ class Manager:
 
     def update_assignment(self, key, values):
         """Save edited task settings without starting another run."""
-        assignment = self._normalize_assignment(values)
+        with self.lock:
+            existing_model = self.jobs[key].get('model')
+        assignment = self._normalize_assignment(values, existing_model=existing_model)
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
-                if job.get('status') not in ('completed', 'stopped', 'interrupted'):
-                    raise ValueError('Only completed, stopped, or interrupted assignments can be edited.')
+                if job.get('status') not in ('completed', 'stopped', 'interrupted', 'blocked'):
+                    raise ValueError('Only completed, stopped, interrupted, or blocked assignments can be edited.')
                 if key in self.processing:
                     raise ValueError('The assignment is still saving its project. Try again shortly.')
+                steps_changed = job.get('opencode_steps', 40) != assignment['opencode_steps']
+                sync_snapshot = copy.deepcopy(job) if steps_changed and job.get('status') in ('interrupted', 'blocked') else None
+            if sync_snapshot and sync_snapshot.get('session_id'):
+                sync = getattr(type(self.client), 'sync', None)
+                if sync:
+                    sync(self.client, sync_snapshot)
+            with self.lock:
+                job = self.jobs[key]
                 job.update(assignment, auto_commands=assignment['shell_mode'] == 'auto')
+                if steps_changed and job.get('status') in ('interrupted', 'blocked'):
+                    checkpoint = job.get('summary', '')
+                    job.update(session_id=None, resume_session=False,
+                        pending_prompt={'id': 'msg_'+uuid.uuid4().hex,
+                            'text': 'Continue this assignment from the latest synchronized project files. Preserve completed work, inspect the current state, and continue unfinished work. Previous agent summary:\n'+checkpoint})
                 self.note(job, 'Task details saved; the assignment was not resubmitted.')
                 self.save(job)
                 return copy.deepcopy(job)
@@ -863,6 +912,22 @@ class Manager:
                     job['status'] = 'waiting_input'
                     self.save(job)
                     return
+                max_steps_message = next((m for m in snap['messages']
+                    if m.get('type') == 'assistant'
+                    and MAX_STEPS_MARKER in text_of(m).upper()), None)
+                if (max_steps_message and max_steps_message['id']
+                        != job.get('max_steps_reviewed_message')):
+                    job.update(
+                        status='blocked',
+                        error='OpenCode reached its maximum step limit. Review the saved work, then continue to resume the assignment.',
+                        handled_message=max_steps_message['id'],
+                        max_steps_reviewed_message=max_steps_message['id'],
+                        awaiting_since=0,
+                    )
+                    self.note(job, 'OpenCode reached its maximum step limit; the assignment is ready to continue after review.')
+                    self.save(job)
+                    return
+                latest = next((m for m in snap['messages'] if m.get('type') == 'assistant'), None)
                 if snap['active'] or snap['inbox']:
                     job.update(status='running', idle_polls=0)
                     self.save(job)
@@ -872,7 +937,6 @@ class Manager:
                     initial = True
                 else:
                     initial = False
-                    latest = next((m for m in snap['messages'] if m.get('type') == 'assistant'), None)
                     if not latest or latest['id'] == job.get('handled_message'):
                         if job['status'] == 'queued':
                             pass
@@ -969,6 +1033,17 @@ class Manager:
                         self.note(job, 'Provider connection closed; retrying automatically: '+job['error'])
                     self.save(job)
                     return
+                if job['status'] in ('pausing', 'stopping'):
+                    target = 'blocked' if job.get('after_interrupt') == 'blocked' else 'interrupted'
+                    job.pop('after_interrupt', None)
+                    job.update(
+                        status=target,
+                        resume_session=bool(job.get('session_id')),
+                        error='OpenCode did not acknowledge the interruption: '+str(exc)[:900],
+                    )
+                    self.note(job, 'OpenCode did not acknowledge the interruption; the assignment can be continued after review.')
+                    self.save(job)
+                    return
                 job['errors'] += 1
                 job['error'] = str(exc)[:1200]
                 self.note(job, 'Worker error: '+job['error'])
@@ -983,8 +1058,16 @@ class Manager:
             if job.get('after_interrupt') == 'blocked':
                 try:
                     self._interrupt(job)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    with self.lock:
+                        job.pop('after_interrupt', None)
+                        job.update(
+                            status='blocked',
+                            resume_session=bool(job.get('session_id')),
+                            error='OpenCode did not acknowledge the interruption: '+str(exc)[:900],
+                        )
+                        self.note(job, 'The worker stopped after repeated errors; its saved work is ready to resume.')
+                        self.save(job)
         finally:
             if job is not None:
                 try:
