@@ -1134,7 +1134,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.get("/")
+@app.get("/", endpoint="index")
 @login_required
 def index():
     return render_template(
@@ -1959,8 +1959,9 @@ def _test_context(target):
 def _prepare_agent_model(job):
     with _reasoning_model_load_lock:
         model = job['model']
-        # Continuing with an already-serving model is not a new model load. Avoid a
-        # needless eviction/reload (and dependence on unrelated backend availability).
+        # Continuing with an already-serving FastFlowLM model is not a new model
+        # load. Avoid a needless eviction/reload (and dependence on unrelated
+        # backend availability).
         if (model['providerID'] == 'fastflowlm' and not fastflowlm.requests_paused()
                 and fastflowlm.current_served_model() == model['id']):
             try:
@@ -1969,6 +1970,23 @@ def _prepare_agent_model(job):
                 response.raise_for_status()
                 return
             except requests.RequestException:
+                pass
+        # _test_load_model unloads every active reasoning model before loading its
+        # target. For an agent continuing with a healthy model, that eviction is
+        # unnecessary and can strand the task if a backend's unload call stalls.
+        client = {'lemonade': lemonade, 'lmstudio': lms, 'vllm': vllm,
+                  'kobold': kobold, 'sglang': sglang}.get(model['providerID'])
+        if client:
+            try:
+                loaded = next((entry for entry in client.list_models()
+                               if entry.get('id') == model['id']
+                               and entry.get('state') == 'loaded'), None)
+                context = (loaded or {}).get('loaded_context_length')
+                if loaded and (type(context) is not int or context >= 16384):
+                    return
+            except Exception:
+                # Keep the existing explicit load path as the authoritative fallback
+                # when a backend cannot confirm its current model state.
                 pass
         _test_load_model({'backend': model['providerID'], 'id': model['id']})
 
@@ -2140,12 +2158,16 @@ def _agent_live_payload(job):
                         content = state.get('content') or []
                         output = '\n'.join(str(item.get('text', '')) for item in content
                                            if isinstance(item, dict) and item.get('type') == 'text')
+                        tool_error = state.get('error')
+                        if tool_error is not None and not isinstance(tool_error, str):
+                            tool_error = json.dumps(tool_error, sort_keys=True)
                         parts.append({'type': 'tool', 'name': part.get('name'),
                                       'status': state.get('status'),
                                       'time': ((raw_time.get('completed') or raw_time.get('streamed') or raw_time.get('created'))
                                                if isinstance(raw_time, dict) else raw_time),
                                       'input': json.dumps(state.get('input') or {})[:2000],
-                                      'output': output[-12000:]})
+                                      'output': output[-12000:],
+                                      'error': tool_error[-4000:] if tool_error else None})
                 messages.append({'id': message.get('id'), 'type': message.get('type'),
                                  'time': message_time, 'content': parts})
         except Exception as exc:

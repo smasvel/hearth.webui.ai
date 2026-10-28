@@ -16,8 +16,9 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(rules[0],{'action':'external_directory','resource':'/home/node/agents/project/*','effect':'allow'})
         self.assertEqual(rules[1],{'action':'*','resource':'*','effect':'allow'})
         self.assertEqual(rules[2],{'action':'shell','resource':'*','effect':'allow'})
-        self.assertEqual(rules[-2],{'action':'external_directory','resource':'*','effect':'deny'})
-        self.assertEqual(rules[-1],{'action':'subagent','resource':'*','effect':'deny'})
+        self.assertEqual(rules[-3],{'action':'external_directory','resource':'*','effect':'deny'})
+        self.assertEqual(rules[-2],{'action':'subagent','resource':'*','effect':'deny'})
+        self.assertEqual(rules[-1],{'action':'execute','resource':'*','effect':'deny'})
 
     def test_container_permissions_ask_only_for_shell_when_requested(self):
         client=ContainerOpenCode('/tmp/hearth-agent-test')
@@ -76,6 +77,32 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
 
 class ContainerRecoveryTests(unittest.TestCase):
+    def test_resume_restores_durable_workspace_to_existing_container(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            task_id = 'c' * 32
+            name = 'hearth-agent-' + task_id[:24]
+            job = {'id': task_id, 'owner': 'owner-1',
+                   'session_id': name + '::saved-session'}
+            with patch.object(client, '_read_runtime',
+                              return_value={'tool_policy_version': 'native-tools-v1'}), \
+                 patch.object(client, 'snapshot', return_value={'messages': []}), \
+                 patch.object(client, '_sync_to_container') as restore:
+                self.assertEqual(client.resume(job), job['session_id'])
+            restore.assert_called_once_with(name, 'owner-1', workspace_id=task_id)
+
+    def test_endpoint_refreshes_container_host_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ContainerOpenCode(directory)
+            info = {'password': 'secret', 'port': 43000, 'model_proxy': {}}
+            with patch.object(client, '_make_proxy'), \
+                 patch.object(client, '_docker', side_effect=['true', '127.0.0.1:43001']), \
+                 patch.object(client, '_write_runtime') as write_runtime:
+                endpoint = client._endpoint('hearth-agent-' + 'a' * 24, info)
+            self.assertEqual(endpoint.endpoint, 'http://127.0.0.1:43001')
+            self.assertEqual(info['port'], 43001)
+            write_runtime.assert_called_once()
+
     def test_agent_config_controls_thinking_and_preserves_template_options(self):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         provider = {'options': {'extraBody': {'chat_template_kwargs': {'temperature': 0.2}, 'keep': 'yes'}}}
@@ -147,7 +174,8 @@ class ContainerRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)
             job = {'id':'a'*32,'session_id':'hearth-agent-'+'a'*24+'::old-session'}
-            with patch.object(client,'snapshot',side_effect=RuntimeError('The isolated agent container is missing.')) as snapshot, \
+            with patch.object(client,'_read_runtime', return_value={'tool_policy_version': 'native-tools-v1'}), \
+                 patch.object(client,'snapshot',side_effect=RuntimeError('The isolated agent container is missing.')) as snapshot, \
                  patch.object(client,'cleanup') as cleanup, \
                  patch.object(client,'create',return_value='hearth-agent-'+'a'*24+'::new-session') as create, \
                  patch.object(client,'_report'):

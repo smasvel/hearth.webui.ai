@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from agent_opencode import OpenCode, SYSTEM
 import agent_store
 import database
+import live_requests
 
 WORKING = {'queued', 'running', 'waiting_input', 'verifying'}
 ACTIVE = WORKING | {'pausing', 'stopping'}
@@ -53,6 +54,24 @@ def is_provider_transport_error(error):
     message = str(error).lower()
     return ('provider.transport' in message or 'econnreset' in message or
             'socket connection was closed unexpectedly' in message)
+
+
+def is_interrupted_agent_response(error):
+    """Recognize an OpenCode turn that ended before producing an answer."""
+    if isinstance(error, str):
+        try:
+            decoded = json.loads(error)
+        except (TypeError, ValueError):
+            decoded = None
+        if isinstance(decoded, dict):
+            error = decoded
+    if isinstance(error, dict):
+        error_type = str(error.get('type') or '').casefold()
+        message = str(error.get('message') or '').strip().casefold()
+    else:
+        error_type = ''
+        message = str(error).strip().casefold()
+    return message == 'step interrupted' and error_type in ('', 'aborted')
 
 
 class Manager:
@@ -178,6 +197,7 @@ class Manager:
                 if seen.get(key) != status:
                     seen[key] = status
                     job['activity_tool_state'] = dict(list(seen.items())[-100:])
+                    job['agent_last_progress_at'] = time.time()
                     name = str(part.get('name') or 'agent')
                     if status == 'running':
                         self.note(job, f'Agent started a {name} step.')
@@ -186,6 +206,40 @@ class Manager:
                     else:
                         self.note(job, f'Agent {name} step needs attention.')
                     return
+        # The model relay tracks streamed tokens independently of OpenCode's
+        # message persistence. Surface that progress so long reasoning turns do
+        # not look indistinguishable from a dead session in the task Activity.
+        model_request = next((row for row in live_requests.snapshot(limit=100)
+                              if row.get('status') == 'streaming'
+                              and row.get('source') == job.get('assignee')), None)
+        if model_request:
+            now = time.time()
+            previous = dict(job.get('agent_model_progress') or {})
+            request_id = model_request.get('id')
+            tokens = int(model_request.get('tokens') or 0)
+            if previous.get('id') != request_id:
+                previous = {'id': request_id, 'tokens': tokens,
+                            'last_progress_at': now, 'noted_at': 0}
+            elif tokens > int(previous.get('tokens') or 0):
+                previous['tokens'] = tokens
+                previous['last_progress_at'] = now
+            token_progressed = tokens > int(previous.get('noted_tokens') or 0)
+            should_note = (not previous.get('noted_at') or
+                           now - float(previous.get('noted_at') or 0) >= 90 or
+                           tokens - int(previous.get('noted_tokens') or 0) >= 200)
+            if should_note:
+                if token_progressed:
+                    text = f'Local model response is progressing: {tokens:,} tokens generated so far.'
+                elif tokens:
+                    text = f'Waiting for the local model to continue; {tokens:,} tokens received so far.'
+                else:
+                    text = 'Waiting for the local model to send its first response token.'
+                self.note(job, text)
+                previous['noted_tokens'] = tokens
+                previous['noted_at'] = now
+            job['agent_model_progress'] = previous
+            job['agent_last_progress_at'] = previous.get('last_progress_at', now)
+            return
         activity = job.get('activity') or []
         last_update = activity[-1].get('time', 0) if activity else 0
         if time.time() - last_update >= 90:
@@ -525,7 +579,8 @@ class Manager:
                     if resume_after_step_limit:
                         job['max_steps_reviewed_message'] = max_steps_message['id']
                     job.update(status='queued', errors=0, stalls=0, error=None, next_retry=0,
-                               awaiting_since=0, idle_polls=0, model_prepared=False)
+                               awaiting_since=0, idle_polls=0, model_prepared=False,
+                               interrupted_response_retries=0)
                     if job.get('session_id'):
                         job['resume_session'] = True
                 elif job['status'] == 'completed':
@@ -802,11 +857,16 @@ class Manager:
                 pending = copy.deepcopy(job['pending_prompt'])
             self.client.prompt(job['session_id'], pending['text'], pending['id'])
             with self.lock:
+                retry_reason = job.get('retry_current_cycle_reason')
                 job.update(pending_prompt=None, started=True, status='running', errors=0,
                            transport_retries=job.get('transport_retries', 0) if retrying_cycle else 0,
                            retry_current_cycle=False, error=None, next_retry=0, idle_polls=0,
-                           awaiting_since=time.time(), cycles=job['cycles'] if retrying_cycle else job['cycles']+1)
-                self.note(job, (f'Agent work cycle {job["cycles"]} retried after a provider connection reset.'
+                           awaiting_since=time.time(), agent_last_progress_at=time.time(),
+                           agent_model_progress=None,
+                           cycles=job['cycles'] if retrying_cycle else job['cycles']+1)
+                job.pop('retry_current_cycle_reason', None)
+                self.note(job, (f'Agent work cycle {job["cycles"]} retried after '
+                                f'{retry_reason or "a provider connection reset"}.'
                                 if retrying_cycle else f'Agent work cycle {job["cycles"]} dispatched.'))
                 self.save(job)
 
@@ -943,12 +1003,16 @@ class Manager:
                             content = state.get('content') or []
                             output = '\n'.join(str(item.get('text', '')) for item in content
                                                if isinstance(item, dict) and item.get('type') == 'text')
+                            tool_error = state.get('error')
+                            if tool_error is not None and not isinstance(tool_error, str):
+                                tool_error = json.dumps(tool_error, sort_keys=True)
                             parts.append({'type': 'tool', 'name': part.get('name'),
                                 'status': state.get('status'),
                                 'time': ((raw_time.get('completed') or raw_time.get('streamed') or raw_time.get('created'))
                                          if isinstance(raw_time, dict) else raw_time),
                                 'input': json.dumps(state.get('input') or {})[:2000],
-                                'output': output[-8000:]})
+                                'output': output[-8000:],
+                                'error': tool_error[-4000:] if tool_error else None})
                     recent.append({'id': message['id'], 'type': message.get('type'),
                                    'time': raw_time, 'content': parts})
                 job.update(messages=recent, forms=snap['forms'], permissions=snap['permissions'])
@@ -972,7 +1036,30 @@ class Manager:
                     self.save(job)
                     return
                 latest = next((m for m in snap['messages'] if m.get('type') == 'assistant'), None)
-                if snap['active'] or snap['inbox']:
+                latest_time = (latest or {}).get('time') or (latest or {}).get('createdAt')
+                latest_finished = (latest is not None and
+                                   latest.get('id') != job.get('handled_message') and
+                                   isinstance(latest_time, dict) and
+                                   bool(latest_time.get('completed')))
+                # The session active list can briefly lag behind the durable
+                # assistant message. Process a completed turn even while that
+                # session-level indicator is stale.
+                if snap['inbox'] or (snap['active'] and not latest_finished):
+                    active_since = job.get('awaiting_since')
+                    if not active_since:
+                        active_since = time.time()
+                        job['awaiting_since'] = active_since
+                    last_progress = max(
+                        float(active_since),
+                        float(job.get('agent_last_progress_at') or active_since),
+                    )
+                    if time.time() - last_progress >= 1800:
+                        job.update(status='blocked', error=(
+                            'OpenCode reported an active session for 30 minutes without a new assistant response or tool update. '
+                            'Review the session and resume when ready.'))
+                        self.note(job, 'OpenCode reported activity without a new response or tool update for 30 minutes; assignment needs review.')
+                        self.save(job)
+                        return
                     job.update(status='running', idle_polls=0)
                     self._record_live_progress(job, snap)
                     self.save(job)
@@ -1011,12 +1098,46 @@ class Manager:
                                     'Retry the current assignment from the existing workspace, preserve completed work, and continue the goal.'}
                                 job.update(awaiting_since=0, errors=0, error=str(latest['error'])[:1200],
                                            transport_retries=retries, retry_current_cycle=True,
+                                           retry_current_cycle_reason='a provider connection reset',
                                            next_retry=time.time()+min(60, 5*2**min(retries-1, 4)))
                                 if retries == 1 or retries % 5 == 0:
                                     self.note(job, 'Provider connection closed during the response; retrying the same work cycle automatically.')
                                 self.save(job)
                                 return
+                            if is_interrupted_agent_response(latest['error']):
+                                retries = int(job.get('interrupted_response_retries') or 0) + 1
+                                job['handled_message'] = latest['id']
+                                if retries >= 3:
+                                    job.update(status='blocked', errors=0,
+                                               interrupted_response_retries=retries,
+                                               resume_session=bool(job.get('session_id')),
+                                               pending_prompt={
+                                                   'id': 'msg_'+uuid.uuid4().hex,
+                                                   'text': 'Continue from the saved project workspace. Preserve completed work, inspect the current state, and finish the remaining acceptance criteria.'},
+                                               error='OpenCode interrupted three consecutive responses. Review the saved project, then resume to continue.')
+                                    self.note(job, 'OpenCode interrupted three consecutive responses; the assignment needs review before continuing.')
+                                    self.save(job)
+                                    return
+                                scope = ('Assignment goal:\n'+job['goal']+
+                                         '\nAcceptance criteria:\n'+(job.get('criteria') or 'Complete and verify the requested goal.'))
+                                refinements = job.get('instructions', [])
+                                if refinements:
+                                    scope += '\nUser refinements (latest takes precedence):\n'+'\n'.join(refinements)
+                                job.update(
+                                    pending_prompt={
+                                        'id': 'msg_'+uuid.uuid4().hex,
+                                        'text': scope+'\n\nThe previous model response was interrupted before it produced a complete answer. Continue from the current project workspace, preserve completed work, inspect the current state, and finish the remaining acceptance criteria. Do not repeat completed work.'},
+                                    awaiting_since=0, errors=0, error=None,
+                                    retry_current_cycle=True,
+                                    retry_current_cycle_reason='an interrupted model response',
+                                    interrupted_response_retries=retries,
+                                    next_retry=time.time()+min(60, 5*2**(retries-1)),
+                                )
+                                self.note(job, 'The previous model response was interrupted; Hearth will continue from the saved project in the same work cycle.')
+                                self.save(job)
+                                return
                             raise RuntimeError(str(latest['error']))
+                        job['interrupted_response_retries'] = 0
                         job.update(error=None, transport_retries=0)
                         job['handled_message'] = latest['id']
                         fp = fingerprint(latest)

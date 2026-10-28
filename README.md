@@ -42,7 +42,7 @@ all documented in their own sections below.
 
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, response copy-to-clipboard, model switching, and supported reasoning displays |
+| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
@@ -407,6 +407,24 @@ project directory. Choose a configured local model, describe a task, follow its
 progress, and respond when the agent needs input. Agent task supervision and
 model testing serve different purposes: agent sessions work on real projects;
 the evaluation suite checks model responses using simulated workflows.
+The supervisor uses the durable completion time on the latest assistant message
+when reconciling a finished response, so a delayed session activity indicator does
+not leave the task marked as working. If OpenCode reports activity for 30 minutes
+without a new response, tool update, or streamed model token, Hearth marks the
+assignment as needing review so it can be resumed. Agent conversation logs also
+include OpenCode tool errors to help explain failed steps. During long model turns,
+Activity reports the count of tokens received from the local model so you can tell
+that generation is progressing. Shell tool inputs appear as shell commands in the
+conversation log. If the selected model is already loaded with at least 16K context,
+Hearth reuses it instead of unloading and loading it again. If an OpenCode response is
+interrupted, Hearth continues from the saved project in the same work cycle, with a
+review state after three consecutive interruptions. When a parked agent container is
+restarted, Hearth refreshes its service address before reconnecting. Agents are
+instructed to keep files and scratch work inside the project workspace and use the
+tools and dependencies already available in the container.
+When a blocked or interrupted assignment reconnects to an existing container,
+Hearth restores its saved PostgreSQL project workspace into that container before
+the agent continues.
 
 For editor and terminal workflows, Hearth also provides integration with
 **OpenCode** and **Continue** through backend-specific OpenAI-compatible proxy
@@ -539,10 +557,17 @@ self-signed certificate warning (one-time per browser).
 
 The UI is protected by a login page backed by a `users` table. Login uses a browser-session
 cookie (closing the browser requires a fresh login) and expires after 30 minutes without a
-request.
-The sign-in and first administrator setup screens use a responsive AI workspace design,
-with animated connecting paths, travelling robot agents, and signal dots on larger screens.
-The animation respects reduced-motion preferences. The rest of Hearth uses the same
+request. In Chat, use **Copy chat** to copy every user message and assistant response in the
+current conversation as plain text. Each user message and assistant response also has its own
+copy control.
+Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same
+address opens the workspace. Chat navigation links throughout the app return to this root
+workspace route. The sign-in and first administrator setup screens use a
+responsive AI workspace design with the credentials form centered in the viewport on desktop
+and mobile, with the traveling robot agents, connecting paths, and signal dots visible around
+the form on small screens and animated behind its translucent card on larger screens. The
+animation respects reduced-motion
+preferences. The rest of Hearth uses the same
 deep charcoal surfaces, layered slate panels, soft mint accents, and bright neutral text
 across its pages and controls.
 
@@ -659,7 +684,9 @@ with it enabled. Disabling access blocks the page and API and requests stops for
 that user's active assignments. PostgreSQL stores each account's private project
 workspace. Hearth bundles the OpenCode worker in its agent container. The selected
 local model requires at least 16K context; the model picker excludes configurations
-that cannot fit its tools and prompt.
+that cannot fit its tools and prompt. When editing an existing assignment, its saved
+model stays selectable even if it falls below that limit, so other task settings can
+still be saved.
 
 PostgreSQL stores assignment records, activity and message history, including tool
 completion timestamps, sharing rules,
@@ -722,6 +749,8 @@ has been explicitly allowed to view; the global chat metrics stream is not used 
 agent content. Questions and permission controls appear on the assignment page
 when a response is needed. If the status says **Needs your help** but the request
 details have not loaded, use **Refresh request** in the notice to reload them.
+Agent responses and structured tool inputs, outputs, and errors are rendered as
+readable key/value text instead of raw JSON; shell inputs are shown as commands.
 You can also add instructions and pause, continue, or stop work from the same
 page. Detailed activity
 The activity feed and full activity history always put the newest timestamp at the top,

@@ -11,14 +11,48 @@
   const selectedShareUsers = new Map();
   let shareTaskId = null, shareSearchTimer;
   const active = new Set(['queued', 'running', 'waiting_input', 'verifying', 'pausing', 'stopping']);
+  const modelValue = model => JSON.stringify({providerID:model?.providerID || '',id:model?.id || ''});
   async function api(path, body, method='POST') {
     const r = await fetch(path, body === undefined ? {} : {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const data = await r.json(); if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`); return data;
   }
   function node(tag, text, parent) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (parent) parent.append(n); return n; }
+  function structuredValue(value) {
+    if (typeof value !== 'string') return value;
+    const trimmed=value.trim();
+    if (!trimmed) return value;
+    try { return JSON.parse(trimmed); } catch (_) { return value; }
+  }
+  function readableLabel(value) {
+    return String(value).replace(/([a-z0-9])([A-Z])/g,'$1 $2').replace(/[_-]+/g,' ').replace(/^./,c=>c.toUpperCase());
+  }
+  function readableLines(value, depth=0) {
+    const indent='  '.repeat(depth);
+    if (Array.isArray(value)) return value.map(item=>`${indent}• ${readableLines(item,depth+1).trimStart()}`).join('\n');
+    if (value && typeof value==='object') return Object.entries(value).map(([key,item])=>{
+      const label=readableLabel(key);
+      if (item && typeof item==='object') return `${indent}${label}:\n${readableLines(item,depth+1)}`;
+      return `${indent}${label}: ${item == null ? '—' : String(item)}`;
+    }).join('\n');
+    return `${indent}${value == null ? '—' : String(value)}`;
+  }
+  function formatReadable(value) {
+    const parsed=structuredValue(value);
+    if (parsed && typeof parsed==='object') return readableLines(parsed);
+    return parsed == null ? '' : String(parsed);
+  }
+  function formatToolInput(name, input) {
+    if (!input) return '';
+    const values=structuredValue(input);
+    if (name==='shell' && values && typeof values==='object') {
+      const command=values.command ?? values.cmd;
+      if(typeof command==='string' && command.trim())return `$ ${command}`;
+    }
+    return formatReadable(values);
+  }
   function retainSavedModel(select, model) {
     if(!select || !model || typeof model.providerID!=='string' || typeof model.id!=='string')return;
-    const value=JSON.stringify({providerID:model.providerID,id:model.id});
+    const value=modelValue(model);
     let option=[...select.options].find(item=>item.value===value);
     if(!option) {
       option=new Option(`Saved model: ${model.id} (not currently available)`,value);
@@ -170,14 +204,16 @@
       const messageTime=displayTime(m.time);
       if(messageTime)node('time',messageTime,head);
       for (const p of m.content) {
-        if(p.type==='text' && p.text) node('pre',p.text,messages);
+        if(p.type==='text' && p.text) node('pre',formatReadable(p.text),messages);
         else if(p.type==='tool') {
           const activity=node('details',undefined,messages);activity.className='agent-container-activity';activity.open=true;
           const toolTime=displayTime(p.time || m.time);
           node('summary',`${p.name || 'Container tool'} · ${p.status || p.state || 'update'}${toolTime ? ` · ${toolTime}` : ''}`,activity);
-          if(p.input)node('pre',`Input\n${p.input}`,activity);
-          if(p.output)node('pre',`Output\n${p.output}`,activity);
-          if(!p.input && !p.output)node('p','The container has not returned output for this step yet.',activity);
+          const toolInput=formatToolInput(p.name,p.input);
+          if(toolInput)node('pre',p.name==='shell' ? `Command\n${toolInput}` : `Input\n${toolInput}`,activity);
+          if(p.error)node('pre',`Error\n${formatReadable(p.error)}`,activity);
+          if(p.output)node('pre',`Output\n${formatReadable(p.output)}`,activity);
+          if(!p.input && !p.output && !p.error)node('p','The container has not returned output for this step yet.',activity);
         }
       }
     }
@@ -513,13 +549,13 @@
   el('agent-download')?.addEventListener('click',()=>{if(task) window.location.assign(`/api/agent-tasks/${task.id}/download`);});
   if(el('agent-model') || el('agent-resume-model') || el('agent-edit-model')) api('/api/agent-tasks/models').then(({models})=>{
     for(const m of models) {
-      const value=JSON.stringify({providerID:m.providerID,id:m.id});
+      const value=modelValue(m);
       for(const select of [el('agent-model'),el('agent-resume-model'),el('agent-edit-model')].filter(Boolean)) {
         let option=[...select.options].find(item=>item.value===value);
         if(!option) { option=node('option',m.name,select); option.value=value; }
         option.textContent=m.name+(m.usable === false ? ' — needs larger context' : '');
         option.disabled=m.usable === false; option.title=m.reason || '';
-        if(select===el('agent-edit-model') && task?.model && value===JSON.stringify(task.model)) {
+        if(select===el('agent-edit-model') && task?.model && value===modelValue(task.model)) {
           option.disabled=false;
           if(m.usable===false)option.textContent=m.name+' — saved model (needs larger context)';
           delete option.dataset.savedModel;
@@ -532,7 +568,7 @@
     const preferred=loaded ? available.find(o=>{const value=JSON.parse(o.value);return value.id===loaded.id && value.providerID===loaded.providerID;}) : null;
     if(el('agent-model'))(preferred || available[0] || {}).selected=true;
     if(el('agent-resume-model')) {
-      const current=JSON.stringify(task?.model || {});
+      const current=modelValue(task?.model);
       el('agent-resume-model').value=(preferred || ([...el('agent-resume-model').options].find(o=>o.value===current && !o.disabled)) || available[0] || {}).value || '';
     }
     if(el('agent-edit-model') && task?.model) {
@@ -541,7 +577,7 @@
       if(editForm)editForm.dataset.modelTask=task.id;
     }
     if(el('agent-model') && cloneDraft?.model) {
-      const cloneModel=JSON.stringify({providerID:cloneDraft.model.providerID,id:cloneDraft.model.id});
+      const cloneModel=modelValue(cloneDraft.model);
       if([...el('agent-model').options].some(option=>option.value===cloneModel && !option.disabled))el('agent-model').value=cloneModel;
       else if(el('agent-create-status'))el('agent-create-status').textContent='Copied task settings. Its saved model is unavailable; choose an available model before starting.';
       cloneDraft=null;

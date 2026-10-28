@@ -30,7 +30,7 @@ with database.temporary_schema():
             browser = playwright.chromium.launch(headless=True, args=['--no-sandbox'])
             page = browser.new_page()
             page.goto(f'http://127.0.0.1:{server.server_port}/login')
-            expect(page.get_by_role('heading', name='Set up Hearth')).to_be_visible()
+            expect(page.get_by_role('heading', name='Create your space')).to_be_visible()
             username = 'first-admin-' + uuid.uuid4().hex
             page.locator('[name=username]').fill(username)
             page.locator('[name=password]').fill('first-admin-password')
@@ -43,7 +43,7 @@ with database.temporary_schema():
                 row = conn.execute('SELECT password_hash FROM users WHERE id=%s', (user['id'],)).fetchone()
             assert row['password_hash'] != 'first-admin-password'
             page.goto(f'http://127.0.0.1:{server.server_port}/login')
-            expect(page.get_by_role('heading', name='Hearth')).to_be_visible()
-            expect(page.get_by_role('button', name='Sign in')).to_be_visible()
+            expect(page.get_by_role('heading', name='Good to see you.')).to_be_visible()
+            expect(page.get_by_role('button', name='Sign in securely')).to_be_visible()
             browser.close()
             print('PASS browser first-visit admin creation, hashed password storage, and one-time setup transition')

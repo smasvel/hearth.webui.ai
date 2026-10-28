@@ -684,6 +684,10 @@ class ContainerOpenCode(OpenCode):
             return self.create(job)
         try:
             self.snapshot(session_id)
+            # PostgreSQL is the durable workspace checkpoint. Reapply it when a
+            # blocked or interrupted assignment reconnects so edits made while
+            # the container was parked are visible to the resumed agent.
+            self._sync_to_container(_name, job['owner'], workspace_id=job['id'])
             return session_id
         except Exception as exc:
             if 'container is missing' not in str(exc):
@@ -730,9 +734,34 @@ class ContainerOpenCode(OpenCode):
             if 'no such container' in message or 'no such object' in message:
                 raise RuntimeError('The isolated agent container is missing.') from exc
             raise
-        if running != 'true':
+        started = running != 'true'
+        if started:
             self._docker('start', name, timeout=60)
-        return _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
+        mapping = self._docker('port', name, '4096/tcp', timeout=15).strip()
+        host_port = mapping.splitlines()[0].rsplit(':', 1)[-1] if mapping else ''
+        if not host_port.isdigit():
+            raise RuntimeError('The isolated agent container did not publish its OpenCode service port.')
+        port = int(host_port)
+        if info.get('port') != port:
+            info['port'] = port
+            self._write_runtime(name, info)
+        endpoint = _EndpointOpenCode(f'http://127.0.0.1:{port}', info['password'])
+        if started:
+            deadline = time.monotonic()+45
+            while time.monotonic() < deadline:
+                try:
+                    endpoint.call('GET', '/api/agent', read_timeout=3)
+                    break
+                except requests.RequestException:
+                    time.sleep(.5)
+                except RuntimeError as exc:
+                    if not any(f'OpenCode {status}:' in str(exc)
+                               for status in (502, 503)):
+                        raise
+                    time.sleep(.5)
+            else:
+                raise RuntimeError('The OpenCode service did not restart inside the agent container.')
+        return endpoint
 
     @staticmethod
     def workspace_directory(_client, _job):

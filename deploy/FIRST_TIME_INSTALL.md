@@ -33,10 +33,16 @@ After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
 create the administrator account on first visit. These launchers run Hearth in
 the foreground; close the terminal to stop the app. Docker keeps PostgreSQL
-running in the background.
-The sign-in and initial administrator setup screens use a responsive AI workspace
-design with animated connecting paths, travelling robot agents, and signal dots on larger
-screens. The animation respects the browser's reduced-motion preference. The same
+running in the background. In Chat, **Copy chat** copies all user messages and assistant
+responses in the current conversation as plain text. Each user message and assistant response
+also has its own copy control. Opening the site root (`/`) sends signed-out visitors to
+`/login`, then returns signed-in users to the workspace; chat navigation links return to
+that root workspace route. The sign-in and initial
+administrator setup screens use a responsive AI workspace design with the credentials
+form centered in the viewport on desktop and mobile, with traveling robot agents,
+connecting paths, and signal dots visible around the form on small screens and animated
+behind its translucent card on larger screens.
+The animation respects the browser's reduced-motion preference. The same
 charcoal, slate, and mint color theme is used throughout Hearth's pages and controls.
 Preview the [animated sign-in screen](../docs/screenshots/login-animation.gif) or view
 the [login screenshot](../docs/screenshots/login.png).
@@ -165,11 +171,30 @@ shims before requests are forwarded to model servers.
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
 decision. Open a task to follow its live **Activity** feed.
+Agent responses and structured tool inputs, outputs, and errors appear as readable
+key/value text instead of raw JSON; shell inputs are shown as commands.
+When OpenCode has saved a completed assistant response, Hearth processes it even
+if OpenCode's session-wide activity indicator has not caught up yet. If OpenCode
+reports activity for 30 minutes without a new response, tool update, or streamed
+model token, the task moves to **Needs review** and can be resumed from its saved
+workspace. Conversation and tool logs include tool error details when OpenCode
+provides them. During long model turns, Activity also reports the number of tokens
+received from the local model. Shell tool inputs appear as commands in the conversation
+log. If the selected model is already loaded with at least 16K context, Hearth reuses
+it instead of unloading and loading it again.
+If OpenCode interrupts a response, Hearth continues from the saved project without
+advancing the work-cycle counter. After three consecutive interrupted responses, the
+assignment moves to **Needs review**. When a parked container starts again, Hearth
+refreshes its OpenCode service address before reconnecting. Agents are instructed to
+keep work inside the project workspace and use available tools and dependencies.
+When resuming an interrupted or blocked session, Hearth restores the PostgreSQL
+workspace checkpoint into the existing container before continuing the agent run.
 On phones, the Agents workflow tabs stay visible while scrolling, and the header
 lays out every app tab available to the signed-in user's role.
 When editing a task, its saved model stays selected even if it is missing from the
-current model list or that list cannot load. You can save other task edits while
-retaining that model; choosing a different model requires one currently available.
+current model list, cannot load, or falls below the worker's 16K context requirement.
+You can save other task edits while retaining that model; choosing a different model
+requires one currently available. Model matching is independent of JSON property order.
 Choose **Clone** beside an assignment to open a new task form prefilled with its
 prompt and settings. Review the copied values before starting. The cloned assignment
 uses a new project workspace and does not copy project files, activity, sharing, or
