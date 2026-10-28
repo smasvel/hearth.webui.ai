@@ -26,13 +26,18 @@ class AgentTaskTests(unittest.TestCase):
         self.client.create.return_value = 'ses_fixture'
         self.snap = {'active':False,'forms':[],'permissions':[],'inbox':[],'messages':[]}
         self.client.snapshot.side_effect = lambda _: copy.deepcopy(self.snap)
-        self.manager = Manager(Path(self.tmp.name)/'tasks',self.client)
         self.owner = app.users_store.create_user('agent-test-' + uuid.uuid4().hex, 'test-password', 'admin')['id']
         self.addCleanup(app.users_store.delete_user, self.owner)
+        import agent_store
+        list_tasks = agent_store.list_tasks
         self.stack=__import__('contextlib').ExitStack()
+        self.stack.enter_context(patch('agent_store.list_tasks', side_effect=lambda: [
+            job for job in list_tasks() if job.get('owner') == self.owner]))
+        self.manager = Manager(Path(self.tmp.name)/'tasks',self.client)
         self.stack.enter_context(patch('agent_tasks.Path.home', return_value=Path(self.tmp.name)))
         self.addCleanup(self.stack.close)
-        self.values = {'title':'Build project','goal':'Build and verify the feature','model':MODEL}
+        self.values = {'title':'Build project','goal':'Build and verify the feature',
+                       'model':MODEL,'assignee':'Test agent'}
 
     def create(self, **extra):
         job = self.manager.create({**self.values, **extra}, self.owner)
@@ -152,6 +157,45 @@ class AgentTaskTests(unittest.TestCase):
         self.assertFalse(retried['retry_current_cycle'])
         self.assertIn('retried after a provider connection reset',retried['activity'][-1]['text'].lower())
 
+    def test_interrupted_response_continues_in_same_cycle(self):
+        key = self.create()
+        self.snap['messages'] = [assistant('a_interrupted', '', error={
+            'type': 'aborted', 'message': 'Step interrupted'})]
+        self.manager.tick(); self.manager.tick()
+        pending = self.manager.get(key)
+        self.assertEqual(pending['status'], 'running')
+        self.assertEqual(pending['cycles'], 1)
+        self.assertEqual(pending['interrupted_response_retries'], 1)
+        self.assertIn('continue from the current project workspace',
+                      pending['pending_prompt']['text'].lower())
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+        retried = self.manager.get(key)
+        self.assertEqual(retried['cycles'], 1)
+        self.assertFalse(retried['retry_current_cycle'])
+        self.assertIn('retried after an interrupted model response',
+                      retried['activity'][-1]['text'].lower())
+
+    def test_three_interrupted_responses_block_with_continuation_ready_on_resume(self):
+        key = self.create()
+        for index in range(1, 4):
+            self.snap['messages'] = [assistant(f'a_interrupted_{index}', '', error={
+                'type': 'aborted', 'message': 'Step interrupted'})]
+            self.manager.tick(); self.manager.tick()
+            if index < 3:
+                self.manager.jobs[key]['next_retry'] = 0
+                self.manager.tick()
+        blocked = self.manager.get(key)
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertIsNotNone(blocked['pending_prompt'])
+        self.assertIn('continue from the saved project workspace',
+                      blocked['pending_prompt']['text'].lower())
+        prompt_count = self.client.prompt.call_count
+        self.manager.control(key, 'resume')
+        self.manager.tick()
+        self.assertEqual(self.client.prompt.call_count, prompt_count + 1)
+        self.assertEqual(self.manager.get(key)['status'], 'running')
+
     def test_questions_and_permissions_wait_for_real_answer(self):
         key=self.create();self.snap['active']=True
         self.snap['forms']=[{'id':'f1','fields':[]}]
@@ -195,6 +239,60 @@ class AgentTaskTests(unittest.TestCase):
         key=self.create();self.finish_turn(assistant('a1','Evidence\n'+MARKER))
         self.assertEqual(self.manager.get(key)['status'],'completed')
         self.assertIn('Agent-reported',self.manager.get(key)['completion'])
+
+    def test_failed_tool_error_is_preserved_in_saved_conversation(self):
+        key = self.create()
+        self.snap['active'] = True
+        self.snap['messages'] = [{
+            'id': 'tool-error', 'type': 'assistant',
+            'content': [{'type': 'tool', 'name': 'read', 'state': {
+                'status': 'error', 'error': {'name': 'FileError', 'message': 'Could not read requested file'},
+                'input': {'filePath': 'src/missing.py'}, 'content': [],
+            }}],
+        }]
+
+        self.manager.tick()
+
+        tool = self.manager.get(key)['messages'][0]['content'][0]
+        self.assertEqual(tool['status'], 'error')
+        self.assertEqual(tool['error'], '{"message": "Could not read requested file", "name": "FileError"}')
+
+    def test_active_model_token_progress_is_reported_in_activity(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'id': 42, 'source': job['assignee'], 'status': 'streaming', 'tokens': 537,
+        }]):
+            self.manager._record_live_progress(job, {'messages': []})
+
+        self.assertIn('537 tokens generated', job['activity'][-1]['text'])
+
+    def test_streaming_model_tokens_prevent_active_session_idle_block(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job.update(awaiting_since=time.time() - 1900,
+                   agent_last_progress_at=time.time() - 5)
+        self.snap['active'] = True
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'id': 43, 'source': job['assignee'], 'status': 'streaming', 'tokens': 800,
+        }]):
+            self.manager.tick()
+
+        self.assertEqual(self.manager.get(key)['status'], 'running')
+        self.assertIn('800 tokens generated', self.manager.get(key)['activity'][-1]['text'])
+
+    def test_active_session_without_new_model_tokens_enters_review(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job.update(awaiting_since=time.time() - 1900,
+                   agent_last_progress_at=time.time() - 1900)
+        self.snap['active'] = True
+        with patch('agent_tasks.live_requests.snapshot', return_value=[]):
+            self.manager.tick()
+
+        current = self.manager.get(key)
+        self.assertEqual(current['status'], 'blocked')
+        self.assertIn('30 minutes', current['error'])
 
     def test_completed_assignment_can_rerun_from_saved_task_state(self):
         key=self.create(enable_thinking=False)
@@ -533,6 +631,26 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(response.json['messages'], saved_messages)
         self.assertEqual(response.json['source'], 'saved')
 
+    def test_live_agent_snapshot_includes_tool_error_details(self):
+        self.login()
+        self.manager.get.return_value = {
+            'id': 'task-tool-error', 'owner': 'admin', 'shared_with': [],
+            'session_id': 'session-tool-error', 'status': 'running',
+            'activity': [], 'messages': [],
+        }
+        self.manager.client.live_messages.return_value = [{
+            'id': 'assistant-tool-error', 'type': 'assistant',
+            'content': [{'type': 'tool', 'name': 'read', 'state': {
+                'status': 'error', 'error': 'Requested path is not accessible',
+                'input': {'filePath': 'src/missing.py'}, 'content': [],
+            }}],
+        }]
+
+        response = self.client.get('/api/agent-tasks/task-tool-error/live-messages')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['messages'][0]['content'][0]['error'], 'Requested path is not accessible')
+
     def test_start_is_blocked_during_model_validation(self):
         self.login()
         with patch.object(app._model_test_registry,'list',return_value=[{'status':'running'}]):
@@ -549,6 +667,22 @@ class AgentAPITests(unittest.TestCase):
         with patch.object(app.fastflowlm,'requests_paused',return_value=False), patch.object(app.fastflowlm,'current_served_model',return_value=MODEL['id']), patch.object(app.requests,'get',return_value=Mock()) as get, patch.object(app,'_test_load_model') as load:
             app._prepare_agent_model({'model':MODEL})
         load.assert_not_called();get.assert_called_once()
+
+    def test_healthy_loaded_lemonade_model_is_reused_for_agent(self):
+        model = {'providerID': 'lemonade', 'id': 'Ornith-1.5-9B-GGUF'}
+        with patch.object(app.lemonade, 'list_models', return_value=[{
+                'id': model['id'], 'state': 'loaded', 'loaded_context_length': 32768,
+        }]), patch.object(app, '_test_load_model') as load:
+            app._prepare_agent_model({'model': model})
+        load.assert_not_called()
+
+    def test_loaded_model_with_small_context_is_reloaded_for_agent(self):
+        model = {'providerID': 'lemonade', 'id': 'Ornith-1.5-9B-GGUF'}
+        with patch.object(app.lemonade, 'list_models', return_value=[{
+                'id': model['id'], 'state': 'loaded', 'loaded_context_length': 8192,
+        }]), patch.object(app, '_test_load_model') as load:
+            app._prepare_agent_model({'model': model})
+        load.assert_called_once_with({'backend': 'lemonade', 'id': model['id']})
 
     def test_explicit_resume_loads_a_manually_unloaded_model(self):
         with patch.object(app.fastflowlm,'requests_paused',return_value=True), patch.object(app,'_test_load_model') as load:

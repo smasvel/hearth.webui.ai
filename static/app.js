@@ -12,6 +12,7 @@
   const chatInput = document.getElementById("chat-input");
   const sendBtn = document.getElementById("send-btn");
   const clearBtn = document.getElementById("clear-chat");
+  const copyChatBtn = document.getElementById("copy-chat");
   const securityScanBtn = document.getElementById("security-scan-btn");
   const temperatureEl = document.getElementById("temperature");
   const statusDot = document.getElementById("backend-status");
@@ -1298,6 +1299,44 @@
   clearBtn.addEventListener("click", newChat);
   newChatBtn.addEventListener("click", newChat);
 
+  copyChatBtn?.addEventListener("click", () => {
+    const entries = msgWraps.map((wrap) => {
+      const role = wrap.classList.contains("user") ? "You" :
+        wrap.classList.contains("assistant") ? "Assistant" : null;
+      if (!role) return null;
+      const bubble = wrap.querySelector(".msg");
+      if (!bubble) return null;
+      if (role === "Assistant") {
+        const answer = bubble.querySelector(".answer-content");
+        if (!answer) return null;
+        const copy = answer.cloneNode(true);
+        copy.querySelectorAll(".code-block-actions, .table-block-actions, .waiting-indicator")
+          .forEach((el) => el.remove());
+        const text = (copy.innerText || copy.textContent || "").trim();
+        return text ? `${role}:\n${text}` : null;
+      }
+      const text = (bubble.innerText || bubble.textContent || "").trim();
+      return text ? `${role}:\n${text}` : null;
+    }).filter(Boolean);
+
+    // The live assistant bubble is intentionally outside msgWraps until the server saves
+    // the turn. Include its current text so Copy chat also works during generation.
+    if (activeReplyEl) {
+      const answer = activeReplyEl.querySelector(".answer-content");
+      const copy = answer?.cloneNode(true);
+      copy?.querySelectorAll(".code-block-actions, .table-block-actions, .waiting-indicator")
+        .forEach((el) => el.remove());
+      const text = (copy?.innerText || copy?.textContent || "").trim();
+      if (text) entries.push(`Assistant:\n${text}`);
+    }
+    if (!entries.length) return;
+    navigator.clipboard.writeText(entries.join("\n\n")).then(() => {
+      const original = copyChatBtn.textContent;
+      copyChatBtn.textContent = "Copied";
+      setTimeout(() => { copyChatBtn.textContent = original; }, 1200);
+    }).catch(() => addSystemMessage("Could not copy chat to clipboard.", true));
+  });
+
   if (refreshBtn) refreshBtn.addEventListener("click", fetchModels);
   if (securityScanBtn) {
     securityScanBtn.addEventListener("click", () => {
@@ -1453,6 +1492,30 @@
     if (wrap.querySelector(".msg-actions")) return;
     const bar = document.createElement("div");
     bar.className = "msg-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-action-btn msg-copy-btn";
+    copyBtn.title = "Copy message";
+    copyBtn.setAttribute("aria-label", "Copy message");
+    copyBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="9" height="10" rx="1.5"></rect><path d="M11 13.5H3.5A1.5 1.5 0 0 1 2 12V4.5"></path></svg>';
+    copyBtn.addEventListener("click", () => {
+      const bubble = wrap.querySelector(".msg.user");
+      const text = (bubble?.innerText || bubble?.textContent || "").trim();
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.classList.add("copied");
+        copyBtn.textContent = "✓";
+        copyBtn.title = "Copied";
+        copyBtn.setAttribute("aria-label", "Copied");
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="9" height="10" rx="1.5"></rect><path d="M11 13.5H3.5A1.5 1.5 0 0 1 2 12V4.5"></path></svg>';
+          copyBtn.title = "Copy message";
+          copyBtn.setAttribute("aria-label", "Copy message");
+        }, 1200);
+      }).catch(() => addSystemMessage("Could not copy message to clipboard.", true));
+    });
+    bar.appendChild(copyBtn);
     bar.appendChild(makeActionBtn("Edit", "Edit this message and resend", () => startEditUser(wrap)));
     bar.appendChild(makeActionBtn("Regenerate", "Resend this message for a new reply", () => {
       if (busy) return;
