@@ -37,3 +37,10 @@ backups/
 .aws/
 *.pem
 *.key
+
+# Local scratch artifacts
+/.html
+/True
+/test-user
+/wait-time-snapshot.yml
+/docs/screenshots/downloads.png
