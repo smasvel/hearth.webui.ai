@@ -1218,7 +1218,8 @@ def chat_stream(
     live the param is accepted without error by both the llamacpp-recipe and flm-recipe
     (FastFlowLM) paths; pass frequency_penalty=None to disable if it ever fights a
     specific model's own output in a way that matters more than the safety net."""
-    payload: dict = {"model": model, "messages": messages, "temperature": temperature, "stream": True}
+    payload: dict = {"model": model, "messages": messages, "temperature": temperature, "stream": True,
+                     "stream_options": {"include_usage": True}}
     if max_tokens:
         payload["max_tokens"] = max_tokens
     if frequency_penalty:

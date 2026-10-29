@@ -137,6 +137,8 @@ def _record_chat_metric(*, started: float, source: str, model: str,
 def chat_completions():
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
+    if body.get("stream"):
+        body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
     body = model_test_profiles.apply(body, "lmstudio")
     body = agent_request_policy.prepare(body, compact_history=False, qwen_penalty=False)
     try:
@@ -193,11 +195,14 @@ def chat_completions():
                         continue
                     try:
                         obj = json.loads(payload)
-                        delta = obj["choices"][0]["delta"]
                     except (KeyError, IndexError, TypeError, json.JSONDecodeError):
                         continue
                     if obj.get("usage"):
                         usage = obj["usage"]
+                    try:
+                        delta = obj["choices"][0]["delta"]
+                    except (KeyError, IndexError, TypeError):
+                        continue
                     content_piece = delta.get("content") or ""
                     if content_piece:
                         pending_chars += len(content_piece)

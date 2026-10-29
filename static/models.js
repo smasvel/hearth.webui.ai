@@ -78,6 +78,7 @@
   const NON_CHAT = ["embeddings", "transcription", "tts", "image", "video"];
 
   let models = [];
+  let fetchingModels = false;
   let busy = false;
   let busyModelId = null;   // which card is mid-load/unload/delete, so it can show that visibly
   let busyLabel = "";       // "Loading" / "Unloading" / "Deleting", shown on the card + toast
@@ -106,6 +107,8 @@
   }
 
   async function fetchModels() {
+    if (fetchingModels) return;
+    fetchingModels = true;
     try {
       const res = await fetch("/api/models");
       const data = await res.json();
@@ -114,6 +117,8 @@
       render();
     } catch (err) {
       groupsEl.innerHTML = `<p class="hint">Could not load models: ${esc(err.message)}</p>`;
+    } finally {
+      fetchingModels = false;
     }
   }
 
@@ -138,7 +143,7 @@
       chip(models.length, "on disk") +
       chip(loaded.length, "loaded") +
       chip(fmtSize(totalGb) || "—", "total size") +
-      chip(models.filter(m => m.resource_warning).length, "with resource warnings") +
+      chip(models.filter(m => m.resource_warning || m.load_status?.state === "error").length, "with warnings") +
       `</div>` + loadedHtml;
   }
 
@@ -212,6 +217,17 @@
         entry.append(source, excerpt); evidence.appendChild(entry);
       }
       note.append(summary, scope, evidence); box.appendChild(note);
+      actions.appendChild(box);
+    }
+    if (m.load_status?.state === "error") {
+      const box = document.createElement("div");
+      box.className = "model-load-warning model-load-error";
+      const label = document.createElement("div");
+      label.className = "model-load-warning-label";
+      label.textContent = "⚠ Latest load failed";
+      const message = document.createElement("div");
+      message.textContent = m.load_status.error || "The model could not be loaded.";
+      box.append(label, message);
       actions.appendChild(box);
     }
     // Disabled (not just hidden) while this specific card has an operation in flight, so a
@@ -309,7 +325,7 @@
     for (const g of ordered) {
       let list = models.filter((m) => m.backend === g.key);
       if (q) list = list.filter((m) => (m.id || "").toLowerCase().includes(q));
-      if (warningsOnlyEl?.checked) list = list.filter(m => m.resource_warning);
+      if (warningsOnlyEl?.checked) list = list.filter(m => m.resource_warning || m.load_status?.state === "error");
       if (!list.length) continue;
       shown += list.length;
       const section = document.createElement("div");
@@ -473,4 +489,7 @@
   el("refresh").addEventListener("click", fetchModels);
   searchEl.addEventListener("input", renderGroups);
   fetchModels();
+  setInterval(() => {
+    if (document.visibilityState === "visible") fetchModels();
+  }, 5000);
 })();

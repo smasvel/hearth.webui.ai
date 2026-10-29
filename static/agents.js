@@ -520,7 +520,7 @@
     catch(e){el('agent-network').textContent=e.message;}
   });
   el('agent-rerun')?.addEventListener('click',async()=>{
-    if(!task || task.status!=='completed' || !window.confirm('Run this assignment again from its latest saved project files? The original completion and activity will remain in its history.'))return;
+    if(!task || !['completed','stopped'].includes(task.status) || !window.confirm('Run this assignment again from its latest saved project files? The original activity will remain in its history.'))return;
     const button=el('agent-rerun');
     button.disabled=true;
     const status=el('agent-rerun-status');

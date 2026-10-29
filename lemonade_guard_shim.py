@@ -581,6 +581,8 @@ def chat_completions():
     body = request.get_json(force=True, silent=True) or {}
     body = model_test_profiles.apply(body, "lemonade")
     body = _prepare_agent_request(body)
+    if body.get("stream"):
+        body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
     client_body = body
     try:
         body = _normalize_tool_choice(body)
@@ -698,8 +700,18 @@ def chat_completions():
                         continue
                     try:
                         obj = json.loads(payload)
+                    except (TypeError, json.JSONDecodeError):
+                        out_line = raw_line + b"\n"
+                        if buffer_tool_output:
+                            outgoing.append(out_line)
+                        else:
+                            yield out_line
+                        continue
+                    if obj.get("usage"):
+                        usage = obj["usage"]
+                    try:
                         delta = obj["choices"][0]["delta"]
-                    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                    except (KeyError, IndexError, TypeError):
                         out_line = raw_line + b"\n"
                         if buffer_tool_output:
                             outgoing.append(out_line)
@@ -722,8 +734,6 @@ def chat_completions():
                         outgoing.append(out_line)
                     else:
                         yield out_line
-                    if obj.get("usage"):
-                        usage = obj["usage"]
                     content_piece = delta.get("content") or ""
                     if content_piece:
                         pending_chars += len(content_piece)

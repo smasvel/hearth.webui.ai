@@ -311,6 +311,14 @@
                        min="1000" max="100000000" step="1" value="2000000" />
               </label>
             </div>
+            <div class="download-row">
+              <label class="hint">
+                Max tool-call retries (rounds) per response
+                <input id="settings-chat-max-tool-rounds" class="panel-input" type="number"
+                       min="1" max="64" step="1" value="6" />
+              </label>
+            </div>
+            <p class="hint">Higher values allow longer multi-step tool use. This applies to Hearth chat and does not change OpenCode/Continue.</p>
           </div>
 
           <div class="console-card span-all">

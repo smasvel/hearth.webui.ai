@@ -175,9 +175,9 @@ Agent responses and structured tool inputs, outputs, and errors appear as readab
 key/value text instead of raw JSON; shell inputs are shown as commands.
 When OpenCode has saved a completed assistant response, Hearth processes it even
 if OpenCode's session-wide activity indicator has not caught up yet. If OpenCode
-reports activity for 30 minutes without a new response, tool update, or streamed
-model token, the task moves to **Needs review** and can be resumed from its saved
-workspace. Conversation and tool logs include tool error details when OpenCode
+waits up to 60 minutes for a model's first response token; after generation starts,
+30 minutes without a new response, tool update, or streamed token moves the task to
+**Needs review**. It can be resumed from its saved workspace. Conversation and tool logs include tool error details when OpenCode
 provides them. During long model turns, Activity also reports the number of tokens
 received from the local model. Shell tool inputs appear as commands in the conversation
 log. If the selected model is already loaded with at least 16K context, Hearth reuses
@@ -239,13 +239,15 @@ it. Anyone with assignment access can edit the share list; the owner retains own
 Shared users can access the assignment's project files and download its completed
 project. They can also create, edit, pause, resume,
 and delete recurring schedules linked to assignments shared with them.
-Completed assignments have a **Run again** action that queues a fresh execution from the
-latest saved project files while retaining the assignment's settings and activity history.
+Completed and stopped assignments have a **Run again** action that queues a fresh
+execution from the latest saved project files while retaining the assignment's settings
+and activity history.
 Loaded support models such as embeddings do not take precedence over a loaded coding
 model in that picker. LM Studio's loaded-instance data is included when detecting the
 loaded coding model.
 If OpenCode reports idle before its assistant result is available, Hearth continues
-polling for up to 30 minutes. A session that stays idle is then marked **Needs review**
+polling for up to 60 minutes while waiting for the first model token, then uses a
+30-minute inactivity limit after output begins. A session that stays idle is then marked **Needs review**
 without repeated worker errors. OpenCode's **CRITICAL - MAXIMUM STEPS REACHED** response
 also marks the assignment **Needs review** even if the session still reports active; use
 **Continue** after reviewing the saved work to resume it. Resuming keeps the assignment's
@@ -327,7 +329,15 @@ Install and start at least one supported model runtime, then configure its URL
 and credentials under Settings. LM Studio's default endpoint is
 `http://localhost:1234`; Lemonade's is `http://localhost:13305`. Download a model
 and load it from Models. PostgreSQL setup does not install model weights.
-Model loading and lifecycle controls are on **Models**. Open **Model tests** from
+Model loading and lifecycle controls are on **Models**. Deletion is blocked only for
+a model currently assigned to active agent work or included in an active model test;
+other offline models can be deleted while that work continues. For LM Studio, Hearth
+resolves model aliases through the local installed-model index and verifies the model entry
+under its models directory. Files may link into the Hugging Face cache; Hearth removes those
+links without traversing their targets. Failed loads appear on their model cards and refresh
+across open Models pages every five seconds. Hearth clears the current error after a
+successful load and keeps its reviewed model warning dismissed until a later load attempt
+fails. Open **Model tests** from
 the navigation, choose an installed chat model, and run its checks individually.
 The page has tabs for compatibility, tool calling, model reasoning, and model
 security behavior. The reasoning tab asks 12 original questions one at a time and
@@ -348,9 +358,14 @@ returns prose or another function. It also converts supported model-native tool 
 structured calls only for functions offered in that request. An instruction not to
 repeat a question does not suppress a later explicit tool action in the same turn. The
 FastFlowLM `minicpm-v-4.7:1b` path has its own tool-use reminder and exact named-call
-handling. It can perform up to six tool rounds for multi-step browser tasks, then
+handling. By default, it can perform up to six tool rounds for multi-step browser tasks, then
 requests a text-only summary of the results; other FastFlowLM models use their
-existing behavior. Model registries, test reports, compatibility profiles, and reviewed
+existing behavior. Administrators can set Hearth chat's maximum tool-call retries
+(rounds) per response under Settings (1–64, default 6); changes apply to the next chat request.
+When browser tools are available, Hearth adds their usage guidance to the leading system
+message and combines system instructions into one leading message for chat templates that
+require system instructions first.
+Model registries, test reports, compatibility profiles, and reviewed
 resource notes are stored in PostgreSQL. A one-time startup migration imports existing
 model-test reports and KoboldCPP/vLLM registry files, then removes those legacy files.
 Back up PostgreSQL to preserve this metadata. Test reports can still be downloaded as JSON.
@@ -388,6 +403,9 @@ captured request/response traces after two confirmation warnings. In-flight rows
 visible and their completed entries are recorded after they finish.
 Rejected agent relay chat requests appear as failed 403 entries labeled with the agent
 name and model; Hearth does not read or save their prompt body.
+For streamed chat requests, Hearth asks Lemonade, FastFlowLM, and LM Studio for token
+usage and records generated-token counts when the backend supplies them. Historical rows
+created without usage counts remain unknown.
 Metrics tables scroll horizontally inside their panels on phones. The model report uses
 fixed shared column widths to keep headers aligned with their values; dashboard cards
 and filters fit the available screen width.

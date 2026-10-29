@@ -116,13 +116,17 @@ app.config.update(
 )
 
 _SESSION_IDLE_SECONDS = 30 * 60
-# Built-in defaults for the chat request limits. An admin can override all four from the
+# Built-in defaults for the chat request limits. An admin can override these from the
 # Settings panel (see _chat_limits()); by default a request that omits max_tokens uses the
 # full cap rather than the old 8192, so Hearth's own chat no longer stops short on max length.
 _DEFAULT_CHAT_MAX_TOKENS = 32768
 _MAX_CHAT_MAX_TOKENS = 32768
 _MAX_CHAT_MESSAGES = 500
 _MAX_CHAT_MESSAGE_CHARS = 2_000_000
+_model_load_status: dict[tuple[str, str], dict] = {}
+_model_load_status_lock = threading.Lock()
+_DEFAULT_CHAT_TOOL_ROUNDS = 6
+_MAX_CHAT_TOOL_ROUNDS = 64
 
 # settings_store keys for the admin-editable chat limits, mapped to their built-in defaults.
 _CHAT_LIMIT_DEFAULTS = {
@@ -130,6 +134,7 @@ _CHAT_LIMIT_DEFAULTS = {
     "chat_max_max_tokens": _MAX_CHAT_MAX_TOKENS,
     "chat_max_messages": _MAX_CHAT_MESSAGES,
     "chat_max_message_chars": _MAX_CHAT_MESSAGE_CHARS,
+    "chat_max_tool_rounds": _DEFAULT_CHAT_TOOL_ROUNDS,
 }
 # Absolute bounds POST /api/settings accepts, so a stray digit can't make every chat request
 # fail validation. These are the store's safety rails, not the effective limits.
@@ -138,6 +143,7 @@ _CHAT_LIMIT_BOUNDS = {
     "chat_max_max_tokens": (1, 1_000_000),
     "chat_max_messages": (1, 100_000),
     "chat_max_message_chars": (1_000, 100_000_000),
+    "chat_max_tool_rounds": (1, _MAX_CHAT_TOOL_ROUNDS),
 }
 # OpenCode compaction settings baked into the generated config (see help_data.compaction_settings).
 # Both accept non-negative integers; an empty value clears the override.
@@ -1854,7 +1860,29 @@ def api_list_models():
                'vllm': vllm, 'kobold': kobold}
     local_backends = {name for name, client in clients.items()
                       if urlsplit(client.base_url()).hostname in ('localhost', '127.0.0.1', '::1')}
-    return jsonify({"models": model_resource_warnings.annotate(models, local_backends)})
+    annotated = model_resource_warnings.annotate(models, local_backends)
+    try:
+        successful_loads = model_metadata_store.successful_model_loads()
+    except Exception:
+        successful_loads = set()
+    with _model_load_status_lock:
+        for model in annotated:
+            key = (model.get("backend", ""), str(model.get("id", "")).casefold())
+            if model.get("state") == "loaded":
+                _model_load_status.pop(key, None)
+                if key not in successful_loads:
+                    try:
+                        model_metadata_store.mark_model_load_success(*key)
+                        successful_loads.add(key)
+                    except Exception as exc:
+                        print(f"[models] Could not save observed loaded state for {model.get('id')}: {exc}", flush=True)
+                model.pop("resource_warning", None)
+            elif key in successful_loads:
+                model.pop("resource_warning", None)
+            status = _model_load_status.get(key)
+            if status:
+                model["load_status"] = dict(status)
+    return jsonify({"models": annotated})
 
 
 def _lemonade_model_thinking_overrides() -> dict[str, bool]:
@@ -2791,9 +2819,55 @@ def _claim_selected_npu(backend, model: str):
         raise
 
 
+def _track_model_load_status(view):
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        body = request.get_json(force=True, silent=True) or {}
+        model_id = body.get("model")
+        if not isinstance(model_id, str) or not model_id:
+            return view(*args, **kwargs)
+        backend = next((name for name, client in (
+            ("sglang", sglang), ("fastflowlm", fastflowlm), ("vllm", vllm),
+            ("kobold", kobold), ("lemonade", lemonade),
+        ) if client.owns_model(model_id)), "lmstudio")
+        key = (backend, model_id.casefold())
+        with _model_load_status_lock:
+            _model_load_status[key] = {"state": "loading", "updated_at": time.time()}
+        try:
+            result = view(*args, **kwargs)
+            response = app.make_response(result)
+            payload = response.get_json(silent=True) or {}
+            with _model_load_status_lock:
+                if response.status_code < 400 and payload.get("ok"):
+                    _model_load_status.pop(key, None)
+                    try:
+                        model_metadata_store.mark_model_load_success(backend, model_id)
+                    except Exception as exc:
+                        print(f"[models] Could not save successful load state for {model_id}: {exc}", flush=True)
+                else:
+                    try:
+                        model_metadata_store.clear_model_load_success(backend, model_id)
+                    except Exception as exc:
+                        print(f"[models] Could not clear successful load state for {model_id}: {exc}", flush=True)
+                    _model_load_status[key] = {
+                        "state": "error",
+                        "error": str(payload.get("error") or f"Load failed (HTTP {response.status_code})"),
+                        "updated_at": time.time(),
+                    }
+            return result
+        except Exception as exc:
+            with _model_load_status_lock:
+                _model_load_status[key] = {
+                    "state": "error", "error": str(exc), "updated_at": time.time(),
+                }
+            raise
+    return wrapped
+
+
 @app.post("/api/models/load")
 @admin_required
 @_serialized_reasoning_model_load
+@_track_model_load_status
 def api_load_model():
     if not getattr(_model_test_context, 'active', False) and _agent_tasks.busy():
         return jsonify({'error': 'Pause or stop assigned agents before changing models.'}), 409
@@ -3026,17 +3100,34 @@ def api_unload_model():
 @app.post("/api/models/delete")
 @admin_required
 def api_delete_model():
-    if not getattr(_model_test_context, 'active', False) and _agent_tasks.busy():
-        return jsonify({'error': 'Pause or stop assigned agents before changing models.'}), 409
-    if not getattr(_model_test_context, 'active', False) and any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
-        return jsonify({'error': 'A model test run is active. Cancel it or wait before changing models.'}), 409
     body = request.get_json(force=True, silent=True) or {}
     identifier = body.get("identifier")
     if not identifier:
         return jsonify({"error": "'identifier' is required"}), 400
-    if sglang.owns_model(identifier):
+
+    backend = next((name for name, client in (
+        ('sglang', sglang), ('vllm', vllm), ('kobold', kobold),
+        ('fastflowlm', fastflowlm), ('lemonade', lemonade),
+    ) if client.owns_model(identifier)), 'lmstudio')
+    if not getattr(_model_test_context, 'active', False):
+        if any(
+            job.get('status') in agent_tasks.ACTIVE
+            and (job.get('model') or {}).get('providerID') == backend
+            and (job.get('model') or {}).get('id') == identifier
+            for job in _agent_tasks.list()
+        ):
+            return jsonify({'error': 'This model is assigned to active agent work. Pause or stop that assignment before deleting it.'}), 409
+        if any(
+            job.get('status') in model_tests.ACTIVE
+            and any(target.get('backend') == backend and target.get('id') == identifier
+                    for target in job.get('targets', []))
+            for job in _model_test_registry.list()
+        ):
+            return jsonify({'error': 'This model is part of an active model test run. Cancel or wait for that run before deleting it.'}), 409
+
+    if backend == 'sglang':
         return jsonify({"error": "SGLang models cannot be deleted from Hearth; manage the external deployment."}), 409
-    if vllm.owns_model(identifier):
+    if backend == 'vllm':
         # vllm.delete_model() unloads first itself if this is the currently-served
         # model — no separate best-effort unload needed here, unlike the Lemonade
         # branch below (that unload lives inside vllm_client, not app.py, since it
@@ -3046,19 +3137,19 @@ def api_delete_model():
         except vllm.VLLMError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True})
-    if kobold.owns_model(identifier):
+    if backend == 'kobold':
         try:
             kobold.delete_model(identifier)
         except kobold.KoboldError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True})
-    if fastflowlm.owns_model(identifier):
+    if backend == 'fastflowlm':
         try:
             fastflowlm.delete_model(identifier)
         except fastflowlm.FastFlowLMError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True})
-    if lemonade.owns_model(identifier):
+    if backend == 'lemonade':
         # Frees memory first, disk second — a loaded-but-deleted model would be a
         # confusing dangling state. Best-effort: fine if it was already unloaded.
         try:
@@ -4421,6 +4512,7 @@ def api_start_chat():
 def api_chat():
     body = request.get_json(force=True, silent=True) or {}
     messages, max_tokens, validation_error = _validate_chat_request(body)
+    max_tool_rounds = _chat_limits()["chat_max_tool_rounds"]
     model = body.get("model")
     conversation_id = body.get("conversation_id")
     if validation_error:
@@ -4577,9 +4669,19 @@ def api_chat():
             # capability disclaimer in an earlier prompt.
             system_messages = [m for m in messages if m.get("role") == "system"]
             conversation_messages = [m for m in messages if m.get("role") != "system"]
-            messages = system_messages + [
-                {"role": "system", "content": "\n\n".join(system_parts)}
-            ] + conversation_messages
+            system_content = "\n\n".join(
+                [m.get("content", "") for m in system_messages] + system_parts
+            )
+            messages = [{"role": "system", "content": system_content}] + conversation_messages
+
+    # Several local chat templates accept a system message only at the start, and
+    # some reject more than one. Restored/API conversations can contain system turns
+    # anywhere, so fold them into one leading instruction before routing to a backend.
+    system_messages = [m for m in messages if m.get("role") == "system"]
+    if system_messages:
+        system_content = "\n\n".join(m.get("content", "") for m in system_messages)
+        conversation_messages = [m for m in messages if m.get("role") != "system"]
+        messages = [{"role": "system", "content": system_content}] + conversation_messages
 
     if lemonade.owns_model(model):
         backend, backend_error, backend_name = lemonade, lemonade.LemonadeError, "lemonade"
@@ -4681,12 +4783,20 @@ def api_chat():
 
                 loop_messages = list(messages)
                 if tools_list:
-                    loop_messages.insert(0, {"role": "system", "content":
+                    tool_instruction = (
                         "For online lookups, use the offered Playwright tools and inspect their returned evidence. "
                         "After page-changing actions, Hearth waits and inspects every open tab, including popups. "
                         "Use tabs, snapshots, find, click, and back as needed to investigate; do not stop at a "
-                        "loading message or claim a page was checked without its returned snapshot."})
-                MAX_TOOL_ROUNDS = 6
+                        "loading message or claim a page was checked without its returned snapshot."
+                    )
+                    first_system = next(
+                        (m for m in loop_messages if m.get("role") == "system"), None
+                    )
+                    if first_system is not None:
+                        existing_content = first_system.get("content") or ""
+                        first_system["content"] = f"{existing_content}\n\n{tool_instruction}"
+                    else:
+                        loop_messages.insert(0, {"role": "system", "content": tool_instruction})
                 tool_round = 0
                 while True:
                     if cancel_event.is_set():
@@ -4756,7 +4866,7 @@ def api_chat():
                                         usage = obj["usage"]
                     if cancel_event.is_set() or finish_reason != "tool_calls" or not round_tool_calls:
                         break
-                    if tool_round >= MAX_TOOL_ROUNDS:
+                    if tool_round >= max_tool_rounds:
                         tool_round_limited = True
                         break
                     tool_round += 1
@@ -4811,7 +4921,7 @@ def api_chat():
                     )
                 if tool_round_limited:
                     assistant_text += (
-                        "\n\n> ⚠️ Reached the tool-call round limit (6) while the model was still "
+                        f"\n\n> ⚠️ Reached the tool-call round limit ({max_tool_rounds}) while the model was still "
                         "requesting more tool calls. Ask it to continue or narrow the task."
                     )
                 if assistant_text and browse_screenshots:

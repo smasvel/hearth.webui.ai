@@ -59,6 +59,7 @@
   const settingsChatMaxMaxTokensEl = document.getElementById("settings-chat-max-max-tokens");
   const settingsChatMaxMessagesEl = document.getElementById("settings-chat-max-messages");
   const settingsChatMaxMessageCharsEl = document.getElementById("settings-chat-max-message-chars");
+  const settingsChatMaxToolRoundsEl = document.getElementById("settings-chat-max-tool-rounds");
   const settingsOpencodeCompactionKeepTokensEl = document.getElementById("settings-opencode-compaction-keep-tokens");
   const settingsOpencodeCompactionBufferEl = document.getElementById("settings-opencode-compaction-buffer");
   const settingsOpencodeAdvertiseLoadedContextEl = document.getElementById("settings-opencode-advertise-loaded-context");
@@ -162,6 +163,7 @@
     settingsChatMaxMaxTokensEl.value = data.chat_max_max_tokens ?? 32768;
     settingsChatMaxMessagesEl.value = data.chat_max_messages ?? 500;
     settingsChatMaxMessageCharsEl.value = data.chat_max_message_chars ?? 2000000;
+    settingsChatMaxToolRoundsEl.value = data.chat_max_tool_rounds ?? 6;
     settingsOpencodeCompactionKeepTokensEl.value = data.opencode_compaction_keep_tokens ?? 15000;
     settingsOpencodeCompactionBufferEl.value = data.opencode_compaction_buffer ?? "";
     settingsOpencodeAdvertiseLoadedContextEl.checked = data.opencode_advertise_loaded_context ?? true;
@@ -243,6 +245,7 @@
           chat_max_max_tokens: numOrNull(settingsChatMaxMaxTokensEl),
           chat_max_messages: numOrNull(settingsChatMaxMessagesEl),
           chat_max_message_chars: numOrNull(settingsChatMaxMessageCharsEl),
+          chat_max_tool_rounds: numOrNull(settingsChatMaxToolRoundsEl),
           opencode_compaction_keep_tokens: numOrNull(settingsOpencodeCompactionKeepTokensEl),
           opencode_compaction_buffer: numOrNull(settingsOpencodeCompactionBufferEl),
           opencode_advertise_loaded_context: settingsOpencodeAdvertiseLoadedContextEl.checked,

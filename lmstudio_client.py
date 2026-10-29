@@ -25,6 +25,7 @@ _DEFAULT_BASE_URL = "http://localhost:1234"
 LMS_CLI = shutil.which("lms") or os.path.expanduser("~/.lmstudio/bin/lms")
 EMBEDDING_MODEL_ID = os.environ.get("LMSTUDIO_EMBEDDING_MODEL_ID", "text-embedding-nomic-embed-text-v1.5")
 LMSTUDIO_MODELS_DIR = os.path.realpath(os.path.expanduser("~/.lmstudio/models"))
+LMSTUDIO_MODEL_INDEX_CACHE = os.path.expanduser("~/.lmstudio/.internal/model-index-cache.json")
 
 
 def base_url() -> str:
@@ -145,23 +146,94 @@ def unload_model(identifier: str) -> None:
     _run_lms(["unload", identifier], timeout=60)
 
 
+def _resolve_model_file(identifier: str, entry: dict) -> str:
+    """Resolve LM Studio's model key to an installed model file.
+
+    Some LM Studio CLI versions return the hub key (for example ``qwen/qwen3.5-4b``)
+    in ``path`` instead of the concrete GGUF path. Its local model index cache maps the
+    selected hub variant to the actual installed file and containing directory.
+    """
+    relative_path = entry.get("path")
+    if relative_path:
+        direct = os.path.abspath(os.path.join(LMSTUDIO_MODELS_DIR, relative_path))
+        if (_safe_model_entry_path(direct) and os.path.isfile(direct)):
+            return direct
+
+    try:
+        with open(LMSTUDIO_MODEL_INDEX_CACHE, encoding="utf-8") as cache_file:
+            index = json.load(cache_file)
+        records = index.get("models", []) if isinstance(index, dict) else []
+    except (OSError, ValueError, TypeError) as exc:
+        raise LMStudioError(
+            f"LM Studio's reported path for '{identifier}' is stale and its local model index could not be read."
+        ) from exc
+
+    hub_record = next((record for record in records
+                       if record.get("defaultIdentifier") == identifier
+                       or record.get("indexedModelIdentifier") == identifier), None)
+    concrete_id = (hub_record or {}).get("indexedModelIdentifier")
+    if hub_record and (hub_record.get("virtual") or {}).get("isAlt") is False:
+        selected_variant = entry.get("selectedVariant")
+        variants = (hub_record.get("virtual") or {}).get("alts", [])
+        selected = [variant for variant in variants
+                    if variant.get("virtualModelDefaultIdentifier") == selected_variant]
+        if len(selected) == 1:
+            concrete_id = selected[0].get("concreteModelIndexedModelIdentifier")
+        elif len(variants) == 1:
+            concrete_id = variants[0].get("concreteModelIndexedModelIdentifier")
+
+    concrete = next((record for record in records
+                     if record.get("indexedModelIdentifier") == concrete_id), None)
+    directory = (concrete or {}).get("containingDirAbsolutePath")
+    if not directory:
+        raise LMStudioError(
+            f"Could not resolve the concrete installed files for '{identifier}' from LM Studio's model index."
+        )
+    if concrete_id and "/" in concrete_id:
+        rel_file = concrete_id.split("/", 2)
+        if len(rel_file) == 3:
+            candidate = os.path.abspath(os.path.join(LMSTUDIO_MODELS_DIR, *rel_file))
+            indexed_directory = os.path.abspath(directory)
+            if (_safe_model_entry_path(candidate)
+                    and os.path.dirname(candidate) == indexed_directory
+                    and os.path.isfile(candidate)):
+                return candidate
+    raise LMStudioError(
+        f"Could not verify an installed model file for '{identifier}' under the LM Studio models directory."
+    )
+
+
+def _safe_model_entry_path(path: str) -> bool:
+    """Require a file path under the LM Studio models root without following its file symlink."""
+    if os.path.commonpath([path, LMSTUDIO_MODELS_DIR]) != LMSTUDIO_MODELS_DIR:
+        return False
+    current = LMSTUDIO_MODELS_DIR
+    relative_parent = os.path.relpath(os.path.dirname(path), LMSTUDIO_MODELS_DIR)
+    if relative_parent == os.curdir:
+        return True
+    for part in relative_parent.split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.islink(current) or not os.path.isdir(current):
+            return False
+    return True
+
+
 def delete_model(identifier: str) -> None:
     """Deletes a downloaded LM Studio model's actual files on disk.
 
     `lms` has no delete/rm/uninstall subcommand, and this used to refuse outright: `lms
-    ls --json`'s own reported `path` field was confirmed live to sometimes NOT match
-    reality (for 'qwen/qwen3.6-35b-a3b' it reported path "qwen/qwen3.6-35b-a3b", which
-    doesn't exist on disk, while the real download sits at
-    ~/.lmstudio/models/lmstudio-community/Qwen3.6-35B-A3B-GGUF/). That risk doesn't go
-    away here - it's handled by verification instead of by refusing: this re-derives the
-    path from a fresh `lms ls --json`, resolves it against LMSTUDIO_MODELS_DIR, and
-    requires the resulting file to actually exist on disk before deleting anything. A
+    ls --json`'s reported `path` can be a hub key instead of a file path. When that
+    happens, the selected variant is resolved through LM Studio's local model index
+    cache. The resulting file must exist under LMSTUDIO_MODELS_DIR before deleting
+    anything. A
     path that fails to resolve inside LMSTUDIO_MODELS_DIR, doesn't exist, or sits
     directly in the models root with no containing folder (would mean rmtree-ing the
     entire LM Studio library) raises instead of guessing further - same fail-closed
-    posture as before, just narrower.
+    posture as before, just narrower. Model files can themselves be symlinks into the
+    Hugging Face cache, so containment is checked on the installed link path and the
+    containing folder is removed without following that link.
 
-    Deletes the model's whole containing folder, not just the single file `path` names:
+    Deletes the model's whole containing folder, not just the single file the index names:
     confirmed live (2026-08-23, manually, before this function existed) that a real
     download's folder often holds companion files a single-file delete would silently
     orphan - `mmproj-*.gguf` for vision models, `config.json` - both present for the
@@ -176,13 +248,9 @@ def delete_model(identifier: str) -> None:
     if entry is None:
         raise LMStudioError(f"'{identifier}' is not a known LM Studio model.")
 
-    relative_path = entry.get("path")
-    if not relative_path:
-        raise LMStudioError(f"LM Studio reported no file path for '{identifier}' — refusing to guess.")
-
-    resolved = os.path.realpath(os.path.join(LMSTUDIO_MODELS_DIR, relative_path))
+    resolved = _resolve_model_file(identifier, entry)
     folder = os.path.dirname(resolved)
-    if os.path.commonpath([resolved, LMSTUDIO_MODELS_DIR]) != LMSTUDIO_MODELS_DIR:
+    if not _safe_model_entry_path(resolved):
         raise LMStudioError(
             f"Resolved path for '{identifier}' ({resolved}) is outside the LM Studio "
             "models directory — refusing to delete."
