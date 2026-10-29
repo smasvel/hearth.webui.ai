@@ -5031,7 +5031,7 @@ def api_chat():
 
 
 def _local_ipv4_addresses() -> list[str]:
-    """Best-effort discovery of this machine's LAN IPv4 addresses, for the cert SAN list."""
+    """Best-effort discovery of this machine's LAN IPv4 addresses."""
     import subprocess
 
     try:
@@ -5039,7 +5039,20 @@ def _local_ipv4_addresses() -> list[str]:
             ["hostname", "-I"], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:
-        return []
+        out = ""
+    if not out.strip():
+        # `hostname -I` is not available on macOS. Use the default route to discover
+        # the interface address there, without sending any traffic.
+        try:
+            import socket
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.connect(("192.0.2.1", 80))
+                out = probe.getsockname()[0]
+            finally:
+                probe.close()
+        except Exception:
+            return []
     addrs = []
     for tok in out.split():
         try:
@@ -5238,6 +5251,12 @@ if __name__ == "__main__":
     print(f"LM Studio backend: {lms.base_url()}")
     print(f"Lemonade (Ryzen AI NPU) backend: {lemonade.base_url()}")
     print(f"Serving on https://{host}:{port}  (self-signed cert, browser will warn once)")
+    for ip in _local_ipv4_addresses():
+        print(f"LAN access: https://{ip}:{port}")
+    ts_dns = help_data.tailscale_dns_name()
+    ts_url = help_data.tailscale_app_url(ts_dns, port)
+    if ts_url:
+        print(f"Tailscale access: {ts_url}")
     threading.Thread(target=_warm_up_startup_models, daemon=True).start()
     _agent_tasks.start_worker(lambda: not any(j["status"] in model_tests.ACTIVE for j in _model_test_registry.list()))
     app.run(host=host, port=port, ssl_context=ssl_context, threaded=True)
