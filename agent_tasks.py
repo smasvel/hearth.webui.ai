@@ -24,6 +24,8 @@ INTERRUPTED_ON_RESTART = {'running', 'waiting_input', 'verifying', 'pausing', 's
 RESUMABLE = {'paused', 'blocked', 'interrupted'}
 MARKER = '[HEARTH_TASK_COMPLETE]'
 MAX_STEPS_MARKER = 'CRITICAL - MAXIMUM STEPS REACHED'
+FIRST_TOKEN_TIMEOUT = 3600
+PROGRESS_TIMEOUT = 1800
 
 
 def text_of(message):
@@ -33,6 +35,16 @@ def text_of(message):
 def fingerprint(message):
     parts = [{'name': p.get('name'), 'state': p.get('state')} for p in message.get('content', []) if p.get('type') == 'tool']
     return hashlib.sha256(json.dumps([text_of(message), parts], sort_keys=True).encode()).hexdigest()
+
+
+def response_wait_timeout(job):
+    """Allow slow local-model prefill more time before any output token arrives."""
+    progress = job.get('agent_model_progress') or {}
+    try:
+        has_first_token = int(progress.get('tokens') or 0) > 0
+    except (TypeError, ValueError):
+        has_first_token = False
+    return PROGRESS_TIMEOUT if has_first_token else FIRST_TOKEN_TIMEOUT
 
 
 def is_premature_completion(message):
@@ -1053,11 +1065,16 @@ class Manager:
                         float(active_since),
                         float(job.get('agent_last_progress_at') or active_since),
                     )
-                    if time.time() - last_progress >= 1800:
-                        job.update(status='blocked', error=(
-                            'OpenCode reported an active session for 30 minutes without a new assistant response or tool update. '
-                            'Review the session and resume when ready.'))
-                        self.note(job, 'OpenCode reported activity without a new response or tool update for 30 minutes; assignment needs review.')
+                    wait_timeout = response_wait_timeout(job)
+                    if time.time() - last_progress >= wait_timeout:
+                        timeout_minutes = wait_timeout // 60
+                        reason = (
+                            f'No first model token arrived within {timeout_minutes} minutes.'
+                            if wait_timeout == FIRST_TOKEN_TIMEOUT else
+                            f'OpenCode reported an active session for {timeout_minutes} minutes without a new assistant response or tool update.'
+                        )
+                        job.update(status='blocked', error=reason + ' Review the session and resume when ready.')
+                        self.note(job, reason + ' Assignment needs review.')
                         self.save(job)
                         return
                     job.update(status='running', idle_polls=0)
@@ -1076,11 +1093,18 @@ class Manager:
                         # finishes persisting the assistant turn. Keep observing the
                         # durable session instead of converting an ordinary long wait
                         # into a worker failure that eventually requires review.
-                        elif time.time()-job.get('awaiting_since', time.time()) < 1800:
+                        elif time.time()-job.get('awaiting_since', time.time()) < response_wait_timeout(job):
                             return
                         else:
-                            job.update(status='blocked', error='OpenCode has been idle for 30 minutes without a new assistant result. Review the session and resume when ready.')
-                            self.note(job, 'OpenCode remained idle without a result; assignment needs review.')
+                            wait_timeout = response_wait_timeout(job)
+                            timeout_minutes = wait_timeout // 60
+                            reason = (
+                                f'No first model token arrived within {timeout_minutes} minutes.'
+                                if wait_timeout == FIRST_TOKEN_TIMEOUT else
+                                f'OpenCode has been idle for {timeout_minutes} minutes without a new assistant result.'
+                            )
+                            job.update(status='blocked', error=reason + ' Review the session and resume when ready.')
+                            self.note(job, reason + ' Assignment needs review.')
                             self.save(job)
                             return
                     else:

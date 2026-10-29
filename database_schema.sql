@@ -138,6 +138,14 @@ CREATE TABLE IF NOT EXISTS model_resource_warnings (
 );
 COMMENT ON TABLE model_resource_warnings IS
     'Reviewed model and backend resource observations used to annotate the model inventory.';
+CREATE TABLE IF NOT EXISTS model_load_successes (
+    backend TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    loaded_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (backend, model_id)
+);
+COMMENT ON TABLE model_load_successes IS
+    'Successful Hearth model loads used to dismiss reviewed model warnings until another load fails.';
 CREATE TABLE IF NOT EXISTS model_metadata_migrations (
     key TEXT PRIMARY KEY,
     migrated_at DOUBLE PRECISION NOT NULL

@@ -349,7 +349,8 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
     work. See app.py's worker() - it skips its own _claim_selected_npu for this exact case."""
     runtime_tag = resolve_model(model)
     payload = {"model": runtime_tag, "messages": messages, "temperature": temperature,
-               "stream": True, "enable_thinking": enable_thinking}
+               "stream": True, "stream_options": {"include_usage": True},
+               "enable_thinking": enable_thinking}
     if max_tokens:
         payload["max_tokens"] = min(max_tokens, flm_context.output_limit(runtime_tag)) if runtime_tag.startswith("qwen3.8") else max_tokens
     if tools:

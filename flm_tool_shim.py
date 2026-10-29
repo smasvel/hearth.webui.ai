@@ -1158,6 +1158,8 @@ def chat_completions():
         return {"error": {"message": "FastFlowLM was manually unloaded. Load a model in Hearth's Models panel to resume API requests.",
                           "type": "backend_unavailable", "code": "model_manually_unloaded"}}, 503
     body = request.get_json(force=True, silent=True) or {}
+    if body.get("stream"):
+        body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
     body = model_test_profiles.apply(body, "fastflowlm")
     # Break sessions already cycling on the former synthetic printf tool result.
     for message in reversed(body.get("messages") or []):
@@ -1264,8 +1266,19 @@ def chat_completions():
                         continue
                     try:
                         obj = json.loads(payload)
+                    except (TypeError, json.JSONDecodeError):
+                        out_line = raw_line + b"\n"
+                        chunks.append(out_line)
+                        if not buffer_tool_output:
+                            yield out_line
+                        continue
+                    if obj.get("usage"):
+                        # OpenAI-compatible streaming sends usage as a final event with
+                        # choices=[]; capture it before requiring a content delta.
+                        usage = obj["usage"]
+                    try:
                         delta = obj["choices"][0]["delta"]
-                    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                    except (KeyError, IndexError, TypeError):
                         out_line = raw_line + b"\n"
                         chunks.append(out_line)
                         if not buffer_tool_output:
@@ -1280,10 +1293,6 @@ def chat_completions():
                     chunks.append(out_line)
                     if not buffer_tool_output:
                         yield out_line
-                    if obj.get("usage"):
-                        # Real token count, when the backend sends one - swaps in for the
-                        # ~4-chars-per-token estimate live_requests.py otherwise uses.
-                        usage = obj["usage"]
                     content_piece = delta.get("content") or ""
                     if content_piece:
                         text_seen.append(content_piece)

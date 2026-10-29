@@ -63,7 +63,7 @@
 
         <div class="model-toolbar">
           <input id="model-search" class="panel-input" type="search" aria-label="Filter models by name" placeholder="Filter models by name…" autocomplete="off" />
-          <label class="model-warning-filter"><input id="model-warnings-only" type="checkbox" /> Resource warnings only</label>
+          <label class="model-warning-filter"><input id="model-warnings-only" type="checkbox" /> Warnings only</label>
           <details class="advanced model-load-opts">
             <summary>Load options (advanced)</summary>
             <div class="model-load-opts-grid">
@@ -76,8 +76,8 @@
           </details>
         </div>
 
-        <p class="hint model-resource-hint">Resource warnings identify recorded incidents on this machine.
-          Expand a warning to see the measurements, conditions, and log dates. Unmarked models have no reviewed warning.</p>
+        <p class="hint model-resource-hint">Warnings include current load failures and reviewed incidents on this machine.
+          Expand a reviewed warning to see its measurements, conditions, and log dates. Current load errors clear when the model loads successfully.</p>
 
         <div id="model-groups" class="model-groups">
           <p class="hint">Loading models…</p>

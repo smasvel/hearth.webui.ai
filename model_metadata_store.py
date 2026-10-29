@@ -35,6 +35,14 @@ def init_db():
                 PRIMARY KEY (backend, model_id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_load_successes (
+                backend TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                loaded_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (backend, model_id)
+            )
+        """)
         conn.execute("CREATE TABLE IF NOT EXISTS model_metadata_migrations (key TEXT PRIMARY KEY, migrated_at DOUBLE PRECISION NOT NULL)")
 
 
@@ -178,3 +186,26 @@ def resource_warnings():
         except (TypeError, ValueError):
             continue
     return result
+
+
+def mark_model_load_success(backend, model_id):
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO model_load_successes(backend, model_id, loaded_at) VALUES (%s, %s, %s) "
+            "ON CONFLICT(backend, model_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at",
+            (backend, str(model_id), time.time()),
+        )
+
+
+def clear_model_load_success(backend, model_id):
+    with database.connect() as conn:
+        conn.execute(
+            "DELETE FROM model_load_successes WHERE backend = %s AND lower(model_id) = lower(%s)",
+            (backend, str(model_id)),
+        )
+
+
+def successful_model_loads():
+    with database.connect() as conn:
+        rows = conn.execute("SELECT backend, model_id FROM model_load_successes").fetchall()
+    return {(row['backend'], str(row['model_id']).casefold()) for row in rows}

@@ -118,7 +118,15 @@ administrator to find models, then use **Models** to load and evaluate them.
    read the stored file path. The upload transfers the full model file to Hearth;
    ensure the host has enough disk space. The model then appears in **Models**.
 7. Open **Models** to load, unload, or delete installed models. Select a loaded
-   chat model in the conversation model picker.
+   chat model in the conversation model picker. Deleting a model is blocked while
+   active agent work or a model test run uses that same model; other offline models
+   remain available for deletion. For LM Studio models, Hearth resolves catalog aliases
+   through LM Studio's installed model index and verifies the model entry under its models
+   directory before removing its folder. Model files may link into the Hugging Face cache;
+   Hearth removes those links without traversing their targets. A failed load is shown on
+   its model card and refreshed across open Models pages every five seconds; the current
+   error clears after Hearth confirms a successful load. Reviewed model warnings stay
+   dismissed after a successful load and return if a later load attempt fails.
 8. Check the maximum context-token label shown on a **Downloads** result when
    metadata reports it. In **Models**, check the context limit shown on each label when choosing
    how much chat history to send. The displayed limit is the model/backend
@@ -203,9 +211,14 @@ that function offered. When the request also provides exact arguments, Hearth
 returns that named call even if the model replies with prose or another function.
 For FastFlowLM's `minicpm-v-4.7:1b`, Hearth adds a model-specific tool-use reminder,
 honors exact named calls, and suppresses calls on clear direct-answer turns. These
-adjustments are limited to that model; it can perform up to six tool rounds for
+adjustments are limited to that model; by default it can perform up to six tool rounds for
 multi-step browser tasks, then Hearth requests a text-only summary of the results.
 Other FastFlowLM models keep their existing path.
+For Hearth chat across backends, administrators can set the maximum tool-call retries
+(rounds) per response in Settings (1–64, default 6); the limit applies to the next chat request.
+When browser tools are available, Hearth adds their usage guidance to the leading system
+message and combines system instructions into one leading message for chat templates that
+require system instructions first.
 
 The local LLM test suite covers chat and streaming, tool selection, typed JSON
 arguments, parallel tool calls, file reads and edits, exact file content, error
@@ -409,9 +422,9 @@ model testing serve different purposes: agent sessions work on real projects;
 the evaluation suite checks model responses using simulated workflows.
 The supervisor uses the durable completion time on the latest assistant message
 when reconciling a finished response, so a delayed session activity indicator does
-not leave the task marked as working. If OpenCode reports activity for 30 minutes
-without a new response, tool update, or streamed model token, Hearth marks the
-assignment as needing review so it can be resumed. Agent conversation logs also
+not leave the task marked as working. Hearth waits up to 60 minutes for a model's
+first response token; after generation starts, 30 minutes without a new response,
+tool update, or streamed token marks the assignment as needing review. Agent conversation logs also
 include OpenCode tool errors to help explain failed steps. During long model turns,
 Activity reports the count of tokens received from the local model so you can tell
 that generation is progressing. Shell tool inputs appear as shell commands in the
@@ -772,9 +785,9 @@ restart can be resumed from the task page. Work that was queued but had not star
 remains queued across a restart and starts when the supervisor is ready.
 When Hearth changes the worker's tool policy, continuing an older session starts a fresh
 OpenCode session from the latest saved project checkpoint.
-Completed assignments show **Run again**. This queues a fresh execution of the same
-assignment from its latest saved project files and returns it to the queue while
-keeping its settings and activity history.
+Completed and stopped assignments show **Run again**. This queues a fresh execution
+of the same assignment from its latest saved project files and returns it to the queue
+while keeping its settings and activity history.
 When a verification command is configured, Hearth includes it in the agent's plan
 from the first prompt. The agent is instructed to inspect its prerequisites, create
 and save any required verifier or supporting files, run the command, and fix failures
@@ -800,7 +813,8 @@ while work is active, Hearth recreates it from the latest synchronized project c
 and continues the assignment.
 
 If OpenCode reports an idle session before a new assistant result is available, Hearth
-keeps polling for up to 30 minutes. A session that remains idle after that is marked
+keeps polling for up to 60 minutes while waiting for the first model token, then uses
+a 30-minute inactivity limit after output begins. A session that remains idle after that is marked
 **Needs review** once, rather than accumulating repeated worker errors; the selected
 model remains attached to the assignment when it is resumed. OpenCode's
 **CRITICAL - MAXIMUM STEPS REACHED** response also marks the assignment **Needs review**
@@ -890,7 +904,9 @@ entries are recorded after they finish.
 Rejected Hearth agent relay chat requests also appear as failed 403 rows with the
 agent name and model. Their prompt body is not read or saved.
 Streaming token detail is available for Hearth chat and OpenCode/Continue traffic through
-Lemonade or FastFlowLM; other LAN backends do not expose per-token proxy visibility.
+Lemonade, FastFlowLM, or LM Studio when the backend supplies usage counts; other LAN
+backends do not expose per-token proxy visibility. Hearth requests usage counts for streamed
+generations and records the final usage event when the backend provides it.
 Available measurements depend on the backend and configured proxy instrumentation.
 Metrics tables scroll horizontally within their own panels on phones. The model report
 uses fixed shared column widths so each header stays aligned with its values; dashboard
