@@ -55,6 +55,11 @@ all documented in their own sections below.
 
 ## Hearth in action
 
+Watch the [25-second Hearth feature demo with sound](docs/screenshots/hearth-feature-demo.mp4).
+The animated preview below is silent; open the video for the original music and sound effects.
+
+[![Watch the Hearth feature demo](docs/screenshots/hearth-feature-demo.gif)](docs/screenshots/hearth-feature-demo.mp4)
+
 Screenshots show the chat workspace, local model controls, model evaluation, the
 agent task editor, performance metrics, live request logs, and AI browser history.
 Chat and agent setup use fictional demo text. Metrics, live-log, and browser-history
@@ -565,8 +570,13 @@ python app.py
 ```
 
 On first run this generates a self-signed TLS cert/key in `certs/`. The server then listens on
-`https://0.0.0.0:5443` — open `https://localhost:5443` in a browser and accept the
-self-signed certificate warning (one-time per browser).
+`https://0.0.0.0:5443` — open `https://localhost:5443` on the Hearth computer and accept the
+self-signed certificate warning (one-time per browser). For another device on your tailnet,
+connect both devices to Tailscale and use the **Chat** link in **Help → Connect over Tailscale**.
+That trusted HTTPS link is available after Tailscale Serve is configured on the Hearth host;
+startup also prints it when detected. See [Tailscale remote access](#tailscale-remote-access-for-chat-and-coding-models).
+For same-network access, use the `LAN access` URL printed at startup. `localhost` on another
+computer refers to that computer, so it cannot reach Hearth.
 
 The UI is protected by a login page backed by a `users` table. Login uses a browser-session
 cookie (closing the browser requires a fresh login) and expires after 30 minutes without a
@@ -575,11 +585,11 @@ current conversation as plain text. Each user message and assistant response als
 copy control.
 Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same
 address opens the workspace. Chat navigation links throughout the app return to this root
-workspace route. The sign-in and first administrator setup screens use a
-responsive AI workspace design with the credentials form centered in the viewport on desktop
-and mobile, with the traveling robot agents, connecting paths, and signal dots visible around
-the form on small screens and animated behind its translucent card on larger screens. The
-animation respects reduced-motion
+workspace route. The sign-in and first administrator setup screens use a responsive AI
+workspace design with the credentials form centered on desktop and mobile. Six animated
+robot minions patrol the scene with blinking faces, waving arms, glowing thrusters, task
+labels, moving route lights, and connecting paths. The crew frames the sign-in form without
+covering it, including on small screens, and respects the browser's reduced-motion
 preferences. The rest of Hearth uses the same
 deep charcoal surfaces, layered slate panels, soft mint accents, and bright neutral text
 across its pages and controls.

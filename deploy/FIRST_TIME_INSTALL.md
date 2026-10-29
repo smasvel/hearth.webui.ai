@@ -30,8 +30,20 @@ In Chat, if regenerating a reply fails, the previous reply remains visible in a 
 dimmed bubble labeled with the failure. A successful regeneration replaces it normally.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
-`bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` and
-create the administrator account on first visit. These launchers run Hearth in
+`bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` on the
+Hearth computer and create the administrator account on first visit. For a Mac laptop
+outside the host's Wi-Fi, connect both devices to your tailnet and open **Help → Connect
+over Tailscale → Chat**. This trusted HTTPS link appears after Tailscale Serve is configured
+on the Hearth host; the startup output prints it when detected. To configure a private web
+route on the host, install and sign in to Tailscale, then run:
+
+```bash
+tailscale serve --bg --https=8443 https+insecure://127.0.0.1:5443
+```
+
+Keep Tailscale connected on the Mac as well. The Serve URL is private to devices allowed
+on your tailnet. `localhost` only identifies the computer where the browser is running.
+These launchers run Hearth in
 the foreground; close the terminal to stop the app. Docker keeps PostgreSQL
 running in the background. In Chat, **Copy chat** copies all user messages and assistant
 responses in the current conversation as plain text. Each user message and assistant response
@@ -39,10 +51,11 @@ also has its own copy control. Opening the site root (`/`) sends signed-out visi
 `/login`, then returns signed-in users to the workspace; chat navigation links return to
 that root workspace route. The sign-in and initial
 administrator setup screens use a responsive AI workspace design with the credentials
-form centered in the viewport on desktop and mobile, with traveling robot agents,
-connecting paths, and signal dots visible around the form on small screens and animated
-behind its translucent card on larger screens.
-The animation respects the browser's reduced-motion preference. The same
+form centered in the viewport on desktop and mobile, framed by six animated robot
+minions with blinking faces, waving arms, glowing thrusters, task labels, moving route
+lights, and connecting paths. The crew stays around the form on small screens and fills
+the full background on larger screens. The animation respects the browser's reduced-motion
+preference. The same
 charcoal, slate, and mint color theme is used throughout Hearth's pages and controls.
 Preview the [animated sign-in screen](../docs/screenshots/login-animation.gif) or view
 the [login screenshot](../docs/screenshots/login.png).
@@ -321,8 +334,11 @@ that mode.
 
 ## Open the application and configure a model backend
 
-Open **https://localhost:5443**. On first startup Hearth generates a self-signed
-certificate, so accept the local browser certificate warning. Sign in with the
+Open **https://localhost:5443** on the Hearth computer. On first startup Hearth
+generates a self-signed certificate, so accept the local browser certificate warning.
+For access from a Mac outside the host's Wi-Fi, connect both devices to Tailscale, configure
+Tailscale Serve on the host as described above, then open **Help → Connect over Tailscale →
+Chat** and sign in. Sign in with the
 administrator credentials created above.
 
 Install and start at least one supported model runtime, then configure its URL
