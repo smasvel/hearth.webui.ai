@@ -154,6 +154,14 @@ administrator to find models, then use **Models** to load and evaluate them.
 | KoboldCPP | Hugging Face GGUF search and downloads | CPU/GPU according to the installed build |
 | FastFlowLM | FastFlowLM NPU catalog and exact model tags | Supported AMD Ryzen AI NPU hardware |
 
+Muse models, including Lemonade catalog entries such as the Muse-Glimmer family,
+are used through the Lemonade backend. Configure Lemonade in **Settings**, confirm
+the model appears in **Models**, and select it for chat or an agent assignment.
+Muse model availability, context limits, tool behavior, and hardware requirements
+come from the installed Lemonade server and its model recipe; Hearth does not
+download Muse weights as part of application setup. Use **Model tests** before
+depending on a Muse model for tools or coding work.
+
 A model appearing in search does not establish that it fits your hardware or
 supports every feature. Hearth includes resource checks and load feedback; runtime
 compatibility, available memory, context size, and model capabilities still apply.
@@ -508,6 +516,11 @@ The main integrations are LM Studio, Lemonade, vLLM, KoboldCPP, and FastFlowLM.
 Hardware acceleration and model support depend on the runtime you install.
 AMD Ryzen AI NPU workflows use the relevant Lemonade or FastFlowLM configuration;
 not every model or backend supports every device.
+
+Muse models are supported through Lemonade when the installed Lemonade catalog
+provides them. Hearth treats them like other Lemonade models: they use Lemonade's
+load/unload lifecycle, context limits, thinking controls where available, and
+tool-compatibility checks.
 
 ### Can I use Hearth as a local ChatGPT-style interface?
 
