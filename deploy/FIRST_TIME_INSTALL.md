@@ -14,7 +14,10 @@ before running the bundle's installer. On Windows run
 `bash deploy/install-release.sh`. The installer prepares Hearth's Python
 environment and PostgreSQL database, then stores the selected endpoint and
 optional API key in Settings. Linux setup also builds the isolated coding-agent
-image; agent execution is Linux-only. Setup offers optional runtime installation; model weights remain separate downloads.
+image; agent execution is Linux-only. Setup offers optional runtime installation;
+model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
+for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
+remote runtime.
 Open **Downloads** to find `Ornith-1.5-9B-GGUF` preselected in the Lemonade search.
 Review its result and choose Download to install the model; setup does not download
 model weights automatically. On Downloads, use **Exclude unknown support** to hide
@@ -91,8 +94,8 @@ the [login screenshot](../docs/screenshots/login.png).
 ## One-command Ubuntu installation
 
 Run these commands from the Hearth project directory. This installs the web app,
-PostgreSQL, and isolated agent build image; model runtimes and model downloads are
-configured separately.
+PostgreSQL, and isolated agent build image. Model runtimes can be installed during
+setup, while model downloads remain a separate step.
 Use an ordinary account with sudo access and a graphical or terminal login session.
 
 ## Install and initialize Hearth
@@ -605,10 +608,11 @@ To run the complete Hearth app in Docker alongside the normal host installation:
 bash deploy/install-docker.sh
 ```
 
-Prerequisites: Docker Engine with Compose and host Python 3. Open
+Prerequisites: Docker Engine, Compose, and host Python 3. Open
 **https://localhost:5444**, accept the generated local certificate, and create the
 new administrator account. Setup creates `.env.docker` with a random database
-password, app port 5444, database port 55434, and a persistent runtime directory.
+password, selects free HTTPS/database ports starting at 5444/55434, and creates a
+persistent runtime directory.
 Existing configuration is preserved on reruns. Customize that file before rerunning
 if either port is occupied. Keep the file private and retain it with your backups.
 This containerized deployment uses its own PostgreSQL volume and app data; it does
