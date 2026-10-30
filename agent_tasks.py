@@ -249,11 +249,11 @@ class Manager:
             self.report_progress(job, 'Agent memory lookup skipped because this assignment is shared; private notes from other assignments were not included.')
             return ''
         query_parts = [str(job.get(key) or '') for key in
-                       ('title', 'goal', 'criteria', 'verification_command')]
+                       ('title', 'goal', 'criteria', 'technical_requirements', 'memory_notes', 'html_requirements', 'verification_command')]
         query_parts.extend(str(item) for item in job.get('instructions', [])[-5:])
         query = '\n'.join(query_parts)[:1400]
         keyword_query = '\n'.join(str(job.get(key) or '') for key in
-                                   ('title', 'goal', 'verification_command'))[:1400]
+                                   ('title', 'goal', 'technical_requirements', 'memory_notes', 'html_requirements', 'verification_command'))[:1400]
         if not query.strip():
             return ''
         try:
@@ -284,6 +284,13 @@ class Manager:
         lines.extend('- '+hit['content'][:1400] for hit in hits)
         return '\n'.join(lines)
 
+    def _assignment_scope(self, job):
+        return ('Assignment goal:\n'+job['goal']+'\nAcceptance criteria:\n'+
+                (job.get('criteria') or 'Complete and verify the requested goal.')+
+                '\nTechnical requirements:\n'+(job.get('technical_requirements') or 'Use the project files and appropriate defaults.')+
+                '\nPersistent task memory:\n'+(job.get('memory_notes') or 'Record durable project facts in agent_memory.md.')+
+                '\nHTML result requirements:\n'+(job.get('html_requirements') or 'Return a complete accessible HTML document when HTML output is requested.'))
+
     def _restart_session(self, job, reason, counter='session_recovery_attempts'):
         """Retire a stalled runner only after its current files are durably saved."""
         attempts = int(job.get(counter) or 0)
@@ -296,7 +303,7 @@ class Manager:
             self.save(job)
             return
         self.park_container(job)
-        scope = 'Assignment goal:\n'+job['goal']+'\nAcceptance criteria:\n'+(job.get('criteria') or 'Complete and verify the requested goal.')
+        scope = self._assignment_scope(job)
         if job.get('instructions'):
             scope += '\nUser refinements (latest takes precedence):\n'+'\n'.join(job['instructions'])
         job.update(session_id=None, resume_session=False, status='running',
@@ -516,12 +523,15 @@ class Manager:
         if type(timeout) is not int or not 10 <= timeout <= 3600:
             raise ValueError('Verification timeout must be 10–3600 seconds.')
         criteria = str(values.get('criteria', '')).strip()
+        technical_requirements = str(values.get('technical_requirements', '')).strip()
+        memory_notes = str(values.get('memory_notes', '')).strip()
+        html_requirements = str(values.get('html_requirements', '')).strip()
         command = str(values.get('verification_command', '')).strip()
         assignee = str(values.get('assignee', '')).strip()
         if not assignee or len(assignee) > 120 or any(ord(char) < 32 for char in assignee):
             raise ValueError('Enter an agent name (up to 120 characters).')
-        if len(criteria) > 10000 or len(command) > 4000:
-            raise ValueError('Acceptance criteria or verification command is too long.')
+        if len(criteria) > 10000 or len(command) > 4000 or any(len(value) > 12000 for value in (technical_requirements, memory_notes, html_requirements)):
+            raise ValueError('Task requirements or verification command is too long.')
         shell_mode = values.get('shell_mode', 'auto' if values.get('auto_commands') is True else 'ask')
         if shell_mode not in ('ask', 'auto'):
             raise ValueError('Choose whether shell commands should ask or run automatically.')
@@ -537,6 +547,8 @@ class Manager:
         return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
                 'opencode_steps': opencode_steps,
                 'verification_timeout': timeout, 'criteria': criteria,
+                'technical_requirements': technical_requirements,
+                'memory_notes': memory_notes, 'html_requirements': html_requirements,
                 'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode,
                 'enable_thinking': enable_thinking, 'result_label': result_label,
                 'result_platform': result_platform}
@@ -1022,7 +1034,7 @@ class Manager:
                     self.save(job)
                     return
                 if not job.get('pending_prompt'):
-                    scope = 'Assignment goal:\n'+job['goal']+'\nAcceptance criteria:\n'+(job['criteria'] or 'Complete and verify the requested goal.')
+                    scope = self._assignment_scope(job)
                     refinements = job.get('instructions', [])
                     if refinements:
                         scope += '\nUser refinements (latest takes precedence):\n'+'\n'.join(refinements)

@@ -512,3 +512,11 @@ Keep `.env` and `.env.postgres` private. PostgreSQL lives in the
 Compose named volume; changing `POSTGRES_PASSWORD` in a file does not rotate the
 password inside an existing database. Do not use `docker compose down -v` to update
 containers, because it deletes the database volume.
+
+Agent assignments provide dedicated fields for technical requirements, persistent
+memory notes, and HTML result requirements. For HTML output, use the accepted
+format `TITLE:`, `SECTIONS:`, `COMPONENTS:`, `INTERACTIONS:`, and
+`ACCESSIBILITY:`. These requirements are sent with each agent prompt. Technical
+requirements and memory notes are also included in the account-scoped agent RAG
+context and durable project-memory index. The task activity view streams in a
+terminal-style layout while completed HTML results remain available in the preview.
