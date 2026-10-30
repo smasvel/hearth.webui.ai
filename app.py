@@ -4510,7 +4510,9 @@ def _extract_chat_document(filename, raw):
 @app.post("/api/chat/start")
 @login_required
 def api_start_chat():
-    body = request.get_json(force=True, silent=True) or {}
+    # Multipart requests cannot be parsed with get_json(force=True).  Parse the
+    # envelope from the form field first; otherwise Flask may reject every chat
+    # turn that includes a document before the attachment branch is reached.
     if request.files:
         try:
             body = json.loads(request.form.get("payload", "{}"))
@@ -4533,6 +4535,8 @@ def api_start_chat():
                 return jsonify({"error": "Extracted document text exceeds the chat message limit."}), 413
         except (ValueError, KeyError, zipfile.BadZipFile) as exc:
             return jsonify({"error": f"Could not read attachment: {exc}"}), 400
+    else:
+        body = request.get_json(force=True, silent=True) or {}
     if not isinstance(body, dict):
         return jsonify({"error": "request must be an object"}), 400
     messages, _, error = _validate_chat_request(body)

@@ -248,6 +248,13 @@ The tests supply simulated tool results; real project execution takes place in
 
 ## Streaming chat and copying responses
 
+Chat document attachments are sent as part of the same saved chat turn as the
+user's question. The paperclip accepts up to five PDF, DOCX, PPTX, XLSX, TXT, or
+CSV files, 15 MB each; Hearth extracts their text before publishing the turn to
+the selected agent/model. If an attachment fails, Hearth reports the extraction
+error instead of silently sending an incomplete turn. Scanned PDFs need OCR
+before attachment.
+
 Hearth streams generated response text into the conversation as the backend sends
 it, including supported reasoning/thinking updates. The assistant message grows
 during generation so you can see progress before the model finishes. Streaming
@@ -533,6 +540,7 @@ script. Install Python 3.12 or newer and Docker Desktop/Engine first, then extra
 the matching bundle and run `deploy/install-release.ps1` on Windows or
 `bash deploy/install-release.sh` on macOS/Linux. Setup installs Hearth's Python
 dependencies, prepares PostgreSQL, and asks which backend endpoint to configure.
+The installer verifies the PDF reader dependency used by Hearth Chat attachments.
 Linux setup also builds the isolated coding-agent container; agent execution is
 Linux-only. You can enter a different URL or API key during setup. The selected
 inference runtime and its model weights are installed separately; they are not

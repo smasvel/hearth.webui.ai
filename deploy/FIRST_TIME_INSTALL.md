@@ -38,6 +38,10 @@ TXT, or CSV files (15 MB each). Hearth extracts their text and includes it in th
 chat turn, so you can ask questions about the documents and follow up in that conversation.
 Scanned PDFs without selectable text need OCR before attachment. Installations update the
 PDF reader dependency automatically with the normal requirements installation.
+Attachments are submitted with the chat request, so the extracted document text is
+published to the selected agent/model and retained in that conversation. If extraction
+fails, Hearth shows the error and does not start the turn; retry after correcting the
+file or converting it to a supported text-bearing format.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` on the
@@ -89,6 +93,10 @@ The installer uses `sudo` to install missing Ubuntu host dependencies, starts
 Docker, and grants the current user access. It creates `.venv`, installs Python
 requirements and Chromium, builds the isolated agent image with Python,
 Java/Maven, Node.js/npm, and build tools, and then:
+
+The Python requirements include `pypdf` for PDF attachments. The installer checks
+that PDF reader imports successfully before continuing; DOCX, PPTX, XLSX, TXT, and
+CSV attachment extraction is built into Hearth.
 
 - Generates a random PostgreSQL password in `.env.postgres` and a matching
   `DATABASE_URL` in `.env`, both with mode `600`.

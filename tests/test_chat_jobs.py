@@ -1,10 +1,12 @@
 import database
 import contextlib
+import io
 import json
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -115,6 +117,60 @@ class BackgroundChatTests(unittest.TestCase):
         self.gate.set()
         self.wait_until(lambda: job.status != "running")
         self.assertEqual(len(chat_store.get_conversation("conversation", "owner")["messages"]), 2)
+
+    def test_document_attachment_is_accepted_as_multipart_chat_turn(self):
+        body = dict(self.body)
+        body["conversation_id"] = "document-conversation"
+        body["messages"] = [{"role": "user", "content": "Summarize this file"}]
+        response = self.client.post(
+            "/api/chat/start",
+            data={
+                "payload": json.dumps(body),
+                "documents": (io.BytesIO(b"attachment text"), "notes.txt"),
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 202, response.get_json())
+        response.close()
+        self.assertTrue(self.started.wait(2))
+        self.gate.set()
+        self.wait_until(lambda: self.registry.get("owner", "document-conversation").status != "running")
+        saved = chat_store.get_conversation("document-conversation", "owner")
+        self.assertIn("[Attached document: notes.txt]", saved["messages"][0]["content"])
+        self.assertIn("attachment text", saved["messages"][0]["content"])
+
+    def test_document_extractors_accept_pdf_word_powerpoint_and_excel_samples(self):
+        from pypdf import PdfWriter
+
+        pdf = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(pdf)
+
+        def office_sample(entries):
+            sample = io.BytesIO()
+            with zipfile.ZipFile(sample, "w") as archive:
+                for name, content in entries.items():
+                    archive.writestr(name, content)
+            return sample.getvalue()
+
+        samples = [
+            ("sample.pdf", pdf.getvalue(), ""),
+            ("sample.docx", office_sample({
+                "word/document.xml": '<document xmlns="urn:word"><p><t>Word sample text</t></p></document>'
+            }), "Word sample text"),
+            ("sample.pptx", office_sample({
+                "ppt/slides/slide1.xml": '<slide xmlns="urn:ppt"><t>PowerPoint sample text</t></slide>'
+            }), "PowerPoint sample text"),
+            ("sample.xlsx", office_sample({
+                "xl/sharedStrings.xml": '<strings xmlns="urn:xlsx"><si><t>Excel sample text</t></si></strings>',
+                "xl/worksheets/sheet1.xml": '<sheet xmlns="urn:xlsx"><c><v>42</v></c></sheet>',
+            }), "Excel sample text"),
+        ]
+        for filename, raw, expected in samples:
+            with self.subTest(filename=filename):
+                self.assertEqual(app._extract_chat_document(filename, raw), expected)
 
     def test_other_account_cannot_read_or_stop_job(self):
         job = self.start()

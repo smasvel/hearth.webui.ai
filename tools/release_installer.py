@@ -81,6 +81,7 @@ def install(args=None):
             _run([sys.executable, "-m", "venv", ".venv"])
         _run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"])
         _run([str(venv_python), "-m", "pip", "install", "-r", "requirements.txt"])
+        _run([str(venv_python), "-c", "import pypdf"])
         if not options.skip_browser:
             _run([str(venv_python), "-m", "playwright", "install", "chromium"])
         child_env = os.environ.copy()
