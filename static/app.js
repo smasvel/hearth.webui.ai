@@ -17,7 +17,10 @@
   documentAttachBtn.addEventListener("click", () => { if (!busy) documentAttachInput.click(); });
   documentAttachInput.addEventListener("change", () => {
     for (const file of Array.from(documentAttachInput.files || [])) {
-      if (!/\.(pdf|docx|pptx|xlsx|txt|csv)$/i.test(file.name)) {
+      if (pendingDocuments.length >= 5) {
+        addSystemMessage("Attach up to five documents per message.", true);
+        break;
+      } else if (!/\.(pdf|docx|pptx|xlsx|txt|csv)$/i.test(file.name)) {
         addSystemMessage(`Unsupported document: ${file.name}. Choose PDF, Word, PowerPoint, Excel, TXT, or CSV.`, true);
       } else if (file.size > 15 * 1024 * 1024) {
         addSystemMessage(`${file.name} exceeds the 15 MB per-file limit.`, true);

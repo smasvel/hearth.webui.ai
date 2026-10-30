@@ -49,6 +49,7 @@ docker compose version >/dev/null
 cd -- "$project_dir"
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -c 'import pypdf' || { echo 'PDF attachment support is unavailable: pypdf did not install.' >&2; exit 1; }
 if [[ $install_browser -eq 1 ]]; then
   .venv/bin/python -m playwright install chromium
 fi
