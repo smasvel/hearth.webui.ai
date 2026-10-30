@@ -532,9 +532,8 @@ every ordinary chat message browse automatically.
 
 - Python 3.10+ and venv support.
 - Docker Engine with Docker Compose, for PostgreSQL 18.
-- At least one supported local model runtime. For LM Studio, run its headless
-  daemon at `http://localhost:1234` with the `lms` CLI available at
-  `~/.lmstudio/bin/lms`. Other backends are configured from Settings.
+- At least one supported local model runtime. Setup can install LM Studio's
+  headless daemon automatically; other backends are configured from Settings.
 
 ## First-time setup
 
@@ -548,8 +547,11 @@ the matching bundle and run `deploy/install-release.ps1` on Windows or
 dependencies, prepares PostgreSQL, and asks which backend endpoint to configure.
 The installer verifies the PDF reader dependency used by Hearth Chat attachments.
 Linux setup also builds the isolated coding-agent container; agent execution is
-Linux-only. You can enter a different URL or API key during setup. Setup offers optional installation of LM Studio headless (llmster) and Lemonade
-(Ubuntu only). Model weights remain separate downloads.
+Linux-only. You can enter a different URL or API key during setup. Setup offers
+optional installation of LM Studio headless (llmster) and Lemonade (Ubuntu only).
+Model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
+for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
+remote runtime.
 
 After setup, run `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443`; the
@@ -722,7 +724,8 @@ above the editor follows the multi-line input setting. No setup is required.
 - **Video:** short video generation through a configured ComfyUI video workflow.
   The documented workflows include SD-Turbo for images and Wan 2.1 for video.
 
-Install the corresponding runtimes and model weights separately. Generation speed,
+Install the corresponding runtimes and model weights separately, or use the optional
+runtime installation during setup. Generation speed,
 resolution, and supported inputs depend on the selected workflow and hardware.
 
 ## Practice tests and quizzes
@@ -1142,7 +1145,8 @@ reporting success with a Chromium executable that cannot launch.
 Run `bash deploy/install-docker.sh` to build and start a separate containerized
 Hearth at **https://localhost:5444**. Create its administrator account on first
 visit. Docker Engine, Compose, and host Python 3 are required. Setup generates a
-private `.env.docker` once; its default database port is 55434. The existing host
+private `.env.docker` once; it selects free HTTPS and database ports starting at
+5444 and 55434. The existing host
 installation and its database remain separate. Edit `.env.docker` to customize
 ports, then rerun the script. Browser dependencies are included in the image.
 
