@@ -4,7 +4,18 @@
 <title>Agents — Hearth</title><link rel="stylesheet" href="{{ asset('style.css') }}" /></head>
 <body class="agents-page"><div class="app"><main class="chat"><header class="chat-header">
 <a class="icon-btn text-icon-btn" href="{{ url_for('index') }}">← Chat</a>
-<nav class="console-tabs"><a class="console-tab active" href="{{ url_for('agents_page') }}">Agents</a>{% if session.role == 'admin' %}<a class="console-tab" href="{{ url_for('models_page') }}">Models</a><a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>{% endif %}</nav>
+<nav class="console-tabs">
+  <a class="console-tab active" href="{{ url_for('agents_page') }}">Agents</a>
+  <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
+  <a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>
+  <a class="console-tab" href="{{ url_for('downloads_page') }}">Downloads</a>
+  <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
+  <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
+  <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
+  <a class="console-tab" href="{{ url_for('live_logs_page') }}">Live logs</a>
+  <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
+  <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
+</nav>
 <span class="hint" style="margin-left:auto">{{ username }}</span></header>
 <div class="console-body agent-app" data-page="{{ page }}" data-task-id="{{ initial_task_id }}">
 <nav class="agent-nav" aria-label="Agent pages"><a class="agent-nav-link {{ 'active' if page == 'list' else '' }}" href="{{ url_for('agents_page') }}"><span>◷</span>Assignments</a><a class="agent-nav-link {{ 'active' if page == 'new' else '' }}" href="{{ url_for('agents_new_page') }}"><span>＋</span>New agent</a><a class="agent-nav-link {{ 'active' if page == 'schedules' else '' }}" href="{{ url_for('agents_schedules_page') }}"><span>↻</span>Schedules</a></nav>

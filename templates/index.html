@@ -741,26 +741,34 @@
       <div id="composer-hint" class="composer-hint hint"></div>
       <div id="voice-status" class="voice-status hidden"></div>
       <form id="chat-form" class="composer">
-        <textarea id="chat-input" placeholder="Message the model&hellip;" rows="3"></textarea>
+        <textarea id="chat-input" placeholder="Message the model&hellip;" rows="4" aria-label="Message" aria-describedby="composer-hint"></textarea>
         <div class="composer-btn-row">
-          <button type="button" id="insert-code-btn" class="composer-icon-btn" title="Insert a code block in a larger paste-friendly editor" aria-label="Insert code block">&lt;/&gt;</button>
-          <button type="button" id="multiline-toggle" class="composer-icon-btn" title="Toggle multi-line input (see hint above)" aria-pressed="false">A</button>
-          <button type="button" id="speak-toggle" class="composer-icon-btn" title="Speak assistant responses aloud (local text-to-speech)" aria-pressed="false" aria-label="Toggle spoken responses">&#128266;</button>
-          <button type="button" id="mic-btn" class="composer-icon-btn" title="Record a voice message (click to start, click again to stop)" aria-pressed="false" aria-label="Record voice message">&#127908;</button>
-          <select id="translate-language" class="voice-language" title="Voice translation target language" aria-label="Translation target language">
-            <option>English</option><option>Spanish</option><option>French</option>
-            <option>German</option><option>Hindi</option><option>Chinese</option>
-            <option>Japanese</option><option>Korean</option><option>Arabic</option>
-            <option>Portuguese</option><option>Italian</option><option>Polish</option>
-            <option value="Tamil">Tamil (தமிழ்)</option>
-            <option value="Telugu">Telugu (తెలుగు)</option>
-            <option value="Kannada">Kannada (ಕನ್ನಡ)</option>
-            <option value="Malayalam">Malayalam (മലയാളം)</option>
-          </select>
-          <button type="button" id="translate-mic-btn" class="composer-icon-btn" title="Record speech and translate it with local Gemma 4" aria-pressed="false" aria-label="Translate spoken audio">&#127760;</button>
-          <button type="button" id="translate-attach-btn" class="composer-icon-btn" title="Attach an image or video to translate with local Gemma 4" aria-label="Attach image or video to translate">&#128206;</button>
-          <input type="file" id="translate-attach-input" accept="image/*,video/*" class="hidden" aria-hidden="true">
-          <button type="button" id="conversation-btn" class="composer-icon-btn" title="Hands-free voice conversation: auto-detects when you start/stop talking and speaks responses back, looping automatically. Click to start, click again to end." aria-pressed="false" aria-label="Toggle hands-free voice conversation">&#128222;</button>
+          <div class="composer-tool-group" role="group" aria-label="Writing and attachments">
+            <button type="button" id="document-attach-btn" class="composer-icon-btn" title="Attach PDF, Word, PowerPoint, Excel, TXT, or CSV files" aria-label="Attach documents">&#128206;</button>
+            <input type="file" id="document-attach-input" accept=".pdf,.docx,.pptx,.xlsx,.txt,.csv" multiple hidden aria-hidden="true">
+            <button type="button" id="insert-code-btn" class="composer-icon-btn" title="Insert a code block in a larger paste-friendly editor" aria-label="Insert code block">&lt;/&gt;</button>
+            <button type="button" id="multiline-toggle" class="composer-icon-btn" title="Toggle multi-line input (see hint above)" aria-label="Toggle multi-line input" aria-pressed="false">A</button>
+          </div>
+          <div class="composer-tool-group" role="group" aria-label="Voice controls">
+            <button type="button" id="speak-toggle" class="composer-icon-btn" title="Speak assistant responses aloud (local text-to-speech)" aria-pressed="false" aria-label="Toggle spoken responses">&#128266;</button>
+            <button type="button" id="mic-btn" class="composer-icon-btn" title="Record a voice message (click to start, click again to stop)" aria-pressed="false" aria-label="Record voice message">&#127908;</button>
+            <button type="button" id="conversation-btn" class="composer-icon-btn" title="Hands-free voice conversation: auto-detects when you start/stop talking and speaks responses back, looping automatically. Click to start, click again to end." aria-pressed="false" aria-label="Toggle hands-free voice conversation">&#128222;</button>
+          </div>
+          <div class="composer-tool-group" role="group" aria-label="Translation controls">
+            <select id="translate-language" class="voice-language" title="Voice translation target language" aria-label="Translation target language">
+              <option>English</option><option>Spanish</option><option>French</option>
+              <option>German</option><option>Hindi</option><option>Chinese</option>
+              <option>Japanese</option><option>Korean</option><option>Arabic</option>
+              <option>Portuguese</option><option>Italian</option><option>Polish</option>
+              <option value="Tamil">Tamil (தமிழ்)</option>
+              <option value="Telugu">Telugu (తెలుగు)</option>
+              <option value="Kannada">Kannada (ಕನ್ನಡ)</option>
+              <option value="Malayalam">Malayalam (മലയാളം)</option>
+            </select>
+            <button type="button" id="translate-mic-btn" class="composer-icon-btn" title="Record speech and translate it with local Gemma 4" aria-pressed="false" aria-label="Translate spoken audio">&#127760;</button>
+            <button type="button" id="translate-attach-btn" class="composer-icon-btn" title="Attach an image or video to translate with local Gemma 4" aria-label="Attach image or video to translate">&#128206;</button>
+            <input type="file" id="translate-attach-input" accept="image/*,video/*" hidden aria-hidden="true">
+          </div>
           <button id="send-btn" type="submit">Send</button>
         </div>
       </form>

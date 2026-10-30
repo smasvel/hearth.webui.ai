@@ -28,6 +28,16 @@ for Lemonade's `llamacpp` recipe.
 
 In Chat, if regenerating a reply fails, the previous reply remains visible in a distinct
 dimmed bubble labeled with the failure. A successful regeneration replaces it normally.
+The message editor uses the full chat width, with a separate wrapping toolbar for
+writing, attachments, voice, translation, and Send. Drag the editor's resize handle
+for more space; longer messages grow it up to a viewport-based height limit and
+then scroll within the editor. All controls remain available on narrow screens.
+No additional setup is needed; refresh Chat after updating to load the new layout.
+Use the paperclip beside the chat composer to attach up to five PDF, DOCX, PPTX, XLSX,
+TXT, or CSV files (15 MB each). Hearth extracts their text and includes it in the saved
+chat turn, so you can ask questions about the documents and follow up in that conversation.
+Scanned PDFs without selectable text need OCR before attachment. Installations update the
+PDF reader dependency automatically with the normal requirements installation.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` on the
@@ -53,7 +63,9 @@ that root workspace route. The sign-in and initial
 administrator setup screens use a responsive AI workspace design with the credentials
 form centered in the viewport on desktop and mobile, framed by six animated robot
 minions with blinking faces, waving arms, glowing thrusters, task labels, moving route
-lights, and connecting paths. The crew stays around the form on small screens and fills
+lights, and connecting paths. A **Watch the 25-second demo** button opens a centered player
+and starts the product demo with sound; visitors can pause playback or close the player. The crew
+stays around the form on small screens and fills
 the full background on larger screens. The animation respects the browser's reduced-motion
 preference. The same
 charcoal, slate, and mint color theme is used throughout Hearth's pages and controls.
@@ -153,6 +165,18 @@ configuration and model relay files alongside it. PostgreSQL remains the durable
 source of truth. OpenCode file tools are confined to the project folder and
 external directories are denied. Agent project and OpenCode files do not use
 `/tmp`; the container keeps it for system runtime needs.
+Agents record verified, reusable environment and project facts in the project-root
+`AGENT_MEMORY.md`, including available interpreter names, dependency setup, working
+verification commands, and project conventions. Hearth combines local embedding
+similarity with exact keyword matching when it retrieves notes for later private
+assignments owned by the same account; a query for `python` also matches a note that
+records `python3` as the available interpreter. Shared assignments do not retrieve notes from
+other assignments. Retrieval counts and match scores appear in Activity. Agents check
+whether recalled facts still apply and are instructed not to save credentials, personal
+data, or temporary task state. The note file is part of its assignment workspace; its
+search index is deleted with the assignment or user. If embeddings are unavailable,
+Hearth keeps notes available for exact-term search and retries semantic indexing later.
+No separate service or setup step is required.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
 tools on KoboldCPP, FastFlowLM, SGLang, Lemonade, and LM Studio. The MCP servers
@@ -186,12 +210,34 @@ directories, and subagents remain denied. Ask mode pauses shell commands for you
 decision. Open a task to follow its live **Activity** feed.
 Agent responses and structured tool inputs, outputs, and errors appear as readable
 key/value text instead of raw JSON; shell inputs are shown as commands.
+Hearth fetches OpenCode activity, prompts, permissions, inbox, and recent messages
+concurrently, reducing the delay between a response and the task status update.
+While waiting for a first response token, Activity reports the elapsed wait every
+30 seconds. If OpenCode remains active without a streaming model request, Activity
+reports that state too; these notes do not extend the recovery timeout. Progress is
+matched to the assignment, so agents with the same name cannot hide each other's
+stalls. The relay forwards SSE lines immediately and counts tool-call argument deltas
+as progress. After updating, restart `ai-webui.service` to load the supervisor and
+relay fixes. These changes do not require rebuilding the agent image.
+The task's thinking choice is applied when its container is created. Continuing a
+task with a different saved thinking setting starts a fresh session from its saved
+workspace so the requested setting takes effect.
+Container reuse preserves host ownership of the task workspace root directory.
 When OpenCode has saved a completed assistant response, Hearth processes it even
-if OpenCode's session-wide activity indicator has not caught up yet. If OpenCode
-waits up to 60 minutes for a model's first response token; after generation starts,
-30 minutes without a new response, tool update, or streamed token moves the task to
-**Needs review**. It can be resumed from its saved workspace. Conversation and tool logs include tool error details when OpenCode
-provides them. During long model turns, Activity also reports the number of tokens
+if OpenCode's session-wide activity indicator has not caught up yet or a prompt is
+stranded in the inbox. An unfinished assistant message or inbox entry does not count
+as work: after 90 seconds without a model request or running project tool, Hearth
+interrupts the abandoned runner, forces a current PostgreSQL checkpoint, retires its
+container, and starts a fresh session. The original goal, acceptance criteria, and
+refinements are carried forward without advancing the work-cycle counter.
+Real model requests have a 10-minute first-token limit and a 5-minute inactivity limit
+after output starts. Current token and tool progress is checked before these limits,
+even when OpenCode reports idle. After two unsuccessful fresh-session recoveries,
+the task moves to **Needs review** and can be continued from its saved workspace.
+Three consecutive responses without project tool calls also trigger recovery, to
+prevent repeated implementation text from replacing actual file changes.
+Conversation and tool logs include tool error details when OpenCode provides them.
+During long model turns, Activity also reports the number of tokens
 received from the local model. Shell tool inputs appear as commands in the conversation
 log. If the selected model is already loaded with at least 16K context, Hearth reuses
 it instead of unloading and loading it again.
@@ -203,7 +249,8 @@ keep work inside the project workspace and use available tools and dependencies.
 When resuming an interrupted or blocked session, Hearth restores the PostgreSQL
 workspace checkpoint into the existing container before continuing the agent run.
 On phones, the Agents workflow tabs stay visible while scrolling, and the header
-lays out every app tab available to the signed-in user's role.
+shows all workspace page tabs with Agents selected, reflowed into a grid so every
+tab stays visible on narrow screens.
 When editing a task, its saved model stays selected even if it is missing from the
 current model list, cannot load, or falls below the worker's 16K context requirement.
 You can save other task edits while retaining that model; choosing a different model
@@ -258,19 +305,26 @@ and activity history.
 Loaded support models such as embeddings do not take precedence over a loaded coding
 model in that picker. LM Studio's loaded-instance data is included when detecting the
 loaded coding model.
-If OpenCode reports idle before its assistant result is available, Hearth continues
-polling for up to 60 minutes while waiting for the first model token, then uses a
-30-minute inactivity limit after output begins. A session that stays idle is then marked **Needs review**
-without repeated worker errors. OpenCode's **CRITICAL - MAXIMUM STEPS REACHED** response
+If OpenCode reports idle before its assistant result is available, Hearth uses the
+90-second handoff check described above. Only real model requests or running tools
+extend that check; status messages do not. OpenCode's **CRITICAL - MAXIMUM STEPS REACHED** response
 also marks the assignment **Needs review** even if the session still reports active; use
 **Continue** after reviewing the saved work to resume it. Resuming keeps the assignment's
 selected model. If OpenCode does not acknowledge a requested pause or stop, Hearth marks
 the assignment **Interrupted** (or **Needs review** after a worker failure) and enables
 **Continue** so the saved work remains recoverable.
-Provider transport resets such as `ECONNRESET` retry automatically in the same
-assignment session with backoff. A failed assistant response retries the same work
+Provider transport resets such as `ECONNRESET` retry up to three times in the same
+assignment session with backoff. Repeated response failures trigger bounded fresh-session
+recovery; repeated polling or prompt-admission failures move the task to **Needs review**. A failed assistant response retries the same work
 cycle, so provider resets do not use up the task's cycle budget. Existing relay sockets
-are reused rather than replaced during concurrent checks.
+are reused rather than replaced during concurrent checks. On Hearth startup, relay
+listeners for saved agent sessions are restored before workers run, reconnecting
+persistent Docker containers to the host model bridge after an app restart.
+If OpenCode conversation compaction fails, Hearth retries in a fresh session from the
+saved project checkpoint without advancing the work-cycle counter.
+For project agents, Hearth also caps retained recent turns at one eighth of the
+selected model's context and starts compaction at least one eighth before the context
+limit, reducing the chance that a summary exceeds the model's output limit.
 Completion markers attached to future plans or implementation placeholders are
 ignored; Hearth keeps the assignment running until the agent reports actual work.
 After reviewing a running, waiting, paused, blocked, or interrupted task, its owner can reset the cycle

@@ -249,7 +249,8 @@ class ModelTestAPITests(unittest.TestCase):
         self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
         directory = self.stack.enter_context(tempfile.TemporaryDirectory())
         self.registry = model_tests.Registry(directory)
-        self.stack.enter_context(patch.object(app, '_agent_tasks', Mock(busy=Mock(return_value=False))))
+        self.stack.enter_context(patch.object(app, '_agent_tasks', Mock(
+            busy=Mock(return_value=False), list=Mock(return_value=[]))))
         self.stack.enter_context(patch.object(app, '_model_test_registry', self.registry))
         self.stack.enter_context(patch.object(app, '_test_model_inventory', return_value=[TARGET, {'backend':'lmstudio','id':'embedding','type':'embeddings'}]))
         self.stack.enter_context(patch.object(app.users_store, 'get_user_by_id', side_effect=lambda uid: {'id':uid,'username':uid,'role':uid}))
@@ -317,9 +318,10 @@ class ModelTestAPITests(unittest.TestCase):
 
     def test_model_management_is_blocked_during_validation(self):
         self.login()
-        with patch.object(self.registry, 'list', return_value=[{'status':'running'}]):
+        with patch.object(self.registry, 'list', return_value=[{'status':'running', 'targets':[TARGET]}]):
             for endpoint in ('load','unload','delete'):
-                response = self.client.post('/api/models/' + endpoint, json={'model':TARGET['id']}, headers=self.headers)
+                response = self.client.post('/api/models/' + endpoint,
+                                            json={'model':TARGET['id'], 'identifier':TARGET['id']}, headers=self.headers)
                 self.assertEqual(response.status_code, 409)
 
     def test_reset_profile_is_reversible_and_blocked_during_run(self):

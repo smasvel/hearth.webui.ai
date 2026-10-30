@@ -13,6 +13,9 @@ import database
 import threading
 import time
 import uuid
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -113,6 +116,7 @@ app.config.update(
     # ("Unexpected token '<'"). 60 MB comfortably covers /api/video/translate's own
     # 50 MB cap (the largest of these) plus multipart overhead.
     MAX_FORM_MEMORY_SIZE=60 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=80 * 1024 * 1024,
 )
 
 _SESSION_IDLE_SECONDS = 30 * 60
@@ -1000,6 +1004,12 @@ def _remember_exchange(user_id: str, conversation_id: str, user_text: str | None
         memory_store.add_chunk(user_id, conversation_id, role, text, embedding)
 
 
+def _embed_agent_project_notes(texts: list[str]) -> list[list[float]]:
+    """Use the shared local embedding model for private agent project-note RAG."""
+    _ensure_embedding_model_loaded()
+    return lemonade.embed(texts)
+
+
 def login_required(view):
     @functools.wraps(view)
     def wrapped(*args, **kwargs):
@@ -1131,6 +1141,22 @@ def login():
     setup_mode = users_store.count_users() == 0
     return render_template("login.html", error=error, csrf_token=_login_csrf_token(),
                            setup_mode=setup_mode)
+
+
+@app.get("/media/hearth-feature-demo.mp4")
+def hearth_feature_demo():
+    return send_file(
+        BASE_DIR / "docs" / "screenshots" / "hearth-feature-demo.mp4",
+        mimetype="video/mp4", conditional=True, max_age=3600,
+    )
+
+
+@app.get("/media/hearth-feature-demo-poster.jpg")
+def hearth_feature_demo_poster():
+    return send_file(
+        BASE_DIR / "docs" / "screenshots" / "hearth-feature-demo-poster.jpg",
+        mimetype="image/jpeg", conditional=True, max_age=3600,
+    )
 
 
 @app.post("/logout")
@@ -1916,8 +1942,9 @@ _model_test_registry = model_tests.Registry()
 _agent_container_client = agent_container.ContainerOpenCode(
     Path(os.environ.get('HEARTH_AGENT_RUNTIME_DIR', database.DATA_DIR / 'agent-runtime')))
 _agent_tasks = agent_tasks.Manager(database.DATA_DIR / 'agent-tasks', client=_agent_container_client,
-    prepare_model=lambda job: _prepare_agent_model(job))
+    prepare_model=lambda job: _prepare_agent_model(job), embed_memory=_embed_agent_project_notes)
 _agent_container_client.migrate_legacy_runtime()
+_agent_container_client.restore_model_relays(_agent_tasks.list())
 _agent_container_client.progress = _agent_tasks.report_progress
 
 
@@ -4453,10 +4480,59 @@ def api_generate_image():
     })
 
 
+def _extract_chat_document(filename, raw):
+    """Extract text from supported document formats for conversation context."""
+    ext = Path(filename).suffix.lower()
+    if ext in {".txt", ".csv"}:
+        return raw.decode("utf-8-sig", errors="replace")
+    if ext == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise ValueError("PDF support requires pypdf") from exc
+        return "\n\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages)
+    if ext in {".docx", ".pptx", ".xlsx"}:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            if ext == ".docx":
+                selected = ["word/document.xml"]
+            elif ext == ".pptx":
+                selected = sorted(n for n in archive.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml"))
+            else:
+                selected = [n for n in archive.namelist() if n == "xl/sharedStrings.xml" or (n.startswith("xl/worksheets/sheet") and n.endswith(".xml"))]
+            values = []
+            for name in selected:
+                root = ET.fromstring(archive.read(name))
+                values.extend(node.text.strip() for node in root.iter() if node.tag.endswith("}t") and node.text and node.text.strip())
+            return "\n".join(values)
+    raise ValueError("Supported formats: PDF, DOCX, PPTX, XLSX, TXT, CSV")
+
+
 @app.post("/api/chat/start")
 @login_required
 def api_start_chat():
     body = request.get_json(force=True, silent=True) or {}
+    if request.files:
+        try:
+            body = json.loads(request.form.get("payload", "{}"))
+            documents = request.files.getlist("documents")
+            if not documents or len(documents) > 5:
+                return jsonify({"error": "Attach between 1 and 5 documents per message."}), 400
+            parts = []
+            for uploaded in documents:
+                name = secure_filename(uploaded.filename or "document")
+                raw = uploaded.read(15 * 1024 * 1024 + 1)
+                if len(raw) > 15 * 1024 * 1024:
+                    return jsonify({"error": f"{name} exceeds the 15 MB per-file limit."}), 413
+                parts.append(f"[Attached document: {name}]\n{_extract_chat_document(name, raw)}")
+            messages = body.get("messages")
+            if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "user":
+                return jsonify({"error": "A user message is required with document attachments."}), 400
+            user = messages[-1]
+            user["content"] = (user.get("content", "") + "\n\n" if user.get("content") else "") + "\n\n".join(parts)
+            if len(user["content"]) > 2_000_000:
+                return jsonify({"error": "Extracted document text exceeds the chat message limit."}), 413
+        except (ValueError, KeyError, zipfile.BadZipFile) as exc:
+            return jsonify({"error": f"Could not read attachment: {exc}"}), 400
     if not isinstance(body, dict):
         return jsonify({"error": "request must be an object"}), 400
     messages, _, error = _validate_chat_request(body)
