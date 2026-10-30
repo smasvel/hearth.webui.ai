@@ -1068,3 +1068,6 @@ For model-specific test evidence, see [saved failure reviews](reports/saved-fail
 Repair history, debugging investigations, and implementation notes are preserved in
 [FIXLOGS.md](FIXLOGS.md). Those notes describe changes over time and may include
 behavior superseded by later fixes; use this README for current setup and usage.
+### Agent task inputs and live execution
+
+Agent assignments now group the task name, goal, technical requirements, persistent memory notes, and HTML result requirements before advanced execution controls. HTML requirements accept a plain-text template with `TITLE`, `SECTIONS`, `COMPONENTS`, `INTERACTIONS`, and `ACCESSIBILITY` lines. The execution page presents activity as a live terminal-style stream while retaining the rendered HTML result preview. Technical requirements and memory notes are included in the account-scoped agent RAG context and durable `agent_memory.md` indexing.

@@ -23,13 +23,14 @@
 <section class="agent-list-card"><div class="agent-list-heading"><h2>Recent tasks</h2><span class="hint" id="agent-count"></span></div><div id="agent-list" class="agent-task-list"></div></section>
 {% elif page == 'new' %}<header class="agent-page-heading"><div><p class="agent-eyebrow">LET’S GET STARTED</p><h1>What should your agent do?</h1><p class="hint">Start with the result you want. You can give more guidance as the work progresses.</p></div></header>
 <section class="console-card agent-form-card"><form id="agent-create" class="agent-form">
-<label>Give this task a name<input name="title" class="panel-input" required maxlength="120" placeholder="Plan my weekend trip" /></label>
-<label>Describe what you need<textarea name="goal" class="panel-input agent-goal-input" rows="7" required maxlength="20000" placeholder="Tell your agent what you want done. Include any helpful details, links, or preferences."></textarea></label>
+<div class="agent-form-grid agent-primary-fields"><label>Task name<input name="title" class="panel-input" required maxlength="120" placeholder="Build a small web tool" /></label><label>Agent name<input name="assignee" class="panel-input" required maxlength="120" placeholder="Implementation agent" /></label></div>
+<label>What should the agent do?<textarea name="goal" class="panel-input agent-goal-input" rows="6" required maxlength="20000" placeholder="Describe the outcome, users, and important constraints."></textarea></label>
+<div class="agent-form-grid"><label>Technical requirements<textarea name="technical_requirements" class="panel-input" rows="4" maxlength="12000" placeholder="Python 3.12, Flask, npm package names, APIs, coding conventions…"></textarea></label><label>Persistent memory for this task<textarea name="memory_notes" class="panel-input" rows="4" maxlength="12000" placeholder="Facts to remember across runs: project flavor, dependencies, commands, architecture…"></textarea></label></div>
+<label>HTML result requirements<textarea name="html_requirements" class="panel-input" rows="5" maxlength="12000" placeholder="Use this accepted format:\nTITLE: …\nSECTIONS: …\nCOMPONENTS: …\nINTERACTIONS: …\nACCESSIBILITY: …\nThe agent must return a working HTML result matching these requirements."></textarea></label>
 <details class="agent-more-options"><summary>More options</summary><div class="agent-form agent-advanced">
-<label>Agent name<input name="assignee" class="panel-input" required maxlength="120" placeholder="Name this agent" /></label>
 <label>AI model<select id="agent-model" class="panel-input" required></select></label>
 <label class="agent-checkbox"><input name="enable_thinking" type="checkbox" checked /> Enable model thinking (extra reasoning)</label>
-<label>How should we know it’s done?<textarea name="criteria" class="panel-input" rows="3" maxlength="10000" placeholder="Optional: describe what a good result includes."></textarea></label>
+<label>How should we know it’s done?<textarea name="criteria" class="panel-input" rows="3" maxlength="10000" placeholder="Observable checks the agent must satisfy."></textarea></label>
 <label>Result label<input name="result_label" class="panel-input" maxlength="120" placeholder="For example: Project preview" /></label>
 <label>Platform / output type<select name="result_platform" class="panel-input"><option value="web" selected>Web page (HTML)</option><option value="report">JSON results (HTML view)</option><option value="document">Document</option><option value="general">General result</option></select></label>
 <label>Check the result with a command (optional)<input name="verification_command" class="panel-input" placeholder="For example: npm test" maxlength="4000" /></label>
@@ -54,6 +55,8 @@
 <details id="agent-edit-panel" class="console-card agent-form-card" hidden><summary>Edit task</summary><p class="hint">Save changes without starting a run. Existing code and activity history are retained. For paused tasks, resume when ready to continue.</p><form id="agent-edit-form" class="agent-form">
 <label>Task name<input name="title" class="panel-input" required maxlength="120" /></label>
 <label>Task description<textarea name="goal" class="panel-input agent-goal-input" rows="6" required maxlength="20000"></textarea></label>
+<div class="agent-form-grid"><label>Technical requirements<textarea name="technical_requirements" class="panel-input" rows="4" maxlength="12000"></textarea></label><label>Persistent memory<textarea name="memory_notes" class="panel-input" rows="4" maxlength="12000"></textarea></label></div>
+<label>HTML result requirements<textarea name="html_requirements" class="panel-input" rows="5" maxlength="12000" placeholder="TITLE: …\nSECTIONS: …\nCOMPONENTS: …\nINTERACTIONS: …\nACCESSIBILITY: …"></textarea></label>
 <div class="agent-form agent-advanced">
 <label>Agent name<input name="assignee" class="panel-input" required maxlength="120" /></label>
 <label>AI model<select name="model" id="agent-edit-model" class="panel-input" required></select></label>

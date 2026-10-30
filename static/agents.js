@@ -109,7 +109,7 @@
     if(el('agent-edit-resubmit'))el('agent-edit-resubmit').hidden=task.status==='paused';
     const editForm=el('agent-edit-form');
     if(editForm && editForm.dataset.loadedTask!==task.id) {
-      for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
+      for(const name of ['title','goal','assignee','criteria','technical_requirements','memory_notes','html_requirements','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
         if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,opencode_steps:40,verification_timeout:300}[name] ?? '');
       }
       editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
@@ -183,8 +183,8 @@
         activityFeed.dataset.signature=eventSignature;
         activityFeed.replaceChildren();
         if(events.length)for(const item of events.slice(0,40)) {
-          const row=node('div',undefined,activityFeed);row.className='agent-activity-item';
-          node('time',displayTime(item.time) || '—',row);
+          const row=node('div',undefined,activityFeed);row.className='agent-terminal-line';
+          node('span',displayTime(item.time) ? `[${displayTime(item.time)}] ` : '',row).className='agent-terminal-time';
           node('span',item.text,row);
         } else node('p','The agent will post updates here as it works.',activityFeed);
         activityFeed.scrollTop=0;
@@ -199,10 +199,8 @@
     messages.replaceChildren();
     for (const m of displayMessages) {
       if (!m.content.length) continue;
-      const head=node('div',undefined,messages);head.className=`agent-message-heading ${m.type==='assistant'?'agent-message-agent':'agent-message-user'}`;
-      node('strong',m.type==='assistant'?'Agent':m.type==='user'?'You':m.type,head);
-      const messageTime=displayTime(m.time);
-      if(messageTime)node('time',messageTime,head);
+      const head=node('div',undefined,messages);head.className='agent-terminal-prompt';
+      node('span',m.type==='assistant'?'agent › ':m.type==='user'?'you › ':'system › ',head);
       for (const p of m.content) {
         if(p.type==='text' && p.text) node('pre',formatReadable(p.text),messages);
         else if(p.type==='tool') {
@@ -499,7 +497,7 @@
       sessionStorage.removeItem('hearth-agent-clone-draft');
       const form=el('agent-create');
       if(cloneDraft && form) {
-        for(const name of ['title','goal','assignee','criteria','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
+        for(const name of ['title','goal','assignee','criteria','technical_requirements','memory_notes','html_requirements','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
           if(form.elements[name] && cloneDraft[name] != null)form.elements[name].value=cloneDraft[name];
         }
         form.elements.enable_thinking.checked=cloneDraft.enable_thinking !== false;

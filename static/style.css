@@ -2761,6 +2761,8 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 /* Common-user agent flow */
 .agent-page-heading h1,.agent-execution-heading h1 { letter-spacing:-.035em; }
 .agent-form-card { max-width:760px;margin:0 auto; }
+.agent-form-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
+.agent-primary-fields label { min-width:0; }
 .agent-form-card .agent-form { gap:20px; }
 .agent-form-card .agent-form > label { gap:8px;font-weight:600; }
 .agent-form-card .panel-input { min-height:48px;border-radius:11px;padding:12px 14px;font-size:1rem; }
@@ -2778,6 +2780,10 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .agent-live-indicator { display:inline-flex;align-items:center;gap:6px;color:#56c99a;font-size:.8rem;font-weight:650; }
 .agent-live-indicator i { width:8px;height:8px;border-radius:50%;background:#56c99a;box-shadow:0 0 0 4px color-mix(in srgb,#56c99a 18%,transparent);animation:agent-live-pulse 1.6s ease-in-out infinite; }
 .agent-activity-feed { display:grid;gap:0;max-height:38vh;overflow:auto;border-left:2px solid var(--border);margin:4px 0 20px 4px; }
+.agent-terminal-line { display:block;padding:7px 12px;color:var(--text);font:0.88rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere; }
+.agent-terminal-line:nth-child(odd) { background:color-mix(in srgb,var(--panel-2, #111) 70%,transparent); }
+.agent-terminal-time { color:var(--text-dim); }
+.agent-terminal-prompt { color:var(--accent,#aeb8ff);font:600 .82rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .agent-activity-item { display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;padding:8px 12px;color:var(--text-dim);font-size:.9rem;line-height:1.45; }
 .agent-activity-item time { font-size:.76rem;white-space:nowrap;color:var(--text-dim); }
 .agent-activity-item span { color:var(--text);overflow-wrap:anywhere; }
@@ -2792,6 +2798,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .agent-status-badge.status-waiting_input,.agent-status-badge.status-blocked { color:#e9b85c; }
 .agent-status-badge.status-stopped,.agent-status-badge.status-interrupted { color:var(--text-dim); }
 @media(max-width:700px) {
+  .agent-form-grid { grid-template-columns:1fr; }
   .agent-form-card { padding:16px; }
   .agent-form-card .agent-form { gap:16px; }
   .agent-form-card .agent-budget { gap:14px; }
