@@ -49,7 +49,14 @@ def decode(response, stream):
                 target['id'] = call.get('id') or target['id']
     for call in calls.values():
         assert call['id'], 'Missing tool call ID'
-        call['arguments'] = json.loads(call['arguments'])
+        try:
+            call['arguments'] = json.loads(call['arguments'])
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f'Invalid JSON arguments for {call["name"]}: {exc}; '
+                f'finish reasons={finishes}; completion tokens={usage.get("completion_tokens")}; '
+                f'arguments={call["arguments"][:600]!r}'
+            ) from exc
     return list(calls.values()), ''.join(text), finishes, usage
 
 
@@ -111,6 +118,10 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
                 'messages': [{'role': 'user', 'content': prompt}]}
         body.update(extra)
         if body.get('tools'):
+            # Reasoning tokens share the completion budget even when the backend
+            # ignores enable_thinking=False. Leave room for the actual tool JSON.
+            if 'max_tokens' not in extra:
+                body['max_tokens'] = 2048
             body.setdefault('enable_thinking', False)
             body.setdefault('chat_template_kwargs', {'enable_thinking': False})
         if profile:

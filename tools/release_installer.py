@@ -1,7 +1,7 @@
 """Interactive installer used by the Windows, macOS, and Linux release bundles.
 
 It installs Hearth and its database, then saves the selected inference endpoint.
-Inference engines and their model weights remain separate platform-specific installs.
+Optional local runtime installation is available; model weights are separate downloads.
 """
 from __future__ import annotations
 
@@ -51,9 +51,17 @@ def install(args=None):
     parser.add_argument("--backend", choices=BACKENDS, help="Backend key to configure instead of asking")
     parser.add_argument("--backend-url", help="Backend URL; defaults to its local endpoint")
     parser.add_argument("--postgres-port", type=int, default=55432)
+    parser.add_argument("--project-name", help="Separate Docker Compose project name")
+    parser.add_argument("--no-api-key", action="store_true", help="Skip the API key prompt without changing an existing key")
     parser.add_argument("--skip-browser", action="store_true", help="Skip Playwright Chromium installation")
     parser.add_argument("--skip-agent-image", action="store_true", help="Skip the Docker image used by coding agents")
+    sys.path.insert(0, str(ROOT))
+    from tools import backend_installer
+    backend_installer.add_arguments(parser)
     options = parser.parse_args(args)
+    if not 1 <= options.postgres_port <= 65535:
+        parser.error("--postgres-port must be between 1 and 65535")
+    backends = backend_installer.select_backends(options)
     system = platform.system()
     if system not in {"Windows", "Darwin", "Linux"}:
         parser.error(f"Unsupported operating system: {system}")
@@ -83,13 +91,20 @@ def install(args=None):
         _run([str(venv_python), "-m", "pip", "install", "-r", "requirements.txt"])
         _run([str(venv_python), "-c", "import pypdf"])
         if not options.skip_browser:
-            _run([str(venv_python), "-m", "playwright", "install", "chromium"])
+            browser_command = [str(venv_python), "-m", "playwright", "install"]
+            if system == "Linux":
+                browser_command.append("--with-deps")
+            _run(browser_command + ["chromium"])
         child_env = os.environ.copy()
         child_env["HEARTH_RELEASE_INSTALL_IN_VENV"] = "1"
         forwarded = list(sys.argv[1:] if args is None else args)
-        if "--backend" not in forwarded:
+        # Forward the resolved choice so the child never asks twice.
+        forwarded = [arg for arg in forwarded if arg != "--skip-backend-install"]
+        if not options.install_backends:
+            forwarded += (["--install-backends", *backends] if backends else ["--skip-backend-install"])
+        if not any(arg == "--backend" or arg.startswith("--backend=") for arg in forwarded):
             forwarded += ["--backend", backend]
-        if "--backend-url" not in forwarded:
+        if not any(arg == "--backend-url" or arg.startswith("--backend-url=") for arg in forwarded):
             forwarded += ["--backend-url", backend_url]
         subprocess.run([str(venv_python), str(Path(__file__).resolve()), *forwarded],
                        cwd=ROOT, env=child_env, check=True)
@@ -98,6 +113,10 @@ def install(args=None):
     sys.path.insert(0, str(ROOT))
     from tools import first_time_setup as setup
 
+    setup.validate_existing_installation()
+    if backends:
+        backend_installer.install_backends(backends)
+
     if not options.skip_agent_image and system == "Linux":
         setup.install_agent_runtime()
     elif system != "Linux":
@@ -105,15 +124,24 @@ def install(args=None):
     values = setup.prepare_environment(options.postgres_port)
     os.environ["DATABASE_URL"] = values["DATABASE_URL"]
     compose = ["docker", "compose", "--env-file", str(ROOT / ".env.postgres"), "-f", str(ROOT / "compose.yaml")]
+    if options.project_name:
+        compose += ["--project-name", options.project_name]
     _run(compose + ["up", "-d", "--wait", "postgres"])
     setup.initialize_application_storage()
+    from local_tls import ensure_certificate
+    ensure_certificate(ROOT / 'certs')
 
     import settings_store
     settings_store.set(f"{backend}_base_url", backend_url)
-    secret = getpass.getpass(f"{BACKENDS[backend][0]} API key (leave blank if none): ")
-    settings_store.set(f"{backend}_api_key", secret)
+    if not options.no_api_key:
+        try:
+            secret = getpass.getpass(f"{BACKENDS[backend][0]} API key (leave blank to preserve an existing key): ")
+        except EOFError:
+            secret = ""
+        if secret:
+            settings_store.set(f"{backend}_api_key", secret)
     print(f"\nHearth is installed and configured for {BACKENDS[backend][0]} at {backend_url}.")
-    print("The backend runtime and model weights are separate; install and start that backend before chatting.")
+    print("Download a model in Hearth before chatting. Runtimes not selected for installation must be installed separately.")
     print("Start Hearth with deploy/start-hearth.ps1 on Windows, or bash deploy/start-hearth.sh on macOS/Linux.")
     print("Then open https://localhost:5443 and create the administrator account on first use.")
 

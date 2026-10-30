@@ -62,6 +62,11 @@ _NPU_REQUEST_LOCK = threading.Lock()
 def _normalize_tool_choice(body: dict) -> dict:
     """Translate OpenAI named-function forcing to required-only form for Lemonade."""
     choice = body.get("tool_choice")
+    if choice == "none":
+        # Some native template parsers still enter tool mode when schemas are
+        # present despite tool_choice=none. Omit the disabled capability entirely.
+        return {key: value for key, value in body.items()
+                if key not in {"tools", "tool_choice", "parallel_tool_calls"}}
     if not isinstance(choice, dict):
         return body
     function = choice.get("function")

@@ -40,9 +40,12 @@ all documented in their own sections below.
 
 ## What you can do with Hearth
 
+Lemonade requests with tools disabled omit tool schemas before reaching the runtime,
+preventing native tool parsers from rejecting ordinary answers.
+
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
+| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
@@ -201,6 +204,9 @@ for injection, disclosure, unsafe requests, privacy, and unauthorized actions; i
 does not scan the host or prove the model or deployment secure. Tool calls are never
 executed by these suites. Results and individual check details are saved with the
 existing model-test reports.
+Tool checks allow up to 2,048 completion tokens so models that spend tokens on
+internal reasoning can finish their tool arguments. Invalid tool JSON reports
+include the finish reason, token count, and a bounded argument excerpt for diagnosis.
 
 Open **Model tests** and choose an installed chat model to run its test suite by
 itself. **Test Model** on a model card runs the model from that card. Follow the
@@ -542,9 +548,8 @@ the matching bundle and run `deploy/install-release.ps1` on Windows or
 dependencies, prepares PostgreSQL, and asks which backend endpoint to configure.
 The installer verifies the PDF reader dependency used by Hearth Chat attachments.
 Linux setup also builds the isolated coding-agent container; agent execution is
-Linux-only. You can enter a different URL or API key during setup. The selected
-inference runtime and its model weights are installed separately; they are not
-bundled with Hearth.
+Linux-only. You can enter a different URL or API key during setup. Setup offers optional installation of LM Studio headless (llmster) and Lemonade
+(Ubuntu only). Model weights remain separate downloads.
 
 After setup, run `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443`; the
@@ -571,7 +576,7 @@ start after a reboot, even before login. Schedules are saved in PostgreSQL and r
 if a run became due while Hearth was stopped, it runs once after startup and skips
 missed intervals. With `--no-service`, scheduled runs start only while you run
 Hearth manually. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for
-first-run account setup. Model backends and weights are installed separately.
+first-run account setup. Optional runtime installation is offered during setup; model weights are downloaded separately.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -1079,3 +1084,126 @@ behavior superseded by later fixes; use this README for current setup and usage.
 ### Agent task inputs and live execution
 
 Agent assignments now group the task name, goal, technical requirements, persistent memory notes, and HTML result requirements before advanced execution controls. HTML requirements accept a plain-text template with `TITLE`, `SECTIONS`, `COMPONENTS`, `INTERACTIONS`, and `ACCESSIBILITY` lines. The execution page presents activity as a live terminal-style stream while retaining the rendered HTML result preview. Technical requirements and memory notes are included in the account-scoped agent RAG context and durable `agent_memory.md` indexing.
+
+
+### Optional automatic model runtime installation
+
+Both first-time and release installers ask whether to install LM Studio, Lemonade,
+both, or skip (the default for an existing or remote backend). For unattended setup:
+
+```bash
+bash deploy/install-first-time.sh --install-backends lmstudio lemonade
+# Release bundles use the same options:
+bash deploy/install-release.sh --backend lmstudio --install-backends lmstudio
+# Preserve an existing runtime or use a remote server:
+bash deploy/install-first-time.sh --skip-backend-install
+```
+
+LM Studio installation uses the [official headless llmster installer](https://lmstudio.ai/docs/developer/core/headless)
+on Linux, macOS, and Windows, reuses an existing `lms` executable, and starts its
+API at `http://localhost:1234`. This installs the server runtime without the desktop
+app. Startup after reboot is not configured; run `lms daemon up` and
+`lms server start --port 1234` again or configure startup separately.
+Lemonade automatic installation supports Ubuntu, uses its
+[official stable PPA](https://lemonade-server.ai/docs/guide/install/ubuntu/), and
+requires sudo for missing packages. Existing Lemonade CLI or snap installations
+are preserved. Its package manages the service at `http://localhost:13305`.
+Other operating systems require manual Lemonade installation; unsupported choices
+stop setup before either runtime is installed. Installation failures stop setup
+and show the failed command; rerun after resolving the error, or skip runtime installation.
+These choices do not download models. Configure the local URL in Hearth Settings
+(the release installer saves its selected endpoint), then download a model in Hearth.
+An explicitly configured remote URL is preserved even when local runtimes are installed.
+
+
+For noninteractive setup, use `--skip-backend-install` or an explicit
+`--install-backends` selection; closed input skips the optional runtime prompt.
+Release installers accept `--no-api-key` to skip the secret prompt while preserving
+an existing key, and `--project-name NAME` with `--postgres-port PORT` to isolate
+an additional installation. Blank API key input also preserves an existing key.
+Use `--no-service` with the Ubuntu first-time installer when running in a container
+without systemd. Docker must already be available to that container.
+
+On clean Ubuntu installations, optional LM Studio setup installs `libatomic1`
+when missing and fetches the official installer with `curl`. Current Lemonade
+packages are detected by `lemond` as well as the legacy executable. In containers
+without systemd, start Lemonade manually with `lemond`; setup reports this instead
+of claiming the service started. First-time setup requires Python 3.12+ and reports
+an actionable error if service installation is requested without systemd. Installing
+missing host packages no longer tries to restart an already accessible Docker daemon.
+
+Linux browser installation includes Playwright's required OS libraries using
+`playwright install --with-deps chromium` (sudo may be requested). `--skip-browser`
+skips both the browser and those libraries. This prevents a fresh installation from
+reporting success with a Chromium executable that cannot launch.
+
+### Run Hearth itself in Docker (Linux)
+
+Run `bash deploy/install-docker.sh` to build and start a separate containerized
+Hearth at **https://localhost:5444**. Create its administrator account on first
+visit. Docker Engine, Compose, and host Python 3 are required. Setup generates a
+private `.env.docker` once; its default database port is 55434. The existing host
+installation and its database remain separate. Edit `.env.docker` to customize
+ports, then rerun the script. Browser dependencies are included in the image.
+
+The Linux deployment uses host networking so existing local model servers remain
+reachable through localhost. Configure their URLs in the new Hearth's Settings;
+model servers and models are separate from the app container. The app has Docker
+socket access to manage isolated coding agents; deploy it only on a trusted host.
+Agent relay files use the same absolute bind path in the app and on the host.
+Application data, certificates, and PostgreSQL use persistent volumes, while relay
+files live under `data/docker-hearth/agent-runtime` by default. The Docker agent
+image is built on first agent use if missing.
+
+Use `docker compose --env-file .env.docker -f compose.docker.yaml logs -f hearth`
+for logs and the same command with `stop` instead of `logs -f hearth` to stop the
+stack. Rerunning the installer rebuilds the app while retaining accounts and data.
+The containers restart automatically with Docker. This deployment currently supports
+Linux; Windows/macOS users should use the release installers.
+
+In the Docker instance, background support-model loading starts disabled to avoid
+eagerly loading models on shared host runtimes. Enable it in Settings if desired;
+that choice persists across container restarts.
+
+On first creation of `.env.docker`, setup selects free ports starting at 5444
+for HTTPS and 55434 for PostgreSQL. It prints the actual app URL when ready.
+Existing saved port choices are preserved on reruns.
+
+
+### Local certificates and trusted Docker HTTPS
+
+First-time setup, release setup, Docker startup, and direct app startup create
+90-day local certificates. They automatically replace Hearth-generated 825-day
+certificates that can trigger `NET::ERR_CERT_VALIDITY_TOO_LONG`, and renew local
+certificates when expired or within seven days of expiry at startup. Existing
+private keys are reused with private file permissions. Certificates from external
+issuers or with custom subjects are preserved. An incomplete certificate/key pair
+produces a recovery message instead of overwriting the remaining file.
+A continuously running instance should be restarted before its local certificate
+expires. Certificate files persist across Docker container recreation.
+
+Local certificates remain self-signed: shortening validity does not make them
+browser-trusted. For trusted HTTPS with an existing connected Tailscale host:
+
+```bash
+bash deploy/install-docker.sh --tailscale-https-port 8448
+```
+
+Choose an unused Tailscale HTTPS port. The installer builds/starts Docker Hearth,
+then adds a persistent Tailscale Serve route for that port. Existing routes on
+other ports are retained. Open the `https://HOSTNAME.ts.net:8448` URL printed by
+Tailscale, using a device connected to the tailnet. Tailscale supplies the trusted
+certificate and proxies to the container's local HTTPS endpoint. This is private
+tailnet access; the installer does not enable public Funnel access. The option
+requires Tailscale already installed and connected, with permission to manage Serve.
+
+
+First-time setup validates database ports and service availability before prompting
+for optional runtime installation. Without systemd, the shell installer reports
+`--no-service` before installing packages. Both setup paths refuse to create a fresh
+database over an unconfigured installation with populated legacy SQLite files;
+configure the existing installation's `DATABASE_URL` first. Runtime and agent-image
+installation follow this check. Rerunning the normal service installer restarts
+`ai-webui.service` so updated code and renewed certificates take effect; active
+assignments may be interrupted and can be resumed after restart. Use `--no-service`
+when preparing an installation without starting/restarting the service.

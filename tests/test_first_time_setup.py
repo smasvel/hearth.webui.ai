@@ -70,6 +70,10 @@ class FirstTimeSetupTests(unittest.TestCase):
              patch('users_store.init_db') as init_users, \
              patch('users_store.count_users', return_value=2), \
              patch('agent_store.init_db') as init_agents, \
+             patch('model_metadata_store.init_db'), \
+             patch('model_metadata_store.import_test_runs'), \
+             patch('model_metadata_store.migrate_registry_file'), \
+             patch('model_resource_warnings.init_db'), \
              patch('settings_store.init_db') as init_settings, \
              patch('settings_store.migrate_legacy_environment') as migrate_settings, \
              patch('secret_store.get_or_create_flask_key', return_value='stable-key') as save_secret:
@@ -119,3 +123,27 @@ class FirstTimeSetupTests(unittest.TestCase):
             setup.install_agent_runtime(rebuild=True)
         self.assertEqual(run.call_count, 3)
         self.assertEqual(run.call_args_list[1].args[0][1], 'build')
+
+    def test_invalid_port_fails_before_runtime_prompt(self):
+        with patch('sys.argv', ['first_time_setup', '--postgres-port', '0']), \
+             patch('tools.backend_installer.select_backends') as choose, \
+             patch.object(setup.subprocess, 'run') as run:
+            with self.assertRaises(SystemExit):
+                setup.main()
+        choose.assert_not_called()
+        run.assert_not_called()
+
+    def test_legacy_data_guard_runs_before_installation(self):
+        with patch.object(setup, 'has_sqlite_data', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'Existing local database'):
+                setup.validate_existing_installation()
+        self.assertFalse((self.root / '.env').exists())
+        self.assertFalse((self.root / '.env.postgres').exists())
+
+    def test_service_rerun_restarts_to_apply_code_and_certificate(self):
+        with patch.object(setup.Path, 'home', return_value=self.root), \
+             patch.object(setup.subprocess, 'run') as run:
+            setup.install_service()
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(['systemctl', '--user', 'enable', 'ai-webui.service'], commands)
+        self.assertIn(['systemctl', '--user', 'restart', 'ai-webui.service'], commands)

@@ -149,10 +149,18 @@ def install_service():
     if not path.exists():
         path.write_text(service_text(ROOT))
     subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
-    subprocess.run(['systemctl', '--user', 'enable', '--now', 'ai-webui.service'], check=True)
+    subprocess.run(['systemctl', '--user', 'enable', 'ai-webui.service'], check=True)
+    # enable --now leaves an already-running service on its old code/certificate.
+    subprocess.run(['systemctl', '--user', 'restart', 'ai-webui.service'], check=True)
     # Keep the user systemd manager active at boot before an interactive login,
     # so the app's enabled user service starts after a machine restart.
     subprocess.run(['loginctl', 'enable-linger', getpass.getuser()], check=True)
+
+
+def validate_existing_installation():
+    existing = dotenv_values(ROOT / '.env')
+    if not existing.get('DATABASE_URL') and has_sqlite_data():
+        raise RuntimeError('Existing local database files contain data. Configure DATABASE_URL for your installation before running setup.')
 
 
 def main():
@@ -162,18 +170,23 @@ def main():
     parser.add_argument('--project-name', help='Optional separate Compose project name')
     parser.add_argument('--rebuild-agent-image', action='store_true',
                         help='Rebuild the isolated agent image even if it is already installed')
+    from tools import backend_installer
+    backend_installer.add_arguments(parser)
     args = parser.parse_args()
     if not 1 <= args.postgres_port <= 65535:
         parser.error('--postgres-port must be between 1 and 65535')
     if os.name != 'nt' and os.geteuid() == 0:
         parser.error('Run as your regular user, not sudo; use the host dependency installer for privileged packages.')
+    if not args.no_service and not Path('/run/systemd/system').is_dir():
+        parser.error('systemd is not running. Use --no-service and start Hearth manually.')
     if not shutil.which('docker'):
         raise RuntimeError('Run deploy/install-first-time.sh to install missing host dependencies first.')
     subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL)
+    validate_existing_installation()
+    backends = backend_installer.select_backends(args)
+    if backends:
+        backend_installer.install_backends(backends)
     install_agent_runtime(args.rebuild_agent_image)
-    existing = dotenv_values(ROOT / '.env')
-    if not existing.get('DATABASE_URL') and has_sqlite_data():
-        raise RuntimeError('Existing local database files contain data. Configure DATABASE_URL for your installation before running setup.')
     values = prepare_environment(args.postgres_port)
     # This process must use the selected configuration even if the caller exported
     # a different URL for a previous development/test session.
@@ -183,6 +196,8 @@ def main():
         compose += ['--project-name', args.project_name]
     subprocess.run(compose + ['up', '-d', '--wait', 'postgres'], check=True, cwd=ROOT)
     user_count = initialize_application_storage()
+    from local_tls import ensure_certificate
+    ensure_certificate(ROOT / 'certs')
     if user_count == 0:
         print('No users exist. The first page visit will prompt you to create the administrator account.')
     else:

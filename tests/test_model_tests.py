@@ -370,6 +370,20 @@ class ModelHandoffTests(unittest.TestCase):
 
 
 class SuiteTests(unittest.TestCase):
+    def test_tool_check_budget_and_truncation_diagnostics(self):
+        response = Mock()
+        response.json.return_value = {'choices': [{'message': {'tool_calls': [
+            {'id': 'edit-1', 'function': {'name': 'edit', 'arguments': '{"path":"src/example.py"'}}
+        ]}, 'finish_reason': 'length'}], 'usage': {'completion_tokens': 2048}}
+        with patch('tools.test_flm_model.requests.post', return_value=response) as post:
+            results = run_suite('x', 'http://local', suite='core',
+                                only={('file-edit-contract', False)})
+        self.assertEqual(post.call_args.kwargs['json']['max_tokens'], 2048)
+        self.assertFalse(results[0]['passed'])
+        self.assertIn("finish reasons=['length']", results[0]['error'])
+        self.assertIn('completion tokens=2048', results[0]['error'])
+        self.assertIn('src/example.py', results[0]['error'])
+
     def test_cancelled_suite_makes_no_network_request(self):
         event = threading.Event(); event.set()
         with patch('tools.test_flm_model.requests.post') as post:

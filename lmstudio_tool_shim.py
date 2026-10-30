@@ -212,7 +212,10 @@ def _with_corrective_nudge(body: dict) -> dict:
 
 
 def _stream_chunks(upstream) -> list[bytes]:
-    return [raw + b"\n" if raw else b"\n" for raw in upstream.iter_lines()]
+    # requests.iter_lines() strips the blank line that terminates each SSE event.
+    # Re-add the full CRLF-independent delimiter so OpenAI clients can dispatch each
+    # event and recognize the final [DONE] event instead of reporting a truncated stream.
+    return [raw + b"\n\n" if raw else b"\n" for raw in upstream.iter_lines()]
 
 
 def _stream_content_and_tool_calls(chunks: list[bytes]) -> tuple[str, bool]:

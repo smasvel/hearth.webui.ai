@@ -2,7 +2,6 @@ import datetime
 import concurrent.futures
 import functools
 import html
-import ipaddress
 import json
 import os
 import queue
@@ -23,7 +22,7 @@ from urllib.parse import urlsplit
 import psutil
 import requests
 from dotenv import dotenv_values, load_dotenv, unset_key
-from flask import Flask, Response, copy_current_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
+from flask import Flask, Response, copy_current_request_context, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 load_dotenv()
@@ -4256,6 +4255,67 @@ def _last_reply_was_image(messages: list[dict]) -> bool:
     return False
 
 
+def _fit_chat_context(messages: list[dict], max_prompt_tokens: int) -> list[dict]:
+    """Keep ordinary chat requests below small local model context windows.
+
+    Backends do not expose a common tokenizer, so use a conservative four-characters
+    per token estimate. Preserve the leading system instruction and the newest exchange;
+    discard oldest turns first and trim an individual oversized message when necessary.
+    """
+    if not messages:
+        return messages
+    budget = max(4096, max_prompt_tokens * 4)
+    system = [m for m in messages if m.get("role") == "system"]
+    turns = [m for m in messages if m.get("role") != "system"]
+    system_chars = sum(len(str(m.get("content") or "")) for m in system)
+    if system_chars > min(8000, budget // 2):
+        system_budget = min(8000, budget // 2)
+        combined = "\n\n".join(str(m.get("content") or "") for m in system)
+        system = [{"role": "system", "content":
+                   combined[:2000] + "\n\n[Hearth compacted older injected context]\n\n" +
+                   combined[-(system_budget - 2050):]}]
+    system_chars = sum(len(str(m.get("content") or "")) for m in system)
+    remaining = max(2000, budget - system_chars)
+    kept: list[dict] = []
+    used = 0
+    for message in reversed(turns):
+        content = str(message.get("content") or "")
+        cost = len(content)
+        if used + cost <= remaining:
+            kept.append(message)
+            used += cost
+            continue
+        room = remaining - used
+        if room > 400:
+            clipped = dict(message)
+            clipped["content"] = content[-room:]
+            kept.append(clipped)
+        break
+    kept.reverse()
+    omitted = len(turns) - len(kept)
+    if omitted:
+        notice = {"role": "system", "content":
+                  f"Hearth omitted {omitted} older chat message(s) to fit the loaded model's context window. "
+                  "Use the visible recent conversation as the authoritative context."}
+        system = system + [notice]
+    return system + kept
+
+
+def _model_context_limit(backend, model: str) -> int | None:
+    """Return the selected model's active/configured context limit when available."""
+    try:
+        entry = next((item for item in backend.list_models() if item.get("id") == model), None)
+    except Exception:
+        return None
+    if not entry:
+        return None
+    for key in ("loaded_context_length", "configured_context_length", "max_context_length"):
+        value = entry.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
 @app.delete("/api/conversations/<conversation_id>")
 @login_required
 def api_delete_conversation(conversation_id):
@@ -4539,6 +4599,11 @@ def api_start_chat():
         body = request.get_json(force=True, silent=True) or {}
     if not isinstance(body, dict):
         return jsonify({"error": "request must be an object"}), 400
+    # The generation worker re-enters api_chat() after this request has been accepted.
+    # Multipart parsing consumes the request stream, so retain the validated envelope for
+    # that worker instead of asking Flask to parse the consumed multipart body as JSON.
+    g.chat_start_body = body
+    request.environ["hearth_chat_start_body"] = body
     messages, _, error = _validate_chat_request(body)
     if error:
         return jsonify({"error": error}), 400
@@ -4590,7 +4655,9 @@ def api_start_chat():
 @app.post("/api/chat")
 @login_required
 def api_chat():
-    body = request.get_json(force=True, silent=True) or {}
+    body = (request.environ.get("hearth_chat_start_body")
+            or getattr(g, "chat_start_body", None)
+            or request.get_json(force=True, silent=True) or {})
     messages, max_tokens, validation_error = _validate_chat_request(body)
     max_tool_rounds = _chat_limits()["chat_max_tool_rounds"]
     model = body.get("model")
@@ -4775,6 +4842,18 @@ def api_chat():
         backend, backend_error, backend_name = fastflowlm, fastflowlm.FastFlowLMError, "fastflowlm"
     else:
         backend, backend_error, backend_name = lms, lms.LMStudioError, "lmstudio"
+
+    # Apply the guard after web/document context injection, using this model's actual
+    # active/configured maximum. Reserve the requested completion budget and a small
+    # template overhead so the combined request stays within the model window.
+    if not image_request and not video_request:
+        context_limit = _model_context_limit(backend, model)
+        if context_limit:
+            prompt_budget = max(1024, context_limit - (max_tokens or 1024) - 256)
+        else:
+            # Backend metadata can be unavailable while a runtime is starting.
+            prompt_budget = 3500
+        messages = _fit_chat_context(messages, prompt_budget)
 
     def generate():
         if video_request:
@@ -5111,85 +5190,13 @@ def api_chat():
 
 
 def _local_ipv4_addresses() -> list[str]:
-    """Best-effort discovery of this machine's LAN IPv4 addresses."""
-    import subprocess
-
-    try:
-        out = subprocess.run(
-            ["hostname", "-I"], capture_output=True, text=True, timeout=5
-        ).stdout
-    except Exception:
-        out = ""
-    if not out.strip():
-        # `hostname -I` is not available on macOS. Use the default route to discover
-        # the interface address there, without sending any traffic.
-        try:
-            import socket
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                probe.connect(("192.0.2.1", 80))
-                out = probe.getsockname()[0]
-            finally:
-                probe.close()
-        except Exception:
-            return []
-    addrs = []
-    for tok in out.split():
-        try:
-            ip = ipaddress.ip_address(tok)
-        except ValueError:
-            continue
-        if ip.version == 4 and not ip.is_loopback:
-            addrs.append(tok)
-    return addrs
+    from local_tls import local_ipv4_addresses
+    return local_ipv4_addresses()
 
 
 def ensure_self_signed_cert() -> None:
-    if CERT_FILE.exists() and KEY_FILE.exists():
-        return
-    CERT_DIR.mkdir(exist_ok=True)
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ai-webui.local")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-
-    san_entries = [
-        x509.DNSName("localhost"),
-        x509.DNSName("ai-webui.local"),
-        x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-    ]
-    for ip_str in _local_ipv4_addresses():
-        san_entries.append(x509.IPAddress(ipaddress.ip_address(ip_str)))
-
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=825))
-        .add_extension(
-            x509.SubjectAlternativeName(san_entries),
-            critical=False,
-        )
-        .sign(key, hashes.SHA256())
-    )
-
-    KEY_FILE.write_bytes(
-        key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    print(f"Generated self-signed certificate at {CERT_FILE}")
+    from local_tls import ensure_certificate
+    ensure_certificate(CERT_DIR, addresses=_local_ipv4_addresses())
 
 
 def _warm_up_rag_and_voice_models() -> None:
