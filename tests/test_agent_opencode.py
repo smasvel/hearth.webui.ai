@@ -113,6 +113,16 @@ class ContainerRecoveryTests(unittest.TestCase):
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['temperature'], 0.2)
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['keep'], 'yes')
 
+    def test_agent_config_bounds_compaction_to_selected_model_context(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        provider = {'options': {}, 'models': {'model': {'limit': {'context': 65536, 'output': 8192}}}}
+        config = client._agent_config(
+            {'compaction': {'auto': True, 'keep': {'tokens': 65536}, 'buffer': 1024}},
+            'lemonade', 'model', provider)
+        self.assertEqual(config['compaction'], {
+            'auto': True, 'keep': {'tokens': 8192}, 'buffer': 8192,
+        })
+
     def test_live_model_relay_socket_is_reused_instead_of_unlinked(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'relay.sock'

@@ -1037,24 +1037,34 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 
 .composer {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
+  background: var(--panel);
 }
 
 #chat-input {
-  flex: 1;
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
   resize: vertical;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 14px;
+  padding: 14px 16px;
+  font-size: 16px;
+  line-height: 1.55;
   font-family: inherit;
-  min-height: 88px;
-  max-height: 500px;
+  height: 160px;
+  min-height: 160px;
+  max-height: min(420px, 38dvh);
+  overflow-y: auto;
 }
 
 .code-modal-overlay {
@@ -1137,8 +1147,38 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 
 .composer-btn-row {
   display: flex;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
   gap: 8px;
+}
+
+.composer-tool-group {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.composer-tool-group + .composer-tool-group {
+  margin-left: 4px;
+}
+
+.composer-icon-btn:focus-visible,
+.voice-language:focus-visible,
+#send-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.composer .composer-icon-btn {
+  width: 44px;
+  height: 44px;
+}
+
+.composer .voice-language {
+  width: 104px;
+  height: 44px;
 }
 
 .composer-icon-btn {
@@ -1209,6 +1249,10 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 }
 
 #send-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-width: 80px;
+  min-height: 44px;
   background: var(--accent);
   color: #0d1713;
   border: none;
@@ -1362,6 +1406,25 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .login-form button:hover { transform:translateY(-1px); filter:brightness(1.05); box-shadow:0 11px 30px #55d2a433; }
 .login-form button span { font-size:18px; line-height:12px; font-weight:400; }
 .login-secure { display:flex; align-items:center; justify-content:center; gap:8px; margin-top:26px; color:#68757c; font-size:10px; }.login-secure svg { width:13px;height:13px;fill:none;stroke:#69cba5;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round; }.login-secure span { color:#39434a; }
+.login-demo-trigger { display:flex; align-items:center; gap:11px; width:100%; min-height:56px; margin:-15px 0 22px; padding:9px 13px; border:1px solid #ffffff18; border-radius:12px; color:#e0eae6; text-align:left; cursor:pointer; background:linear-gradient(135deg,#172229,#11181e); box-shadow:0 8px 26px #0003; transition:border-color .18s,background .18s,transform .18s; }
+.login-demo-trigger:hover { transform:translateY(-1px); border-color:#77dfb577; background:linear-gradient(135deg,#1b2a30,#121b21); }
+.login-demo-trigger:focus-visible,.login-demo-close:focus-visible { outline:2px solid #79e2b7; outline-offset:3px; }
+.login-demo-play { display:grid; place-items:center; flex:0 0 32px; width:32px; height:32px; border:1px solid #77dfb577; border-radius:50%; color:#8ae8c2; background:#65d7ad13; font-size:11px; padding-left:2px; box-shadow:0 0 18px #63d7ac1c; }
+.login-demo-copy { display:flex; flex:1; flex-direction:column; gap:4px; font-size:12px; font-weight:650; letter-spacing:.1px; }
+.login-demo-copy small { color:#82918f; font-size:10px; font-weight:450; }
+.login-demo-arrow { color:#88dabb; font-size:16px; }
+.login-demo-dialog { width:min(900px,calc(100vw - 32px)); max-width:none; max-height:calc(100dvh - 28px); margin:auto; padding:18px; overflow-y:auto; border:1px solid #68827c66; border-radius:18px; color:#e0eae6; background:linear-gradient(145deg,#172229,#0e151b); box-shadow:0 25px 100px #000c; }
+.login-demo-dialog::backdrop { background:#060a0edb; backdrop-filter:blur(8px); }
+.login-demo-dialog[open] { animation:demoDialogIn .18s ease-out both; }
+.login-demo-dialog-head { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 1px 14px; }
+.login-demo-dialog-head span { color:#7ddbb6; font-size:9px; font-weight:750; letter-spacing:1.7px; }
+.login-demo-dialog-head h2 { margin:5px 0 0; color:#ecf5f1; font-size:20px; letter-spacing:-.4px; }
+.login-demo-close { display:grid; place-items:center; flex:0 0 38px; width:38px; height:38px; border:1px solid #ffffff20; border-radius:50%; color:#d8e4df; background:#ffffff08; font-family:inherit; font-size:25px; font-weight:300; line-height:1; cursor:pointer; }
+.login-demo-close:hover { border-color:#77dfb577; color:#94e6c5; }
+.login-demo-dialog video { display:block; width:100%; max-height:calc(100dvh - 150px); aspect-ratio:16/9; border:1px solid #36474b; border-radius:10px; background:#05090c; object-fit:contain; }
+.login-demo-dialog p { margin:11px 2px 0; color:#91a19d; font-size:11px; line-height:1.55; }
+.login-demo-dialog .login-demo-error { color:#ffb5a8; }
+@keyframes demoDialogIn { from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)} }
 .login-panel-foot { width:100%; max-width:420px; display:flex; justify-content:space-between; margin-top:42px; color:#68747b; font-size:10px; }.login-panel-foot span { font-size:8px; letter-spacing:1.2px; }
 @keyframes loginPulse { 0%,100%{opacity:1;box-shadow:0 0 12px #63dbac}50%{opacity:.45;box-shadow:0 0 4px #63dbac} }
 @keyframes routeFlow { to { stroke-dashoffset:-150; } }
@@ -1491,22 +1554,24 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
     max-width: 88%;
   }
 
-  /* Textarea gets the full row to itself so there's actually room to type on a phone
-     screen — the button row (A / globe / image / send) moves below it instead of
-     sharing the same horizontal line, which used to leave ~70px of typing space on a
-     375px-wide screen (real measurement, not estimated: 5 elements' padding/gaps/text
-     ate the rest). */
   .composer {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
+    gap: 8px;
     padding: 10px 12px max(10px, env(safe-area-inset-bottom));
   }
 
+  #chat-input {
+    height: 128px;
+    min-height: 112px;
+    max-height: min(320px, 35dvh);
+    padding: 12px;
+  }
+
   .composer-btn-row {
-    justify-content: flex-end;
-    gap: 6px;
-    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .composer-tool-group + .composer-tool-group {
+    margin-left: 0;
   }
 
   .composer-icon-btn {

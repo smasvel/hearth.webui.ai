@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>{{ 'Create administrator' if setup_mode else 'Sign in' }} — Hearth</title>
-  <link rel="stylesheet" href="{{ asset('style.css') }}&login=minions-v6" />
+  <link rel="stylesheet" href="{{ asset('style.css') }}&login=demo-dialog-v8" />
+  <script src="{{ asset('login.js') }}&demo=1" defer></script>
 </head>
 <body class="login-body">
   <main class="login-shell login-shell-centered">
@@ -53,6 +54,11 @@
           <h2 id="login-heading">{{ 'Create your space' if setup_mode else 'Good to see you.' }}</h2>
           <p>{{ 'Set up your administrator account to begin.' if setup_mode else 'Sign in to pick up where your agents left off.' }}</p>
         </div>
+        <button class="login-demo-trigger" type="button" aria-haspopup="dialog" aria-controls="login-demo-dialog">
+          <span class="login-demo-play" aria-hidden="true">▶</span>
+          <span class="login-demo-copy">Watch the 25-second demo<small>See Hearth in action · sound on</small></span>
+          <span class="login-demo-arrow" aria-hidden="true">↗</span>
+        </button>
         {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
         <form method="post" class="login-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -79,5 +85,17 @@
       <div class="login-panel-foot">A calmer way to work with AI <span>© HEARTH</span></div>
     </section>
   </main>
+  <dialog class="login-demo-dialog" id="login-demo-dialog" aria-labelledby="login-demo-title" aria-describedby="login-demo-description">
+    <div class="login-demo-dialog-head">
+      <div><span>HEARTH · PRODUCT TOUR</span><h2 id="login-demo-title">Your private AI workspace</h2></div>
+      <button class="login-demo-close" type="button" aria-label="Close demo">×</button>
+    </div>
+    <video id="login-demo-video" controls playsinline preload="none" poster="{{ url_for('hearth_feature_demo_poster') }}" aria-label="Hearth product feature demo with music and sound effects">
+      <source src="{{ url_for('hearth_feature_demo') }}" type="video/mp4" />
+      Your browser does not support embedded video. <a href="{{ url_for('hearth_feature_demo') }}">Open the Hearth demo video</a>.
+    </video>
+    <p id="login-demo-description">Models, chat, project agents, evaluations, and creative tools — all in your private AI workspace.</p>
+    <p class="login-demo-error" id="login-demo-error" role="status" hidden>Playback did not start. Use the video controls or <a href="{{ url_for('hearth_feature_demo') }}" target="_blank" rel="noopener">open the video directly</a>.</p>
+  </dialog>
 </body>
 </html>

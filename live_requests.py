@@ -93,7 +93,7 @@ def _persist_finished(entry: dict) -> None:
 
 def start(
     *, source: str, backend: str, model: str, max_tokens: int | None = None,
-    is_npu: bool = False, request_content: str | None = None,
+    is_npu: bool = False, request_content: str | None = None, task_id: str | None = None,
 ) -> int:
     now = time.monotonic()
     wall_now = time.time()
@@ -102,6 +102,7 @@ def start(
         _active[req_id] = {
             "id": req_id,
             "source": source,
+            "task_id": task_id,
             "backend": backend,
             "model": model,
             "max_tokens": max_tokens,
@@ -182,6 +183,7 @@ def snapshot(limit: int = 100) -> list[dict]:
         out.append({
             "id": e["id"],
             "source": e["source"],
+            "task_id": e.get("task_id"),
             "backend": e["backend"],
             "model": e["model"],
             "is_npu": e.get("is_npu", False),

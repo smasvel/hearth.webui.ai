@@ -42,7 +42,7 @@ all documented in their own sections below.
 
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
+| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
@@ -365,7 +365,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
@@ -427,9 +427,15 @@ model testing serve different purposes: agent sessions work on real projects;
 the evaluation suite checks model responses using simulated workflows.
 The supervisor uses the durable completion time on the latest assistant message
 when reconciling a finished response, so a delayed session activity indicator does
-not leave the task marked as working. Hearth waits up to 60 minutes for a model's
-first response token; after generation starts, 30 minutes without a new response,
-tool update, or streamed token marks the assignment as needing review. Agent conversation logs also
+not leave the task marked as working, including when an old prompt remains in its
+inbox. If no model request or project tool is running for 90 seconds, Hearth interrupts
+the abandoned session, saves its current files, and retries in a fresh session without
+using another work cycle. Real model requests have a 10-minute first-token limit and
+a 5-minute limit without further token or tool progress. Current streamed tokens are
+checked before either timeout, including when OpenCode reports idle. Recovery is
+limited to two fresh sessions before the assignment moves to **Needs review**.
+Three consecutive responses without project tool calls also trigger recovery, so an
+agent cannot keep returning implementation text without updating files. Agent conversation logs also
 include OpenCode tool errors to help explain failed steps. During long model turns,
 Activity reports the count of tokens received from the local model so you can tell
 that generation is progressing. Shell tool inputs appear as shell commands in the
@@ -440,6 +446,10 @@ review state after three consecutive interruptions. When a parked agent containe
 restarted, Hearth refreshes its service address before reconnecting. Agents are
 instructed to keep files and scratch work inside the project workspace and use the
 tools and dependencies already available in the container.
+The assignment's thinking setting is applied to its actual container configuration.
+Continuing a task whose saved container has a different thinking setting starts a
+fresh session from the saved workspace.
+Reusing a container preserves host ownership of its workspace root directory.
 When a blocked or interrupted assignment reconnects to an existing container,
 Hearth restores its saved PostgreSQL project workspace into that container before
 the agent continues.
@@ -450,7 +460,8 @@ endpoints. Compatibility layers address supported tool-call formats, argument
 handling, and request metrics. Actual coding reliability depends on the model,
 available context, runtime, and task; the saved reports document remaining failures.
 On mobile, the Agents page keeps its workflow navigation visible while scrolling;
-the header shows the tabs available to the signed-in user's role.
+the header also shows the full workspace navigation with Agents selected, reflowed
+into a grid so every page tab remains visible.
 
 ## A personal AI assistant on your own hardware
 
@@ -586,7 +597,10 @@ copy control.
 Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same
 address opens the workspace. Chat navigation links throughout the app return to this root
 workspace route. The sign-in and first administrator setup screens use a responsive AI
-workspace design with the credentials form centered on desktop and mobile. Six animated
+workspace design with the credentials form centered on desktop and mobile. The login card
+includes a **Watch the 25-second demo** button. Selecting it opens a centered player and
+starts playback with sound; the visitor can pause, change volume, or close the player.
+Six animated
 robot minions patrol the scene with blinking faces, waving arms, glowing thrusters, task
 labels, moving route lights, and connecting paths. The crew frames the sign-in form without
 covering it, including on small screens, and respects the browser's reduced-motion
@@ -679,6 +693,12 @@ history** to clear the complete log. Both actions require confirmation.
 
 ## Voice, translation, images, and video
 
+Chat has a full-width, resizable message editor with a separate toolbar underneath.
+Writing, attachment, voice, and translation controls wrap into rows on narrower
+screens while the typing area keeps its full width. Longer messages grow the editor
+up to a viewport-based limit, then scroll inside it. The keyboard shortcut shown
+above the editor follows the multi-line input setting. No setup is required.
+
 - **Voice:** microphone transcription, spoken replies, and hands-free conversation
   with voice activity detection, using configured speech models. FFmpeg is required
   for audio processing.
@@ -729,6 +749,20 @@ until each assignment saves its own checkpoint. Scheduled
 continuations reuse the code and files already built there, along with the previous
 progress summary. That workspace remains stored while the assignment exists,
 including between scheduled runs, and is removed when the assignment is deleted.
+Agents keep reusable, verified environment and project facts in the project-root
+`AGENT_MEMORY.md` file. Hearth retrieves short notes using both local embeddings and
+exact keyword matches, so command names such as `python3` can match even when the
+embedding service is unavailable; a query for `python` also finds notes about the
+available `python3` interpreter. Retrieval details appear in the task Activity feed.
+Relevant notes are available to later private assignments owned by the same account;
+cross-assignment retrieval is disabled for shared tasks.
+This helps agents reuse working interpreter names (such as `python3`), dependency
+setup, verification commands, and project conventions. Agents are told to check that
+old notes still apply and not to save credentials, personal data, or temporary task
+state. The file remains part of the assignment workspace, and its search index is
+removed with the assignment or account. If local embeddings are unavailable, task
+work continues and notes remain searchable by exact terms while semantic indexing
+retries in the background.
 Agent assignments and project files are private to their owner by default,
 including from other administrators. An owner can explicitly share an assignment
 with registered users who have Agent access enabled. Shared users receive the same
@@ -822,20 +856,39 @@ Test runs use a private agent runtime directory. If an assignment container is r
 while work is active, Hearth recreates it from the latest synchronized project checkpoint
 and continues the assignment.
 
-If OpenCode reports an idle session before a new assistant result is available, Hearth
-keeps polling for up to 60 minutes while waiting for the first model token, then uses
-a 30-minute inactivity limit after output begins. A session that remains idle after that is marked
-**Needs review** once, rather than accumulating repeated worker errors; the selected
-model remains attached to the assignment when it is resumed. OpenCode's
+If OpenCode reports idle before its assistant result is available, Hearth checks for
+an active model request or tool. An unfinished assistant message or stranded inbox
+entry does not count as work. After 90 seconds without either, Hearth checkpoints the
+project and starts a fresh session. After two unsuccessful recoveries, the assignment
+moves to **Needs review** with its saved workspace and selected model. OpenCode's
 **CRITICAL - MAXIMUM STEPS REACHED** response also marks the assignment **Needs review**
 even if its session still reports active; review the saved work, then choose **Continue**.
 If OpenCode does not acknowledge a requested pause or stop, Hearth marks the assignment
 **Interrupted** (or **Needs review** after a worker failure) and enables **Continue** so
 the saved work remains recoverable.
-Provider transport resets such as `ECONNRESET` are retried automatically in the same
-assignment session with backoff. A failed assistant response retries the same work
+Hearth fetches OpenCode activity, prompts, permissions, inbox, and recent messages
+concurrently, reducing the delay between a response and the task status update.
+While waiting for a first response token, Activity reports the elapsed wait every
+30 seconds. It also reports when OpenCode is active but no model request is currently
+streaming, so a stalled handoff is visible without extending the recovery timeout.
+Model progress is matched to the assignment rather than just its agent name. The model
+relay forwards SSE lines immediately, including tool-call progress, without waiting
+for a large response buffer to fill. Restart the Hearth service after updating to
+activate these supervisor and relay changes; no agent image rebuild is required.
+Provider transport resets such as `ECONNRESET` are retried up to three times in the same
+assignment session with backoff. Repeated response failures trigger bounded fresh-session
+recovery; repeated polling or prompt-admission failures move the task to **Needs review**. A failed assistant response retries the same work
 cycle, so provider resets do not use up the task's cycle budget. Existing relay sockets
-are reused across concurrent checks rather than replaced.
+are reused across concurrent checks rather than replaced. On Hearth startup, relay
+listeners for saved agent sessions are restored before workers run, so persistent Docker
+containers can reconnect to the host model bridge after an app restart.
+If OpenCode's conversation compaction fails, Hearth starts a fresh session from the
+saved project checkpoint and retries without advancing the work-cycle counter. Hearth
+interrupts the old runner, forces a current checkpoint before retiring its container,
+and includes the original goal, acceptance criteria, and refinements in the new session.
+Agent compaction settings are bounded by the selected model's actual context window:
+the retained recent-turn budget is capped at one eighth of context, and compaction
+starts at least one eighth before the context limit to avoid oversized summaries.
 Hearth ignores completion markers when the response only describes future work or
 contains an implementation placeholder, and continues the assignment instead.
 

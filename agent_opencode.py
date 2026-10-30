@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 import requests
@@ -18,7 +19,14 @@ The assignment project directory is the only authorized workspace. Do not inspec
 write files elsewhere, including /tmp, home, root, or system configuration. Keep test
 fixtures and scratch files inside the project and remove temporary files before
 finishing. Use tools and dependencies already available in the container; do not add
-packages or build optional test harnesses unless the assignment requires them.
+packages or build optional test harnesses unless the assignment requires them. Probe
+the actual runtime before choosing commands: check `python3` before `python`, and use
+`python3` when that is the available interpreter. Capture verified, reusable project
+facts in the project-root `AGENT_MEMORY.md`, including environment tools and versions,
+dependency setup, working check commands, project conventions, and other settings
+that will help a later assignment. Use short headings and one factual bullet per note;
+preserve exact executable and command names. Keep it concise and factual; do not store
+credentials, personal data, temporary task state, or unverified guesses.
 Use the direct OpenCode tools `read`, `glob`, `grep`, `edit`, `write`, and `shell` for
 file and command work. Call these tools directly. Do not use Code Mode `execute`, a
 JavaScript `tools.*` wrapper, Python imports, or invented tool names; Code Mode is
@@ -134,12 +142,18 @@ class OpenCode:
             raise exc
 
     def snapshot(self, session):
+        """Fetch independent session state concurrently to avoid serial API latency."""
         path = '/api/session/'+session
-        return {'active': session in self.call('GET', '/api/session/active')['data'],
-                'forms': self.call('GET', path+'/form')['data'],
-                'permissions': self.call('GET', path+'/permission')['data'],
-                'inbox': self.call('GET', path+'/inbox')['data'],
-                'messages': self.call('GET', path+'/message', params={'limit': '50', 'order': 'desc'})['data']}
+        requests = {
+            'active': lambda: session in self.call('GET', '/api/session/active')['data'],
+            'forms': lambda: self.call('GET', path+'/form')['data'],
+            'permissions': lambda: self.call('GET', path+'/permission')['data'],
+            'inbox': lambda: self.call('GET', path+'/inbox')['data'],
+            'messages': lambda: self.call('GET', path+'/message', params={'limit': '50', 'order': 'desc'})['data'],
+        }
+        with ThreadPoolExecutor(max_workers=len(requests)) as pool:
+            futures = {name: pool.submit(fetch) for name, fetch in requests.items()}
+            return {name: future.result() for name, future in futures.items()}
 
     def live_messages(self, session):
         """Return the newest OpenCode message snapshots, including an in-progress assistant turn."""

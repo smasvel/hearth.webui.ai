@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from agent_tasks import Manager, MARKER
+from agent_tasks import Manager, MARKER, FIRST_TOKEN_TIMEOUT, PROGRESS_TIMEOUT, HANDOFF_TIMEOUT
 import app
 
 MODEL = {'providerID': 'fastflowlm', 'id': 'flm/qwen3-it:4b'}
@@ -125,7 +125,7 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.client.prompt.call_args.args[2],first)
         self.assertEqual(restored.get(job['id'])['cycles'],1)
 
-    def test_provider_connection_reset_retries_without_needs_review(self):
+    def test_provider_connection_reset_stops_after_bounded_retries(self):
         key=self.create()
         self.client.snapshot.side_effect=RuntimeError(
             "{'type': 'provider.transport', 'message': 'ECONNRESET: The socket connection was closed unexpectedly'}")
@@ -133,9 +133,9 @@ class AgentTaskTests(unittest.TestCase):
             self.manager.jobs[key]['next_retry']=0
             self.manager.tick()
         current=self.manager.get(key)
-        self.assertEqual(current['status'],'running')
+        self.assertEqual(current['status'],'blocked')
         self.assertEqual(current['errors'],0)
-        self.assertEqual(current['transport_retries'],4)
+        self.assertEqual(current['transport_retries'],3)
         self.assertIn('ECONNRESET',current['error'])
 
     def test_provider_error_result_retries_same_cycle_with_backoff(self):
@@ -281,7 +281,7 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.manager.get(key)['status'], 'running')
         self.assertIn('800 tokens generated', self.manager.get(key)['activity'][-1]['text'])
 
-    def test_active_session_without_new_model_tokens_enters_review(self):
+    def test_active_session_without_new_model_tokens_recovers(self):
         key = self.create()
         job = self.manager.jobs[key]
         job.update(awaiting_since=time.time() - 1900,
@@ -291,8 +291,39 @@ class AgentTaskTests(unittest.TestCase):
             self.manager.tick()
 
         current = self.manager.get(key)
-        self.assertEqual(current['status'], 'blocked')
-        self.assertIn('30 minutes', current['error'])
+        self.assertEqual(current['status'], 'running')
+        self.assertIsNone(current['session_id'])
+        self.assertTrue(current['retry_current_cycle'])
+        self.assertIn('10 minutes', current['pending_prompt']['text'])
+
+    def test_compaction_failure_restarts_in_fresh_session_from_saved_workspace(self):
+        key = self.create()
+        self.client.create.side_effect = ['ses_fresh']
+        self.snap['active'] = False
+        self.snap['messages'] = [{
+            'id': 'compact-failed', 'type': 'idle',
+            'error': {'type': 'compaction.failed',
+                      'message': 'Compaction summary reached the output token limit'},
+        }]
+
+        self.manager.tick()
+
+        queued = self.manager.get(key)
+        self.assertEqual(queued['status'], 'running')
+        self.assertIsNone(queued['session_id'])
+        self.assertTrue(queued['retry_current_cycle'])
+        self.assertIn('fresh session', queued['pending_prompt']['text'].lower())
+        self.assertEqual(queued['cycles'], 1)
+
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+
+        recovered = self.manager.get(key)
+        self.assertEqual(recovered['session_id'], 'ses_fresh')
+        self.assertFalse(recovered['retry_current_cycle'])
+        self.assertEqual(recovered['cycles'], 1)
+        self.assertEqual(self.client.create.call_count, 2)
+        self.assertEqual(self.client.prompt.call_count, 2)
 
     def test_completed_assignment_can_rerun_from_saved_task_state(self):
         key=self.create(enable_thinking=False)
@@ -416,16 +447,152 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(current['model'],MODEL)
         self.assertEqual(current['errors'],0)
 
-    def test_long_idle_becomes_review_state_without_worker_error_retries(self):
+    def test_long_idle_recovers_without_worker_error_retries(self):
         key=self.create();job=self.manager.jobs[key]
-        job.update(awaiting_since=time.time()-1801, errors=0)
+        job.update(awaiting_since=time.time()-FIRST_TOKEN_TIMEOUT-1,
+                   agent_last_progress_at=time.time()-FIRST_TOKEN_TIMEOUT-1, errors=0)
         self.manager.save(job)
         self.manager.tick()
         current=self.manager.get(key)
-        self.assertEqual(current['status'],'blocked')
-        self.assertIn('idle for 30 minutes',current['error'])
+        self.assertEqual(current['status'],'running')
+        self.assertIsNone(current['session_id'])
+        self.assertIn('no completed result',current['pending_prompt']['text'])
         self.assertEqual(current['errors'],0)
         self.assertEqual(current['model'],MODEL)
+
+    def test_orphaned_inbox_recovers_after_checkpoint_before_replacing_session(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job['agent_no_request_since'] = time.time()-HANDOFF_TIMEOUT-1
+        self.snap.update(active=False, inbox=[{'id': 'stranded'}], messages=[{
+            'id': 'unfinished', 'type': 'assistant', 'content': [], 'time': {'created': 1}}])
+        events = []
+        self.client.interrupt.side_effect = lambda sid: events.append(('interrupt', sid))
+        with patch.object(type(self.client), 'checkpoint',
+                          lambda client, task: events.append(('checkpoint', task['session_id'])), create=True), \
+             patch.object(type(self.client), 'park',
+                          lambda client, task: events.append(('park', task['session_id'])), create=True), \
+             patch('agent_tasks.live_requests.snapshot', return_value=[]):
+            self.manager.tick()
+        self.assertEqual(events, [(step, 'ses_fixture') for step in ('interrupt', 'checkpoint', 'park')])
+        current = self.manager.get(key)
+        self.assertIsNone(current['session_id'])
+        self.assertEqual(current['cycles'], 1)
+        self.assertIn(self.values['goal'], current['pending_prompt']['text'])
+        self.assertNotEqual(current['handled_message'], 'unfinished')
+
+    def test_idle_session_with_fresh_streamed_tokens_does_not_recover(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job.update(awaiting_since=time.time()-FIRST_TOKEN_TIMEOUT-1,
+                   agent_last_progress_at=time.time()-FIRST_TOKEN_TIMEOUT-1,
+                   agent_no_request_since=time.time()-HANDOFF_TIMEOUT-1)
+        self.snap['messages'] = [{'id': 'partial', 'type': 'assistant', 'content': []}]
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'id': 10, 'task_id': key[:24], 'source': job['assignee'],
+            'status': 'streaming', 'tokens': 1,
+        }]):
+            self.manager.tick()
+        self.assertEqual(self.manager.get(key)['session_id'], 'ses_fixture')
+        self.assertEqual(self.client.prompt.call_count, 1)
+        self.client.interrupt.assert_not_called()
+
+    def test_active_session_observes_new_tokens_before_timeout_check(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job.update(awaiting_since=time.time()-FIRST_TOKEN_TIMEOUT-1,
+                   agent_last_progress_at=time.time()-PROGRESS_TIMEOUT-1)
+        self.snap['active'] = True
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'id': 11, 'source': job['assignee'], 'task_id': key[:24],
+            'status': 'streaming', 'tokens': 20,
+        }]):
+            self.manager.tick()
+        self.assertEqual(self.manager.get(key)['session_id'], 'ses_fixture')
+        self.client.interrupt.assert_not_called()
+
+    def test_other_assignment_stream_cannot_hide_orphaned_session(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job['agent_no_request_since'] = time.time()-HANDOFF_TIMEOUT-1
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'id': 12, 'source': job['assignee'], 'task_id': 'other-task',
+            'status': 'streaming', 'tokens': 100,
+        }]):
+            self.manager.tick()
+        self.assertIsNone(self.manager.get(key)['session_id'])
+
+    def test_session_recovery_is_bounded_and_preserves_cycle_budget(self):
+        key = self.create()
+        for attempt in range(3):
+            job = self.manager.jobs[key]
+            job['agent_no_request_since'] = time.time()-HANDOFF_TIMEOUT-1
+            with patch('agent_tasks.live_requests.snapshot', return_value=[]):
+                self.manager.tick()
+            if attempt < 2:
+                self.assertEqual(self.manager.get(key)['status'], 'running')
+                job['next_retry'] = 0
+                self.manager.tick()
+        current = self.manager.get(key)
+        self.assertEqual(current['status'], 'blocked')
+        self.assertEqual(current['cycles'], 1)
+        self.assertIn('recovery limit', current['error'])
+
+    def test_running_shell_is_not_an_abandoned_handoff(self):
+        key = self.create()
+        self.manager.jobs[key]['agent_no_request_since'] = time.time()-HANDOFF_TIMEOUT-1
+        self.snap.update(active=True, messages=[{'id': 'working', 'type': 'assistant', 'content': [
+            {'type': 'tool', 'name': 'shell', 'state': {'status': 'running'}}]}])
+        self.manager.tick()
+        self.assertEqual(self.manager.get(key)['session_id'], 'ses_fixture')
+        self.client.interrupt.assert_not_called()
+
+    def test_tool_call_finish_is_not_a_completed_assistant_turn(self):
+        key = self.create()
+        self.snap.update(active=True, messages=[{'id': 'tool-turn', 'type': 'assistant',
+            'finish': 'tool_calls', 'time': {'created': 1}, 'content': [
+                {'type': 'tool', 'name': 'shell', 'state': {'status': 'running'}}]}])
+        self.manager.tick()
+        self.manager.tick()
+        self.assertEqual(self.client.prompt.call_count, 1)
+        self.assertNotEqual(self.manager.get(key)['handled_message'], 'tool-turn')
+
+    def test_completed_tool_step_does_not_enqueue_continuation_into_active_runner(self):
+        key = self.create()
+        self.snap.update(active=True, messages=[{'id': 'tool-step', 'type': 'assistant',
+            'finish': 'tool-calls', 'time': {'created': 1, 'completed': 2}, 'content': [
+                {'type': 'tool', 'name': 'read', 'state': {'status': 'completed'}}]}])
+        self.manager.tick()
+        self.manager.tick()
+        self.assertEqual(self.client.prompt.call_count, 1)
+        self.assertNotEqual(self.manager.get(key)['handled_message'], 'tool-step')
+
+    def test_recovery_does_not_retire_session_when_checkpoint_fails(self):
+        key = self.create()
+        self.manager.jobs[key]['agent_no_request_since'] = time.time()-HANDOFF_TIMEOUT-1
+        with patch.object(type(self.client), 'checkpoint',
+                          side_effect=RuntimeError('checkpoint unavailable'), create=True), \
+             patch.object(type(self.client), 'park', create=True) as park, \
+             patch('agent_tasks.live_requests.snapshot', return_value=[]):
+            self.manager.tick()
+        self.assertEqual(self.manager.get(key)['session_id'], 'ses_fixture')
+        self.assertIn('checkpoint unavailable', self.manager.get(key)['error'])
+        self.assertEqual(self.client.create.call_count, 1)
+        park.assert_not_called()
+
+    def test_completed_response_is_processed_despite_stranded_inbox(self):
+        key = self.create()
+        self.snap.update(active=False, inbox=[{'id': 'old'}])
+        self.finish_turn(assistant('done', 'Verified\n'+MARKER, time={'completed': 1}))
+        self.assertEqual(self.manager.get(key)['status'], 'completed')
+
+    def test_different_prose_only_responses_trigger_fresh_session(self):
+        key = self.create()
+        for i in range(3):
+            self.finish_turn(assistant('plan'+str(i), 'Here is another implementation '+str(i)))
+        current = self.manager.get(key)
+        self.assertIsNone(current['session_id'])
+        self.assertIn('without using project tools', current['pending_prompt']['text'])
 
     def test_budget_blocks_and_resume_extends_it(self):
         key=self.create(max_cycles=1);self.finish_turn(assistant('a1','More work'))
@@ -659,9 +826,13 @@ class AgentAPITests(unittest.TestCase):
 
     def test_active_agent_prevents_manual_model_switch_and_tests(self):
         self.login();self.manager.busy.return_value=True
-        for path in ('/api/models/load','/api/models/unload','/api/models/delete','/api/model-tests'):
+        for path in ('/api/models/load','/api/models/unload','/api/model-tests'):
             r=self.client.post(path,json={},headers={'X-CSRF-Token':'test'})
             self.assertEqual(r.status_code,409,path)
+        self.manager.list.return_value = [{'status': 'running', 'model': MODEL}]
+        r = self.client.post('/api/models/delete', json={'identifier': MODEL['id']},
+                             headers={'X-CSRF-Token': 'test'})
+        self.assertEqual(r.status_code, 409)
 
     def test_healthy_already_serving_model_does_not_reload_optional_backends(self):
         with patch.object(app.fastflowlm,'requests_paused',return_value=False), patch.object(app.fastflowlm,'current_served_model',return_value=MODEL['id']), patch.object(app.requests,'get',return_value=Mock()) as get, patch.object(app,'_test_load_model') as load:

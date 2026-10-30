@@ -227,8 +227,15 @@ def main() -> None:
             "[s1][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
             "-loop", "0", str(gif),
         ], check=True)
+        poster = OUT / "hearth-feature-demo-poster.jpg"
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", "1", "-i", str(mp4), "-frames:v", "1", "-q:v", "3",
+            str(poster),
+        ], check=True)
         print(f"Created {mp4} ({mp4.stat().st_size:,} bytes)")
         print(f"Created {gif} ({gif.stat().st_size:,} bytes)")
+        print(f"Created {poster} ({poster.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":

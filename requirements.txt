@@ -10,3 +10,4 @@ mcp>=1.26,<2
 huggingface_hub>=0.24
 tokenizers>=0.22,<0.23
 psycopg[binary]>=3.3,<4
+pypdf>=5.0

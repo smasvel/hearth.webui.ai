@@ -11,6 +11,27 @@
   const chatForm = document.getElementById("chat-form");
   const chatInput = document.getElementById("chat-input");
   const sendBtn = document.getElementById("send-btn");
+  const documentAttachBtn = document.getElementById("document-attach-btn");
+  const documentAttachInput = document.getElementById("document-attach-input");
+  let pendingDocuments = [];
+  documentAttachBtn.addEventListener("click", () => { if (!busy) documentAttachInput.click(); });
+  documentAttachInput.addEventListener("change", () => {
+    for (const file of Array.from(documentAttachInput.files || [])) {
+      if (!/\.(pdf|docx|pptx|xlsx|txt|csv)$/i.test(file.name)) {
+        addSystemMessage(`Unsupported document: ${file.name}. Choose PDF, Word, PowerPoint, Excel, TXT, or CSV.`, true);
+      } else if (file.size > 15 * 1024 * 1024) {
+        addSystemMessage(`${file.name} exceeds the 15 MB per-file limit.`, true);
+      } else pendingDocuments.push(file);
+    }
+    documentAttachInput.value = "";
+    updateDocumentAttachmentLabel();
+  });
+  function updateDocumentAttachmentLabel() {
+    documentAttachBtn.title = pendingDocuments.length
+      ? `Attached: ${pendingDocuments.map(f => f.name).join(", ")} (click to add more)`
+      : "Attach PDF, Word, PowerPoint, Excel, TXT, or CSV files";
+    documentAttachBtn.classList.toggle("active", pendingDocuments.length > 0);
+  }
   const clearBtn = document.getElementById("clear-chat");
   const copyChatBtn = document.getElementById("copy-chat");
   const securityScanBtn = document.getElementById("security-scan-btn");
@@ -329,6 +350,13 @@
       }
     }
   }
+
+  // Model state can change from another Hearth tab, a runtime restart, or a model
+  // loaded outside the current page. Keep the chat picker in sync without a manual
+  // reload; fetchModels preserves the current selection when it is still available.
+  setInterval(() => {
+    if (!document.hidden) fetchModels();
+  }, 15000);
 
   function formatModelSize(gb) {
     if (typeof gb !== "number" || gb <= 0) return null;
@@ -1368,12 +1396,12 @@
       return;
     }
     const text = chatInput.value.trim();
-    if (!text) return;
+    if (!text && !pendingDocuments.length) return;
     if (speakMode || conversationMode) unlockVoicePlayback();
     // In-chat practice tests: "start DMV NC test", "start citizenship test", "quiz me on
     // <topic>", "resume", "next", "score", "stop test", "list tests". If Quiz claims the
     // message, it runs the quiz inline and we don't send anything to the LLM.
-    if (window.Quiz && window.Quiz.maybeHandle(text)) {
+    if (!pendingDocuments.length && window.Quiz && window.Quiz.maybeHandle(text)) {
       chatInput.value = "";
       chatInput.style.height = "auto";
       chatInput.focus();
@@ -1387,7 +1415,9 @@
     }
     chatInput.value = "";
     chatInput.style.height = "auto";
-    runChatTurn(text);
+    const docs = pendingDocuments.splice(0);
+    updateDocumentAttachmentLabel();
+    runChatTurn(text, "", null, docs);
   });
 
   // Rewind the conversation to just before the user message at `userIndex`, then
@@ -1420,7 +1450,7 @@
   }
 
   // Start a server-owned turn. Polling can stop with the tab; generation cannot.
-  async function runChatTurn(text, preservedReply = "", regenerationFallback = null) {
+  async function runChatTurn(text, preservedReply = "", regenerationFallback = null, documents = []) {
     const isSecurityScan = ["/security-scan", "/security scan"].includes(text.toLowerCase());
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
     const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "Wan 2.1 T2V 1.3B" : ""));
@@ -1439,13 +1469,19 @@
     setChatBusy(true);
     sendBtn.disabled = true;
     try {
+      const payload = { model, messages: history, temperature: Number(temperatureEl.value) || 0.7,
+        conversation_id: id, preserved_reply: preservedReply };
+      const requestBody = documents.length ? new FormData() : JSON.stringify(payload);
+      if (documents.length) {
+        requestBody.append("payload", JSON.stringify(payload));
+        documents.forEach(file => requestBody.append("documents", file, file.name));
+      }
       const res = await fetch("/api/chat/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
         // max_tokens is intentionally omitted so the server applies the admin-configured
         // default (Settings -> Chat request limits); sending a hardcoded value here would
         // silently ignore that setting.
-        body: JSON.stringify({ model, messages: history, temperature: Number(temperatureEl.value) || 0.7,
-          conversation_id: id, preserved_reply: preservedReply }),
+        body: requestBody,
       });
       const data = await res.json();
       if (currentConversationId !== id || conversationViewVersion !== version) return;
