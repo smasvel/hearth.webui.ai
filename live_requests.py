@@ -201,7 +201,7 @@ def set_cancel_callback(request_id: int, callback) -> None:
             entry["cancel_callback"] = callback
 
 
-def snapshot(limit: int = 100) -> list[dict]:
+def snapshot(limit: int = 500) -> list[dict]:
     now = time.monotonic()
     with _lock:
         cutoff = time.time() - _RECENT_KEEP_SECONDS

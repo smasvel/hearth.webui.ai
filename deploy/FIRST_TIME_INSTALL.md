@@ -529,7 +529,7 @@ that ordinary users cannot open admin-only pages or APIs.
 
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
-automatically, shows the latest 100 requests, and loads trace text only when opened.
+automatically, shows requests from the last 48 hours (up to 500 most recent), and loads trace text only when opened.
 Completed rows remain available for two days. Project-agent model requests appear with
 the task's agent name through Hearth's model relay. No additional setup is required.
 Administrators can use **Reset all metrics** to erase saved request history and coding

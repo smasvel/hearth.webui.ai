@@ -1528,9 +1528,9 @@ def api_metrics_live():
     each upstream SSE chunk and labels the row with the task's agent name. Other supported
     LAN traffic may be reported by the Lemonade/FastFlowLM/LM Studio shims."""
     try:
-        limit = int(request.args.get("limit", 100))
+        limit = int(request.args.get("limit", 500))
     except ValueError:
-        limit = 100
+        limit = 500
     return jsonify({"rows": live_requests.snapshot(limit=limit)})
 
 
