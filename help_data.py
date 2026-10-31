@@ -137,10 +137,6 @@ def _advertised_output(be: str, context: int, model_id: str | None = None) -> in
     if be == "fastflowlm":
         return flm_context.output_limit(model_id, context)
     out_cap = _OUT[be]
-    # Muse models on Lemonade have a lower practical output limit; cap them to avoid
-    # compaction summaries hitting the model's output token ceiling.
-    if be == "lemonade" and model_id and "muse" in model_id.lower():
-        out_cap = min(out_cap, 4096)
     return max(1, min(out_cap, context // 2))
 
 

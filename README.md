@@ -162,12 +162,6 @@ come from the installed Lemonade server and its model recipe; Hearth does not
 download Muse weights as part of application setup. Use **Model tests** before
 depending on a Muse model for tools or coding work.
 
-Hearth advertises a reduced output token budget for Muse models in generated OpenCode
-configs to prevent compaction summaries from reaching the model's output token limit.
-The OpenCode config generated for Muse models caps advertised output at 4096 tokens,
-which avoids the "Compaction summary reached the output token limit" failure while
-still leaving room for the prompt.
-
 A model appearing in search does not establish that it fits your hardware or
 supports every feature. Hearth includes resource checks and load feedback; runtime
 compatibility, available memory, context size, and model capabilities still apply.
