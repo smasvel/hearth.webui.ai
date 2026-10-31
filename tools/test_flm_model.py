@@ -78,6 +78,9 @@ def reports_passed_tests(text, expected):
                   lambda match: number_words[match.group(0).lower()], text, flags=re.I)
     patterns = (
         r'\b(\d+)\s+(?:tests?\s+)?pass(?:ed|ing)\b',
+        # Present tense ("All 4 tests pass (`pytest -q` exit code 0)") reports the same
+        # verified count; observed live 2026-10-30 with mimo-v2.6-distill.
+        r'\b(\d+)\s+tests?\s+pass(?:es)?\b',
         r'\bpassed\s+(\d+)\s+tests?\b',
         # Also accept common summaries such as "All tests passed: 4 tests, exit code 0".
         r'\btests?\s+passed\b[^0-9]{0,20}(\d+)\s+tests?\b',
@@ -145,7 +148,9 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
                 observed = [(c['name'], c['arguments']) for c in calls]
                 assert json.dumps(observed, sort_keys=True) == json.dumps(expected, sort_keys=True), (
                     f'Tool call mismatch. Expected: {json.dumps(expected)}. '
-                    f'Received: {json.dumps(observed)}. Text: {text[:300]!r}')
+                    f'Received: {json.dumps(observed)}. Text: {text[:300]!r}; '
+                    f'finish reasons={finishes}; reply budget={body.get("max_tokens")}; '
+                    f'completion tokens={usage.get("completion_tokens")}')
                 valid_finishes = {'tool_calls'} if expected else {'stop'}
                 # vLLM uses stop for named choices, even when the validated response
                 # contains a real tool call. Auto/required still require tool_calls.

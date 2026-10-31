@@ -2,6 +2,8 @@
   const usersListEl = document.getElementById("users-list");
   const usersPaginationEl = document.getElementById("users-pagination");
   const refreshUsersBtn = document.getElementById("refresh-users");
+  const authEventsEl = document.getElementById("auth-events-list");
+  const refreshAuthEventsBtn = document.getElementById("refresh-auth-events");
   const addUserForm = document.getElementById("add-user-form");
   const newUsernameEl = document.getElementById("new-username");
   const newPasswordEl = document.getElementById("new-password");
@@ -89,6 +91,18 @@
     } catch (err) {
       usersListEl.innerHTML = `<p class="hint">Could not load users.<br>${escapeHtml(err.message)}</p>`;
     }
+  }
+
+  async function fetchAuthEvents() {
+    try {
+      const res = await fetch('/api/auth-events'); const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'failed to load history');
+      authEventsEl.innerHTML = (data.events || []).map(e => {
+        const label = e.event_type === 'login' ? (e.succeeded ? 'Sign-in succeeded' : 'Sign-in failed') : e.event_type === 'password_created' ? 'Password created' : 'Password changed';
+        const actor = e.actor_username ? ` · changed by ${escapeHtml(e.actor_username)}` : '';
+        return `<div class="model-row"><div><strong>${escapeHtml(e.username)}</strong><div class="hint">${escapeHtml(label)}${actor} · ${escapeHtml(new Date(e.created_at * 1000).toLocaleString())}</div></div><span class="hint">${escapeHtml(e.remote_addr || 'unknown address')}</span></div>`;
+      }).join('') || '<p class="hint">No authentication events recorded yet.</p>';
+    } catch (err) { authEventsEl.innerHTML = `<p class="hint">Could not load history.<br>${escapeHtml(err.message)}</p>`; }
   }
 
   function renderUsersList(users) {
@@ -228,12 +242,14 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "reset failed");
       addSystemMessage(`Password reset for ${username}`);
+      fetchAuthEvents();
     } catch (err) {
       addSystemMessage(`Failed to reset password for ${username}: ${err.message}`, true);
     }
   }
 
   refreshUsersBtn.addEventListener("click", () => fetchUsers(currentPage));
+  refreshAuthEventsBtn.addEventListener("click", fetchAuthEvents);
 
   newRoleEl.addEventListener("change", () => {
     newAgentWorkflowEl.value = newRoleEl.value === "admin" ? "true" : "false";
@@ -263,6 +279,7 @@
       newRoleEl.value = "user";
       newAgentWorkflowEl.value = "false";
       await fetchUsers(1);
+      await fetchAuthEvents();
     } catch (err) {
       addSystemMessage(`Failed to add user: ${err.message}`, true);
     } finally {
@@ -271,4 +288,5 @@
   });
 
   fetchUsers();
+  fetchAuthEvents();
 })();

@@ -47,12 +47,12 @@ with contextlib.ExitStack() as stack:
     with client.session_transaction() as session:
         session.update(logged_in=True, user_id='browser', username='browser', role='admin',
                        last_activity=time.time(), login_csrf_token='csrf-browser')
-    cookie = client.get_cookie('session').value
+    cookie = client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=['--no-sandbox'])
         context = browser.new_context(viewport={'width': 1280, 'height': 900})
-        context.add_cookies([{'name': 'session', 'value': cookie, 'domain': '127.0.0.1', 'path': '/'}])
+        context.add_cookies([{'name': app.app.config['SESSION_COOKIE_NAME'], 'value': cookie, 'domain': '127.0.0.1', 'path': '/'}])
         page = context.new_page()
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))

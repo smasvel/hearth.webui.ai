@@ -1,0 +1,10 @@
+# Host Caddy gateway configuration for the containerized app.
+# deploy/install-docker.sh adds this file only when the host has a Caddyfile; the app
+# reads it to show the generated bearer tokens, backend ports, and Continue/OpenCode
+# configs in Help. Caddy and its local CA stay on the host; the app only reads this file
+# and reaches Caddy's admin API through host networking.
+name: hearth-docker
+services:
+  hearth:
+    volumes:
+      - /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro

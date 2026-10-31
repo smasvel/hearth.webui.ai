@@ -98,6 +98,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn('blocked_by', body)
             self.assertNotIn('workflow', body)
             self.assertNotIn('step', body)
+            self.assertEqual(body['max_tokens'], 2048)
             if len(step['expected']) == 1:
                 self.assertEqual(body['tool_choice'], {
                     'type': 'function', 'function': {'name': step['expected'][0][0]}})

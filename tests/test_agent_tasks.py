@@ -267,6 +267,27 @@ class AgentTaskTests(unittest.TestCase):
 
         self.assertIn('537 tokens generated', job['activity'][-1]['text'])
 
+    def test_finished_model_request_starts_handoff_timer(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job['awaiting_since'] = time.time() - 120
+        ended = time.time() - 95
+        with patch('agent_tasks.live_requests.snapshot', return_value=[{
+            'task_id': key[:24], 'status': 'done', 'finished_at': ended,
+        }]):
+            self.assertFalse(self.manager._record_live_progress(job, {'messages': []}))
+        self.assertAlmostEqual(job['agent_no_request_since'], ended, delta=1)
+
+    def test_stale_pending_tool_no_longer_masks_missing_request(self):
+        key = self.create()
+        job = self.manager.jobs[key]
+        job['agent_last_progress_at'] = time.time() - PROGRESS_TIMEOUT - 1
+        snap = {'messages': [{'type': 'assistant', 'content': [
+            {'type': 'tool', 'state': {'status': 'pending'}}]}]}
+        with patch('agent_tasks.live_requests.snapshot', return_value=[]):
+            self.assertFalse(self.manager._record_live_progress(job, snap))
+        self.assertIsNotNone(job['agent_no_request_since'])
+
     def test_streaming_model_tokens_prevent_active_session_idle_block(self):
         key = self.create()
         job = self.manager.jobs[key]

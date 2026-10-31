@@ -35,7 +35,7 @@ with contextlib.ExitStack() as stack:
   session.update(logged_in=True,user_id=owner,username='browser-agent',role='admin',last_activity=time.time(),login_csrf_token='csrf-browser')
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True,args=['--no-sandbox']);context=browser.new_context(viewport={'width':1280,'height':1000})
-  context.add_cookies([{'name':'session','value':client.get_cookie('session').value,'domain':'127.0.0.1','path':'/'}])
+  context.add_cookies([{'name':app.app.config['SESSION_COOKIE_NAME'],'value':client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,'domain':'127.0.0.1','path':'/'}])
   page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
   page.on('dialog',lambda dialog:dialog.accept())
   # The model picker lives on the New agent page, not the assignment list.

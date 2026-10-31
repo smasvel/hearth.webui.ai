@@ -48,6 +48,7 @@ class AgentContainerTests(unittest.TestCase):
             self.client.create(job)
         config = start.call_args.args[1]['opencode_config']
         self.assertFalse(config['provider']['lmstudio']['options']['extraBody']['chat_template_kwargs']['enable_thinking'])
+        self.assertFalse(config['provider']['lmstudio']['options']['extraBody']['enable_thinking'])
 
     def test_resume_replaces_session_with_stale_thinking_setting(self):
         job = {'id': 'c'*32, 'model': {'providerID': 'lmstudio', 'id': 'fixture'},
@@ -60,6 +61,16 @@ class AgentContainerTests(unittest.TestCase):
             self.assertEqual(self.client.resume(job), 'fresh')
         create.assert_called_once_with(job)
         snapshot.assert_not_called()
+
+    def test_resume_refreshes_lmstudio_session_missing_native_thinking_flag(self):
+        job = {'id': 'c'*32, 'model': {'providerID': 'lmstudio', 'id': 'fixture'},
+               'enable_thinking': True, 'session_id': 'hearth-agent-'+'c'*24+'::old'}
+        info = {'tool_policy_version': 'native-tools-v1', 'opencode_config': {'provider': {
+            'lmstudio': {'options': {'extraBody': {'chat_template_kwargs': {'enable_thinking': True}}}}}}}
+        with patch.object(self.client, '_read_runtime', return_value=info), \
+             patch.object(self.client, 'create', return_value='fresh') as create:
+            self.assertEqual(self.client.resume(job), 'fresh')
+        create.assert_called_once_with(job)
 
     def test_relay_forwards_small_sse_tool_deltas_before_upstream_finishes(self):
         release = threading.Event()
@@ -115,6 +126,46 @@ class AgentContainerTests(unittest.TestCase):
             upstream.shutdown()
             upstream.server_close()
             thread.join(2)
+
+    def test_interrupt_closes_only_its_active_agent_model_stream(self):
+        started = threading.Event()
+        closed = threading.Event()
+        response = Mock(status_code=200, ok=True, headers={'Content-Type': 'text/event-stream'})
+
+        def chunks(_size):
+            started.set()
+            closed.wait(2)
+            if False:
+                yield b''
+
+        response.iter_content.side_effect = chunks
+        response.close.side_effect = closed.set
+        name = 'hearth-agent-fixture'
+        relay = _ModelProxy({'socket_path': str(Path(self.tempdir.name)/'interrupt.sock'),
+                             'token': 'fixture', 'task_id': 'task-fixture', 'provider_id': 'lmstudio',
+                             'base_url': 'http://127.0.0.1:1234/v1'})
+        connection = http.client.HTTPConnection('localhost', timeout=2)
+        try:
+            with patch('agent_container.requests.request', return_value=response), \
+                 patch('agent_container.live_requests.start', return_value=1), \
+                 patch('agent_container.live_requests.finish'), \
+                 patch.object(self.client, '_split', return_value=(name, 'session', {})), \
+                 patch.object(self.client, '_endpoint') as endpoint:
+                relay.start()
+                self.client._proxies[name] = relay
+                connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                connection.sock.settimeout(2)
+                connection.sock.connect(relay.info['socket_path'])
+                connection.request('POST', '/v1/chat/completions', body='{"stream":true}',
+                                   headers={'Authorization': 'Bearer fixture', 'Content-Type': 'application/json'})
+                self.assertEqual(connection.getresponse().status, 200)
+                self.assertTrue(started.wait(1))
+                self.client.interrupt(name + '::session')
+                endpoint.return_value.interrupt.assert_called_once_with('session')
+                self.assertTrue(closed.wait(1), 'Interrupt must close the active upstream response')
+        finally:
+            connection.close()
+            relay.close()
 
 
 if __name__ == '__main__':

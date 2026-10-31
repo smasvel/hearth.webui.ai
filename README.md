@@ -46,7 +46,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Use case | Included capabilities |
 |---|---|
 | Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
-| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; set per-model thinking for Lemonade models and see supported context limits on the Models page |
+| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
@@ -202,6 +202,14 @@ affect response time.
 
 ## Test and compare models before coding
 
+On LM Studio model cards, administrators can turn **Enable thinking** off for an
+individual model. Hearth applies that preference to chat, model tests, and gateway
+requests. The setting is saved in PostgreSQL and takes effect on the next request;
+some models may ignore the thinking controls.
+LM Studio OpenCode assignments send both supported thinking controls. During a
+tool-enabled stream, Hearth forwards reasoning updates as they arrive while it
+buffers tool arguments for validation, so agent progress stays visible.
+
 The Model tests page groups four suites into tabs: compatibility tests, tool-calling
 tests, a 12-question reasoning benchmark, and 10 model security behavior probes.
 The reasoning benchmark presents each original question separately, checks it against
@@ -215,6 +223,15 @@ existing model-test reports.
 Tool checks allow up to 2,048 completion tokens so models that spend tokens on
 internal reasoning can finish their tool arguments. Invalid tool JSON reports
 include the finish reason, token count, and a bounded argument excerpt for diagnosis.
+OpenCode workflow checks use the same tool budget, including continuation turns.
+Restart Hearth after updating and start a new run to use this budget; saved reports
+retain their original results.
+Tool-call mismatch details also include finish reasons, the requested response
+budget, and completion token usage to distinguish missing calls from token cutoffs.
+When a request names one function and supplies its exact JSON arguments, Hearth's
+LM Studio proxy now rebuilds that call if the backend mangles, duplicates, or drops
+it (the same exact-argument contract Lemonade already enforces). Ordinary tool
+choices and other requests are unaffected; no tool is executed.
 
 Open **Model tests** and choose an installed chat model to run its test suite by
 itself. **Test Model** on a model card runs the model from that card. Follow the
@@ -287,8 +304,11 @@ proxies and bearer-token authentication** when the gateway is configured.
 
 1. Configure the desired inference backend and load a compatible coding model in
    **Models**. Check its tool-test results and loaded context size.
-2. Configure the host's Caddy gateway and backend proxy services. These are separate
-   from the basic first-time app/database installation.
+2. Run the full host backend setup (`sudo bash deploy/install-host-deps.sh`) to install
+   Caddy and generate the gateway. It creates random per-client bearer tokens, installs a
+   marked Hearth block in `/etc/caddy/Caddyfile`, issues the local CA certificates, and
+   exports the CA root. Existing tokens are preserved on reruns, so client configurations
+   keep working.
 3. Open Hearth's **Help** panel for the detected gateway addresses, CA certificate
    trust instructions, and generated Continue YAML or OpenCode JSON configuration.
    Configurations use the current model inventory and backend settings.
@@ -303,6 +323,15 @@ bearer token. Administrators can retrieve or regenerate per-user gateway tokens
 from **Users** and apply the supplied Caddy configuration. Token changes require
 updating and reloading Caddy to take effect at the gateway.
 
+The gateway's three standard keys (`opencode`, `vscode`, `lan`) live in
+`~/.local/share/hearth/Caddyfile`, which is the source the installer publishes to
+`/etc/caddy/Caddyfile`. The local CA root is exported to
+`~/.local/share/hearth/hearth-ca.crt`; Help can also fetch it directly. To rotate a
+standard key, replace it in that file, then rerun
+`sudo bash deploy/install-host-deps.sh` and update the affected client configuration.
+The generated files are only created when Caddy is installed; the standard installer
+performs the same generation when it finds Caddy already present.
+
 Hearth's compatibility layers handle supported tool-call formats and request
 policies. Generated coding-client configurations account for model context limits;
 Settings also exposes context and OpenCode compaction controls. For compatible
@@ -313,6 +342,16 @@ disabling tools when the same turn requests concrete work. These policies help a
 unnecessary tool calls and repeated long prefill. Request attribution helps
 distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
 Continue can additionally use a configured embedding model for codebase indexing.
+
+Generated OpenCode configurations cap retained compaction history at one eighth of
+the smallest configured session model's context and bound the compaction buffer
+between one eighth and one quarter of that window, across all backends. If OpenCode
+reports that a request exceeds the available context, check the model's **loaded**
+context in Models: its maximum supported context can be much larger. Reload it with
+the intended context, copy the updated LAN or Tailscale configuration from Help,
+restart OpenCode, and retry in a new session if the old transcript still overflows.
+A 4,096-token runtime can be too small for the Build agent's prompt and tools even
+with compaction; increasing the loaded context is necessary in that case.
 
 See [codebase RAG](#codebase-retrieval-for-coding-clients),
 [client attribution](#metrics-and-diagnostics), and
@@ -395,7 +434,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
 | Study and practice | Built-in and user-created quiz decks, generated questions, and state DMV practice | Quizzes; DMV |
 | Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, and supported NPU statistics | Metrics; system statistics |
-| User administration | Accounts, roles, password resets, per-user agent workflow access, per-user data, and gateway-token controls | Users |
+| User administration | Accounts, roles, password resets, per-user agent workflow access, per-user data, gateway-token controls, and admin-only login/password audit history including the acting administrator | Users |
 | Runtime settings | Backend URLs and credentials, connection tests, context settings, and configured Tailscale controls | Settings |
 | Host security checks | Administrator-triggered security scans and reports using the configured host tools | [Security scanner](#metrics-and-diagnostics) |
 | FLM conversion tools | Conversion profile inspection and validation; job execution requires the matching converter and validated artifacts | FLM converter; experimental |
@@ -442,7 +481,14 @@ for that model, backend configuration, and run. See
 ## Agentic AI and local coding agents
 
 Hearth's **Agents** workspace supervises real OpenCode sessions against a local
-project directory. Choose a configured local model, describe a task, follow its
+project directory. Pausing or stopping an assignment closes the agent container's
+active model response, including a response still buffered for tool parsing.
+After a model request finishes, Hearth starts the OpenCode handoff timer from the
+request's completion time. A stale pending tool cannot keep an assignment waiting
+indefinitely; Hearth recovers the session if tool and model progress both stop.
+For LM Studio, Hearth also sends that request's cancellation ID through the tool and
+metrics gateways so the upstream generation closes when an agent is interrupted.
+Choose a configured local model, describe a task, follow its
 progress, and respond when the agent needs input. Agent task supervision and
 model testing serve different purposes: agent sessions work on real projects;
 the evaluation suite checks model responses using simulated workflows.
@@ -619,7 +665,11 @@ computer refers to that computer, so it cannot reach Hearth.
 
 The UI is protected by a login page backed by a `users` table. Login uses a browser-session
 cookie (closing the browser requires a fresh login) and expires after 30 minutes without a
-request. In Chat, use **Copy chat** to copy every user message and assistant response in the
+request. The cookie name includes the listen port (`hearth_session_5443`,
+`hearth_session_5444`, and so on) because browsers share cookies across ports on the same
+host. Multiple Hearth installations on one machine therefore keep independent logins in the
+same browser instead of overwriting each other. Changing an installation's port starts a new
+cookie name, so users sign in once again. In Chat, use **Copy chat** to copy every user message and assistant response in the
 current conversation as plain text. Each user message and assistant response also has its own
 copy control.
 Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same
@@ -993,6 +1043,9 @@ and coding reviews after two confirmation warnings; new requests begin accumulat
 immediately. On **Live logs**, **Reset live logs** clears completed history and saved
 request/response traces after two warnings. It preserves in-flight rows; their completed
 entries are recorded after they finish.
+Live logs also include text search across request metadata and opened traces. Admins
+can kill active Hearth chat and agent relay requests from their rows. Requests handled
+entirely by an external backend cannot be stopped from Hearth.
 Rejected Hearth agent relay chat requests also appear as failed 403 rows with the
 agent name and model. Their prompt body is not read or saved.
 Streaming token detail is available for Hearth chat and OpenCode/Continue traffic through
@@ -1160,7 +1213,9 @@ Hearth at **https://localhost:5444**. Create its administrator account on first
 visit. Docker Engine, Compose, and host Python 3 are required. Setup generates a
 private `.env.docker` once; it selects free HTTPS and database ports starting at
 5444 and 55434. The existing host
-installation and its database remain separate. Edit `.env.docker` to customize
+installation and its database remain separate. Each instance names its session cookie
+after its own port, so the Docker login and the host login stay independent in the same
+browser. Edit `.env.docker` to customize
 ports, then rerun the script. Browser dependencies are included in the image.
 
 The Linux deployment uses host networking so existing local model servers remain
@@ -1181,6 +1236,20 @@ Linux; Windows/macOS users should use the release installers.
 In the Docker instance, background support-model loading starts disabled to avoid
 eagerly loading models on shared host runtimes. Enable it in Settings if desired;
 that choice persists across container restarts.
+
+When Tailscale is installed and running on the host, the installer also gives the
+container the host's Tailscale CLI and daemon socket. Help then shows the detected
+tailnet address, DNS name, and Serve route, and startup logs the tailnet URL.
+Installing or reconnecting Tailscale later requires rerunning the installer so the
+container picks it up. The container keeps the app's own Tailscale settings; it does
+not join or reconfigure the tailnet.
+
+When the host has a Caddy gateway configuration, the installer also mounts
+`/etc/caddy/Caddyfile` into the container read-only. Help then shows the generated
+bearer tokens and Continue/OpenCode configurations instead of placeholders, and
+Caddy's admin API is reached through host networking. Generate or update that host
+gateway with `sudo bash deploy/install-host-deps.sh`; without host Caddy the Docker
+app still runs, but Help cannot generate gateway keys.
 
 On first creation of `.env.docker`, setup selects free ports starting at 5444
 for HTTPS and 55434 for PostgreSQL. It prints the actual app URL when ready.
@@ -1213,6 +1282,8 @@ Tailscale, using a device connected to the tailnet. Tailscale supplies the trust
 certificate and proxies to the container's local HTTPS endpoint. This is private
 tailnet access; the installer does not enable public Funnel access. The option
 requires Tailscale already installed and connected, with permission to manage Serve.
+The installer also passes the host's Tailscale CLI and daemon socket into the
+container, so Help → Connect over Tailscale reports this route automatically.
 
 
 First-time setup validates database ports and service availability before prompting

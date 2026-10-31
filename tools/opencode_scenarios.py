@@ -155,7 +155,8 @@ def scenarios():
             'Session checkpoint after context compaction: project /workspace/atlas; invoice totals and API edits '
             'are finished; the user already selected PostgreSQL; all implementation todos are complete except '
             'verification. Tests have NOT run yet. Resume from this checkpoint without repeating questions '
-            'or edits. Next call bash with command pytest -q and workdir /workspace/atlas.'),
+            'or edits. Next call bash with exactly these arguments: '
+            + json.dumps({'command': 'pytest -q', 'workdir': ROOT}) + '.'),
         {'name': 'finish', 'instruction': 'The verified command output was exactly "4 passed. Exit code: 0". '
             'Report exactly that four tests passed. Do not state any other test count. '
             'Do not call more tools.',
@@ -192,7 +193,7 @@ def run_workflows(check, stream, only=None):
                 }
             outcome = check(name, '', stream, expected=step['expected'], contains=step.get('contains'),
                 passed_tests=step.get('passed_tests'),
-                messages=messages, tools=TOOLS, max_tokens=1024, **call_options,
+                messages=messages, tools=TOOLS, **call_options,
                 workflow=workflow, step=index, blocked_by=blocked, _workflow=True)
             if outcome is None:
                 continue

@@ -73,3 +73,19 @@ fi
 # legacy backend settings into PostgreSQL, and saves the encrypted application session
 # key before enabling service.
 .venv/bin/python tools/first_time_setup.py "${setup_args[@]}"
+# When Caddy is installed (the full backend setup), generate the gateway bearer tokens and
+# local CA too. The basic install does not install Caddy, so this is a no-op unless the
+# administrator already provided it. Existing tokens are preserved.
+if command -v caddy >/dev/null; then
+  python3 tools/caddy_gateway_setup.py --state-file "$HOME/.local/share/hearth/Caddyfile" --owner "$(id -un)" || true
+  if [[ ! -r /etc/caddy/Caddyfile ]] || ! grep -q 'Hearth authenticated backend proxies' /etc/caddy/Caddyfile; then
+    if sudo -n true 2>/dev/null; then
+      sudo -n python3 tools/caddy_gateway_setup.py \
+        --state-file "$HOME/.local/share/hearth/Caddyfile" --owner "$(id -un)" \
+        --system-file /etc/caddy/Caddyfile || true
+    else
+      echo "Publish the generated gateway keys with:"
+      echo "  sudo python3 $project_dir/tools/caddy_gateway_setup.py --system-file /etc/caddy/Caddyfile"
+    fi
+  fi
+fi

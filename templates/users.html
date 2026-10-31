@@ -63,6 +63,12 @@
             </form>
           </div>
 
+          <div class="console-card span-all">
+            <div class="users-list-header"><h2>Login and password history</h2><button id="refresh-auth-events" class="icon-btn" title="Refresh history">&#8635;</button></div>
+            <p class="hint">Successful and failed sign-ins, plus password creation and reset events. Password resets identify the administrator who performed them. Passwords and hashes are never shown.</p>
+            <div id="auth-events-list" class="model-list"><p class="hint">Loading history&hellip;</p></div>
+          </div>
+
           <div id="caddy-snippet-card" class="console-card span-all hidden">
             <div class="users-list-header">
               <h2>LAN token for <span id="caddy-snippet-username"></span></h2>

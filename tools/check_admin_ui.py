@@ -35,7 +35,7 @@ with contextlib.ExitStack() as stack:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=['--no-sandbox'])
         context = browser.new_context(viewport={'width': 1280, 'height': 1000})
-        context.add_cookies([{'name': 'session', 'value': client.get_cookie('session').value,
+        context.add_cookies([{'name': app.app.config['SESSION_COOKIE_NAME'], 'value': client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,
                               'domain': '127.0.0.1', 'path': '/'}])
         page = context.new_page()
         errors = []

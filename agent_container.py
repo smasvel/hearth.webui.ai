@@ -114,12 +114,20 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
         for key in ('accept', 'content-type', 'openai-organization', 'openai-project'):
             if self.headers.get(key): headers[key] = self.headers[key]
         headers.update(proxy.get('headers') or {})
+        cancel_id = None
+        if self.command == 'POST' and request_path == '/v1/chat/completions' and proxy.get('provider_id') == 'lmstudio':
+            cancel_id = secrets.token_hex(24)
+            headers['X-Hearth-Stream-ID'] = cancel_id
         headers['Accept-Encoding'] = 'identity'
         key = proxy.get('api_key')
         if key: headers['Authorization'] = 'Bearer '+key
         response_started = False
         response = None
         live_id = None
+        active = self.server.active_responses
+        if cancel_id:
+            with self.server.active_lock:
+                active[cancel_id] = None
         request_body = None
         try:
             length = int(self.headers.get('Content-Length', '0'))
@@ -151,6 +159,19 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             response = requests.request(self.command, proxy['base_url']+suffix,
                 params=None, headers=headers, data=body, stream=True,
                 timeout=(15, 600), verify=proxy.get('verify_tls', True))
+            if live_id is not None:
+                def cancel_upstream():
+                    response.close()
+                    if cancel_id:
+                        try:
+                            requests.post(f'http://127.0.0.1:13307/_hearth/cancel/{cancel_id}', timeout=2)
+                        except requests.RequestException:
+                            logging.warning('Could not signal LM Studio to stop agent stream %s.', live_id)
+                live_requests.set_cancel_callback(live_id, cancel_upstream)
+            if cancel_id:
+                with self.server.active_lock:
+                    if cancel_id in active:
+                        active[cancel_id] = response
             if response.status_code >= 500:
                 logging.warning('Agent model upstream returned HTTP %s for %s (%s bytes).',
                                 response.status_code, request_path, length)
@@ -248,6 +269,9 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
                                      status_code=getattr(response, 'status_code', None),
                                      error_detail=str(exc))
         finally:
+            if cancel_id:
+                with self.server.active_lock:
+                    active.pop(cancel_id, None)
             if response is not None:
                 response.close()
 
@@ -302,6 +326,8 @@ class _ModelProxy:
         self.server = server_type(str(path), _ModelProxyHandler)
         path.chmod(0o666)
         self.server.proxy_config = self.info
+        self.server.active_lock = threading.Lock()
+        self.server.active_responses = {}
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True,
                                        name='agent-model-proxy')
         self.thread.start()
@@ -313,6 +339,24 @@ class _ModelProxy:
             self.server.server_close()
             self.server = None
             Path(self.info['socket_path']).unlink(missing_ok=True)
+
+    def cancel_requests(self):
+        if not self.server:
+            return
+        with self.server.active_lock:
+            responses = list(self.server.active_responses.items())
+        for cancel_id, response in responses:
+            if cancel_id:
+                for port in (1235, 13307):
+                    try:
+                        requests.post(f'http://127.0.0.1:{port}/_hearth/cancel/{cancel_id}', timeout=2)
+                    except requests.RequestException:
+                        logging.warning('Could not cancel LM Studio stream on proxy port %s.', port)
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    logging.exception('Could not close interrupted agent model response.')
 
 
 class _EndpointOpenCode(OpenCode):
@@ -540,7 +584,7 @@ class ContainerOpenCode(OpenCode):
         # Lemonade's current llama.cpp path uses the top-level request control to
         # reach native reasoning settings; retain the template option for providers
         # that consume Qwen-style chat-template kwargs.
-        if provider_id == 'lemonade':
+        if provider_id in ('lemonade', 'lmstudio'):
             extra_body['enable_thinking'] = enable_thinking
         extra_body['chat_template_kwargs'] = {**template_kwargs,
             'enable_thinking': enable_thinking}
@@ -783,7 +827,8 @@ class ContainerOpenCode(OpenCode):
         saved_provider = (info.get('opencode_config') or {}).get('provider', {}).get(provider_id, {})
         saved_extra = (saved_provider.get('options') or {}).get('extraBody') or {}
         saved_thinking = (saved_extra.get('chat_template_kwargs') or {}).get('enable_thinking', True)
-        if saved_thinking != job.get('enable_thinking', True):
+        if (saved_thinking != job.get('enable_thinking', True)
+                or (provider_id == 'lmstudio' and saved_extra.get('enable_thinking') != job.get('enable_thinking', True))):
             self._report(job, 'Starting a fresh session with the assignment’s current thinking setting from the saved workspace.')
             return self.create(job)
         try:
@@ -882,7 +927,14 @@ class ContainerOpenCode(OpenCode):
         name, raw, info = self._split(session); return self._endpoint(name, info).live_messages(raw)
     def interrupt(self, session):
         if SESSION_SEPARATOR not in str(session): return super().interrupt(session)
-        name, raw, info = self._split(session); return self._endpoint(name, info).interrupt(raw)
+        name, raw, info = self._split(session)
+        try:
+            return self._endpoint(name, info).interrupt(raw)
+        finally:
+            with self._lock:
+                proxy = self._proxies.get(name)
+            if proxy:
+                proxy.cancel_requests()
     def reply(self, session, kind, item, value):
         if SESSION_SEPARATOR not in str(session): return super().reply(session, kind, item, value)
         name, raw, info = self._split(session); return self._endpoint(name, info).reply(raw, kind, item, value)

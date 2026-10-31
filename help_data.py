@@ -65,9 +65,8 @@ _NON_CHAT = ("embeddings", "transcription", "tts")
 # 15000, which on a small-context model (e.g. the 32768-context LM Studio default) leaves too
 # little room for the summarization request itself - the session fails with "The compaction
 # request cannot be reduced further without losing the latest exchange or checkpoint". An admin
-# can lower keep.tokens / raise buffer from the Settings panel; keep.tokens follows OpenCode's
-# 15000 default, buffer defaults to unset (the generated config omits it, letting OpenCode use
-# its own 10%-of-limit default). See build_opencode_config().
+# can lower keep.tokens / raise buffer from the Settings panel. These raw settings
+# follow OpenCode defaults; build_opencode_config() bounds them to model windows.
 DEFAULT_COMPACTION_KEEP_TOKENS = 15000
 
 
@@ -472,10 +471,8 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
             "options": options,
             "models": models,
         }
-    # Emit an explicit compaction block so a small-context model doesn't fail the way
-    # OpenCode's bare defaults do (see compaction_settings' docstring) - an admin tunes
-    # keep.tokens/buffer from Settings, and an unset buffer is omitted so OpenCode falls back
-    # to its own 10%-of-limit default rather than being pinned to an explicit value here.
+    # Bound the administrator's compaction settings to the configured model windows
+    # below; OpenCode's default retained history can exceed an entire small window.
     compaction = compaction_settings()
     compaction_block: dict = {"auto": True, "keep": {"tokens": compaction["keep_tokens"]}}
     if compaction["buffer"] is not None:
@@ -492,12 +489,14 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
         cfg["agent"] = {"flm-small": flm_small_agent(model)}
         if cfg["model"].startswith("fastflowlm/"):
             cfg["default_agent"] = "flm-small"
-        # Compaction is global in OpenCode: a large running model's buffer must
-        # not make a smaller configured model overflow before its first turn.
-        # Fixed-window Flash models are single-turn, not coding-session targets.
-        windows = [item['limit']['context'] for p in provider.values()
-                   for mid, item in p['models'].items() if '-flash' not in mid]
-        limit = min(windows) if windows else flm_context.DEFAULT_CONTEXT
+    # Compaction is global for every backend, even without any FLM models.
+    # Only FLM's fixed-window Flash models are single-turn targets; a Lemonade
+    # model with "-Flash" in its name still needs normal session protection.
+    windows = [item['limit']['context'] for be, p in provider.items()
+               for mid, item in p['models'].items()
+               if not (be == 'fastflowlm' and '-flash' in mid.lower())]
+    if windows:
+        limit = min(windows)
         compaction_block["keep"]["tokens"] = min(compaction_block["keep"]["tokens"], limit // 8)
         compaction_block["buffer"] = min(max(compaction_block.get("buffer", 0), limit // 8), limit // 4)
     return json.dumps(cfg, indent=2)

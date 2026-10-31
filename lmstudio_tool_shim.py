@@ -6,6 +6,7 @@ import re
 import time
 
 import requests
+import model_stream_cancel
 import model_test_profiles
 from flask import Flask, Response, request, stream_with_context
 
@@ -24,6 +25,14 @@ from flm_tool_shim import (
 UPSTREAM = "http://127.0.0.1:13307"
 PORT = 1235
 app = Flask(__name__)
+
+
+@app.post('/_hearth/cancel/<stream_id>')
+def cancel_stream(stream_id):
+    if request.remote_addr not in ('127.0.0.1', '::1') or not re.fullmatch(r'[0-9a-f]{48}', stream_id):
+        return '', 403
+    model_stream_cancel.streams.cancel(stream_id)
+    return '', 204
 
 # Real failure observed live (2026-09-05): asked to write-then-read a file in the working
 # directory, this 1.2B model twice invented an unrelated absolute path instead of the one
@@ -242,6 +251,10 @@ def _stream_content_and_tool_calls(chunks: list[bytes]) -> tuple[str, bool]:
 
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
+    stream_id = request.headers.get('X-Hearth-Stream-ID')
+    if stream_id and not re.fullmatch(r'[0-9a-f]{48}', stream_id):
+        return '', 400
+    model_stream_cancel.streams.begin(stream_id)
     body = request.get_json(force=True, silent=True) or {}
     body = model_test_profiles.apply(body, "lmstudio")
     body = _inject_path_warning(_inject_tools_block(body))
@@ -255,8 +268,14 @@ def chat_completions():
             try:
                 upstream = _call_upstream(attempt_body, streamed=True)
             except requests.RequestException as exc:
+                model_stream_cancel.streams.finish(stream_id)
                 return {"error": {"message": str(exc), "type": "backend_unavailable"}}, 503
-            chunks = _stream_chunks(upstream)
+            model_stream_cancel.streams.attach(stream_id, upstream)
+            try:
+                chunks = _stream_chunks(upstream)
+            finally:
+                model_stream_cancel.streams.finish(stream_id)
+                upstream.close()
             repaired = _repair_streamed_textual_tool_calls(chunks, body) if tools else None
             if repaired is not None:
                 final_chunks = [repaired]
@@ -286,7 +305,9 @@ def chat_completions():
         try:
             upstream = _call_upstream(attempt_body, streamed=False)
         except requests.RequestException as exc:
+            model_stream_cancel.streams.finish(stream_id)
             return {"error": {"message": str(exc), "type": "backend_unavailable"}}, 503
+        model_stream_cancel.streams.attach(stream_id, upstream)
         try:
             payload = upstream.json()
         except ValueError:
@@ -313,6 +334,7 @@ def chat_completions():
             break
         attempt_body = _with_corrective_nudge(body)
 
+    model_stream_cancel.streams.finish(stream_id)
     return Response(json.dumps(payload, separators=(",", ":")), status=upstream.status_code,
                     content_type=upstream.headers.get("content-type", "application/json"))
 

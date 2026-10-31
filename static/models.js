@@ -265,7 +265,7 @@
     if (!managedAutomatically && !externallyManaged && m.type !== "embeddings" && m.deletable !== false) {
       actions.appendChild(btn("Delete", "danger", () => deleteModel(m.id), isBusy));
     }
-    if (m.backend === "lemonade" && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
+    if (["lemonade", "lmstudio"].includes(m.backend) && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       const thinkingLabel = document.createElement("label");
       thinkingLabel.className = "model-thinking-toggle";
       const thinkingInput = document.createElement("input");
@@ -292,7 +292,7 @@
     try {
       const res = await fetch("/api/models/thinking", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: model.id, enabled: input.checked }),
+        body: JSON.stringify({ backend: model.backend, model: model.id, enabled: input.checked }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "could not update model thinking");

@@ -1,0 +1,13 @@
+# Tailscale identity for the containerized app.
+# deploy/install-docker.sh adds this file only when the host runs Tailscale, so hosts
+# without it keep the base compose.docker.yaml unchanged. The container gets the host
+# CLI (read-only) and tailscaled socket, which lets the Help panel and startup log read
+# the tailnet IP, DNS name, and Serve route instead of showing "not detected".
+name: hearth-docker
+services:
+  hearth:
+    environment:
+      TS_SOCKET: /run/tailscale/tailscaled.sock
+    volumes:
+      - ${TAILSCALE_BIN:?Run deploy/install-docker.sh to provide the Tailscale CLI path}:/usr/local/bin/tailscale:ro
+      - ${TAILSCALE_SOCKET_DIR:?Run deploy/install-docker.sh to provide the Tailscale socket directory}:/run/tailscale
