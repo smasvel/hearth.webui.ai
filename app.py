@@ -5,6 +5,7 @@ import html
 import json
 import os
 import queue
+import subprocess
 import re
 import secrets
 import ssl
@@ -42,6 +43,7 @@ import metrics_store
 import live_requests
 import caddy_metrics
 import quiz_content
+import session_cookie
 import quiz_store
 import flm_conversion
 import comfyui_client as comfyui
@@ -101,6 +103,9 @@ _env_path = Path(__file__).resolve().parent / ".env"
 if _env_path.is_file() and "FLASK_SECRET_KEY" in dotenv_values(_env_path):
     unset_key(str(_env_path), "FLASK_SECRET_KEY")
 app.config.update(
+    # Cookies are host-scoped, not port-scoped: without a per-port name, Hearth on
+    # localhost:5443 and localhost:5444 overwrite each other's login. See session_cookie.py.
+    SESSION_COOKIE_NAME=session_cookie.session_cookie_name(APP_PORT),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=True,
@@ -1092,6 +1097,8 @@ def login():
                     setup_mode = False
                     error = "Initial setup has already been completed. Sign in with your account."
                 else:
+                    users_store.record_auth_event(username, "password_created", True,
+                                                  user_id=user["id"], remote_addr=request.remote_addr)
                     chat_store.assign_orphaned_conversations(user["id"])
                     session.clear()
                     session["logged_in"] = True
@@ -1118,6 +1125,7 @@ def login():
                 csrf_token=_login_csrf_token(),
             ), 429
         user = users_store.verify_login(username, password)
+        users_store.record_auth_event(username, "login", bool(user), user_id=user["id"] if user else None, remote_addr=request.remote_addr)
         if user:
             _clear_login_attempts(keys)
             session.clear()
@@ -1213,6 +1221,34 @@ def users_page():
 @admin_required
 def settings_page():
     return render_template("settings.html", username=session.get("username"))
+
+
+@app.post("/api/admin/restart-backends")
+@admin_required
+def api_restart_backends():
+    services = {
+        "LM Studio": lambda: lms._run_lms(["server", "stop"], timeout=120),
+        "Lemonade": lambda: subprocess.run(["systemctl", "--user", "restart", "lemonade-guard-shim.service"], check=True, capture_output=True, text=True, timeout=120),
+        "vLLM": lambda: vllm._systemctl("restart", timeout=120),
+        "KoboldCPP": lambda: kobold._systemctl("restart", timeout=120),
+        "FastFlowLM": lambda: fastflowlm._systemctl("restart", timeout=120),
+    }
+    results = {}
+    for name, restart in services.items():
+        try:
+            restart()
+            results[name] = {"ok": True, "message": "Restart requested."}
+        except Exception as exc:
+            results[name] = {"ok": False, "message": str(exc)[:300]}
+    return jsonify(results)
+
+
+@app.post("/api/admin/restart-hearth")
+@admin_required
+def api_restart_hearth():
+    subprocess.Popen(["systemctl", "--user", "restart", "ai-webui.service"],
+                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return jsonify({"ok": True, "message": "Hearth restart requested. This page will disconnect briefly."}), 202
 
 
 @app.get("/downloads")
@@ -1514,6 +1550,14 @@ def api_metrics_live_trace(request_id):
     return jsonify(trace)
 
 
+@app.post("/api/metrics/live/<int:request_id>/cancel")
+@admin_required
+def api_metrics_live_cancel(request_id):
+    if not live_requests.cancel(request_id):
+        return jsonify({"error": "This stream is no longer active or cannot be stopped from Hearth."}), 409
+    return jsonify({"ok": True})
+
+
 @app.post("/api/metrics/requests/<int:request_id>/coding-review")
 @admin_required
 def api_metrics_coding_review(request_id):
@@ -1794,6 +1838,7 @@ def api_list_models():
         models = []
     for m in models:
         m["backend"] = "lmstudio"
+        m["enable_thinking"] = _lmstudio_model_thinking_overrides().get(m.get("id"), True)
     # Best-effort: Lemonade (Ryzen AI NPU backend) not being installed/running is
     # normal, not an error — it just means that entry doesn't appear in the list.
     lemonade_models = lemonade.list_models()
@@ -1921,6 +1966,11 @@ def _lemonade_model_thinking_overrides() -> dict[str, bool]:
     return {str(model_id): value for model_id, value in data.items() if isinstance(model_id, str) and isinstance(value, bool)}
 
 
+def _lmstudio_model_thinking_overrides() -> dict[str, bool]:
+    import lmstudio_thinking
+    return lmstudio_thinking.overrides()
+
+
 @app.post("/api/models/thinking")
 @admin_required
 def api_set_model_thinking():
@@ -1930,9 +1980,13 @@ def api_set_model_thinking():
         return jsonify({"error": "model is required"}), 400
     if not isinstance(body.get("enabled"), bool):
         return jsonify({"error": "enabled must be a boolean"}), 400
-    overrides = _lemonade_model_thinking_overrides()
+    backend = body.get("backend", "lemonade")
+    if backend not in ("lemonade", "lmstudio"):
+        return jsonify({"error": "unsupported backend"}), 400
+    overrides = (_lmstudio_model_thinking_overrides() if backend == "lmstudio"
+                 else _lemonade_model_thinking_overrides())
     overrides[model_id] = body["enabled"]
-    settings_store.set("lemonade_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
+    settings_store.set(backend + "_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
     return jsonify({"model": model_id, "enable_thinking": body["enabled"]})
 
 
@@ -4069,6 +4123,11 @@ def api_list_users():
     per_page = request.args.get("per_page", 20, type=int)
     return jsonify(users_store.list_users(page=page, per_page=per_page))
 
+@app.get("/api/auth-events")
+@admin_required
+def api_auth_events():
+    return jsonify({"events": users_store.list_auth_events()})
+
 
 @app.post("/api/users")
 @admin_required
@@ -4091,6 +4150,7 @@ def api_create_user():
         return jsonify({"error": f"username '{username}' is already taken"}), 409
 
     user = users_store.create_user(username, password, role, agent_access)
+    users_store.record_auth_event(username, "password_created", True, user_id=user["id"], remote_addr=request.remote_addr)
     # caddy_snippet shown once here (and re-fetchable later via GET .../caddy-token) since this
     # app can't add it to the Caddyfile itself - see _caddy_user_snippet's docstring.
     snippet = _caddy_user_snippet(username, user["id"], user["caddy_token"])
@@ -4164,6 +4224,7 @@ def api_reset_password(user_id):
     if target is None:
         return jsonify({"error": "not found"}), 404
     users_store.set_password(user_id, new_password)
+    users_store.record_auth_event(target["username"], "password_changed", True, user_id=user_id, remote_addr=request.remote_addr, actor_username=session.get("username"))
     return jsonify({"ok": True})
 
 
@@ -4903,6 +4964,7 @@ def api_chat():
                 source="webui-chat", backend=backend_name, model=model,
                 max_tokens=max_tokens, is_npu=is_npu,
             )
+            cancel_event = live_requests.cancel_event(live_id)
             # MCP tools (browser automation, persistent Python REPL - see mcp_tools_client.py)
             # are available on every chat backend. Each backend has a guarded tool-call path
             # where needed; withholding the tool schema makes the model claim it cannot browse
@@ -4937,6 +4999,9 @@ def api_chat():
                     # that honor the Qwen chat-template switch directly.
                     extra_kwargs["enable_thinking"] = thinking
                     extra_kwargs["chat_template_kwargs"] = {"enable_thinking": thinking}
+                elif backend is lms and _lmstudio_model_thinking_overrides().get(model) is False:
+                    extra_kwargs["enable_thinking"] = False
+                    extra_kwargs["chat_template_kwargs"] = {"enable_thinking": False}
                 if tools_list:
                     extra_kwargs["tools"] = tools_list
 

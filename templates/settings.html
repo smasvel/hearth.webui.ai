@@ -49,6 +49,15 @@
         <form id="settings-form">
         <div class="console-grid">
           <div class="console-card span-all">
+            <h2>Service controls</h2>
+            <p class="hint">Restart model backend services if a coding client is stuck. Loaded models may need to be loaded again afterward.</p>
+            <div class="download-row">
+              <button id="restart-backends" class="panel-btn" type="button">Restart all backends</button>
+              <button id="restart-hearth" class="panel-btn" type="button">Restart Hearth</button>
+            </div>
+            <div id="restart-results" class="hint" aria-live="polite"></div>
+          </div>
+          <div class="console-card span-all">
             <h2>LM Studio</h2>
             <div class="download-form">
               <input id="settings-lmstudio-url" class="panel-input" type="text" placeholder="http://localhost:1234" autocomplete="off" />

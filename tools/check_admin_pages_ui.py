@@ -51,7 +51,7 @@ with contextlib.ExitStack() as stack:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=['--no-sandbox'])
         context = browser.new_context(viewport={'width': 1440, 'height': 1000})
-        context.add_cookies([{'name': 'session', 'value': client.get_cookie('session').value,
+        context.add_cookies([{'name': app.app.config['SESSION_COOKIE_NAME'], 'value': client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,
                               'domain': '127.0.0.1', 'path': '/'}])
         page = context.new_page()
         errors = []
@@ -109,7 +109,7 @@ with contextlib.ExitStack() as stack:
         # Use a fresh browser context so a prior Metrics visit cannot hide a page-specific
         # script initialization problem behind the browser cache.
         live_context = browser.new_context()
-        live_context.add_cookies([{'name': 'session', 'value': client.get_cookie('session').value,
+        live_context.add_cookies([{'name': app.app.config['SESSION_COOKIE_NAME'], 'value': client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,
                                    'domain': '127.0.0.1', 'path': '/'}])
         live_page = live_context.new_page()
         live_page.on('pageerror', lambda error: errors.append(str(error)))
@@ -178,7 +178,7 @@ with contextlib.ExitStack() as stack:
         with client.session_transaction() as session:
             session.update(user_id=normal['id'], username=normal['username'], role='user', last_activity=time.time())
         context.clear_cookies()
-        context.add_cookies([{'name': 'session', 'value': client.get_cookie('session').value,
+        context.add_cookies([{'name': app.app.config['SESSION_COOKIE_NAME'], 'value': client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,
                               'domain': '127.0.0.1', 'path': '/'}])
         for route in ('/users', '/settings', '/downloads', '/models', '/model-tests', '/flm-converter',
                       '/browse-history', '/quizzes', '/metrics', '/live-logs'):

@@ -21,6 +21,7 @@ import time
 
 _lock = threading.Lock()
 _active: dict[int, dict] = {}
+_cancel_events: dict[int, threading.Event] = {}
 _recent: list[dict] = []  # finished entries kept briefly so a fast reply doesn't just vanish
 
 # Finished request/response traces remain available for debugging for two days, including
@@ -119,6 +120,7 @@ def start(
             "response_content": "",
             "response_truncated": False,
         }
+        _cancel_events[req_id] = threading.Event()
     return req_id
 
 
@@ -149,10 +151,12 @@ def finish(
     status_code: int | None = None, error_detail: str | None = None,
 ) -> None:
     with _lock:
+        was_cancelled = bool(_cancel_events.get(req_id) and _cancel_events[req_id].is_set())
         entry = _active.pop(req_id, None)
+        _cancel_events.pop(req_id, None)
         if entry is None:
             return
-        entry["status"] = status
+        entry["status"] = "cancelled" if was_cancelled else status
         entry["updated"] = time.monotonic()
         entry["finished_at"] = time.time()
         entry["status_code"] = status_code
@@ -166,6 +170,35 @@ def finish(
         # Serialize persistence with clear_all() so a completion racing with a reset
         # cannot write its trace back after the table has been cleared.
         _persist_finished(entry)
+
+
+def cancel(request_id: int) -> bool:
+    """Request cancellation for a stream owned by this Hearth process."""
+    with _lock:
+        event = _cancel_events.get(request_id)
+        if event is None:
+            return False
+        event.set()
+        callback = next((row.get("cancel_callback") for row in _active.values()
+                         if row.get("id") == request_id), None)
+        if callback:
+            try:
+                callback()
+            except Exception:
+                return False
+        return True
+
+
+def cancel_event(request_id: int) -> threading.Event:
+    with _lock:
+        return _cancel_events[request_id]
+
+
+def set_cancel_callback(request_id: int, callback) -> None:
+    with _lock:
+        entry = _active.get(request_id)
+        if entry is not None:
+            entry["cancel_callback"] = callback
 
 
 def snapshot(limit: int = 100) -> list[dict]:

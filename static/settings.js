@@ -3,6 +3,28 @@
   const BACKEND_ORDER = ["fastflowlm", "lemonade", "lmstudio", "kobold", "vllm", "sglang"];
 
   const settingsForm = document.getElementById("settings-form");
+  const restartBackendsBtn = document.getElementById("restart-backends");
+  const restartHearthBtn = document.getElementById("restart-hearth");
+  const restartResults = document.getElementById("restart-results");
+  async function adminAction(url, label) {
+    if (!window.confirm(`${label}? This may interrupt active requests.`)) return;
+    restartResults.textContent = `${label}…`;
+    restartBackendsBtn.disabled = true;
+    restartHearthBtn.disabled = true;
+    try {
+      const response = await fetch(url, { method: "POST", headers: { "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content } });
+      const data = await response.json();
+      if (url.endsWith("restart-hearth")) restartResults.textContent = data.message || "Hearth is restarting.";
+      else restartResults.innerHTML = Object.entries(data).map(([name, result]) => `<div>${escapeHtml(name)}: ${result.ok ? "Restart requested" : escapeHtml(result.message)}</div>`).join("");
+    } catch (error) {
+      restartResults.textContent = `Could not complete ${label}: ${error.message}`;
+    } finally {
+      restartBackendsBtn.disabled = false;
+      restartHearthBtn.disabled = false;
+    }
+  }
+  restartBackendsBtn?.addEventListener("click", () => adminAction("/api/admin/restart-backends", "Restart all backends"));
+  restartHearthBtn?.addEventListener("click", () => adminAction("/api/admin/restart-hearth", "Restart Hearth"));
   const settingsLmstudioUrlEl = document.getElementById("settings-lmstudio-url");
   const settingsLmstudioKeyEl = document.getElementById("settings-lmstudio-key");
   const settingsLemonadeUrlEl = document.getElementById("settings-lemonade-url");

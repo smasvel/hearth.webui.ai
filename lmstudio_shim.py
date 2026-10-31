@@ -26,7 +26,9 @@ import re
 import time
 
 import requests
+import model_stream_cancel
 import model_test_profiles
+import lmstudio_thinking
 import agent_request_policy
 import question_tool_compat
 import exact_file_content
@@ -41,6 +43,14 @@ LMSTUDIO_BASE = "http://127.0.0.1:1234"
 LISTEN_PORT = 13307
 
 app = Flask(__name__)
+
+
+@app.post('/_hearth/cancel/<stream_id>')
+def cancel_stream(stream_id):
+    if request.remote_addr not in ('127.0.0.1', '::1') or not re.fullmatch(r'[0-9a-f]{48}', stream_id):
+        return '', 403
+    model_stream_cancel.streams.cancel(stream_id)
+    return '', 204
 
 
 def normalize_tool_choice(body):
@@ -135,11 +145,21 @@ def _record_chat_metric(*, started: float, source: str, model: str,
 
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
+    stream_id = request.headers.get('X-Hearth-Stream-ID')
+    if stream_id and not re.fullmatch(r'[0-9a-f]{48}', stream_id):
+        return '', 400
+    model_stream_cancel.streams.begin(stream_id)
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
     if body.get("stream"):
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
-    body = model_test_profiles.apply(body, "lmstudio")
+    # normalize_tool_choice below rewrites a named tool_choice into LM Studio's
+    # required-only form, which erases the exact-arguments contract the client asked
+    # for. enforce_named_choice_* (mirroring lemonade_guard_shim.py) needs that named
+    # contract to rebuild a call the backend mangled or dropped, so it receives this
+    # untouched copy. Other repairs keep using the normalized body they run against.
+    client_body = body
+    body = lmstudio_thinking.apply(model_test_profiles.apply(body, "lmstudio"))
     body = agent_request_policy.prepare(body, compact_history=False, qwen_penalty=False)
     try:
         body = normalize_tool_choice(body)
@@ -160,8 +180,10 @@ def chat_completions():
             headers=_forward_headers(request.headers), stream=streamed, timeout=(10, 900),
         )
     except requests.RequestException:
+        model_stream_cancel.streams.finish(stream_id)
         live_report.finish(live_id, status="error")
         raise
+    model_stream_cancel.streams.attach(stream_id, upstream)
 
     if streamed:
         def tee():
@@ -184,6 +206,24 @@ def chat_completions():
                         has_tools = False
                     if has_tools and pending_tools is None:
                         pending_tools = []
+                    # Reasoning is safe to forward while tool arguments are buffered.
+                    # Keep it out of the replay so clients never see it twice.
+                    reasoning_only = False
+                    if pending_tools is not None and raw_line.startswith(b'data: '):
+                        try:
+                            choice = (event.get('choices') or [{}])[0]
+                            delta = choice.get('delta') or {}
+                            reasoning_only = bool(delta.get('reasoning_content') or delta.get('reasoning')) and not any(
+                                delta.get(key) for key in ('content', 'tool_calls')) and not choice.get('finish_reason')
+                        except (AttributeError, TypeError, IndexError):
+                            reasoning_only = False
+                    if reasoning_only:
+                        reasoning_text = delta.get('reasoning_content') or delta.get('reasoning')
+                        if isinstance(reasoning_text, str):
+                            live_report.update(live_id, delta_chars=len(reasoning_text),
+                                               delta_content=reasoning_text)
+                        yield wire_line + b'\n'
+                        continue
                     if pending_tools is None:
                         yield wire_line
                     else:
@@ -230,6 +270,10 @@ def chat_completions():
                     repaired = tool_argument_json.repair_sse(repaired)
                     repaired = exact_tool_contract.repair_sse(repaired, body)
                     repaired = question_tool_compat.repair_sse(repaired, body)
+                    repaired = exact_file_content.repair_sse(repaired, body)
+                    # Named-choice contracts live in the client's original tool_choice,
+                    # which normalize_tool_choice has already flattened to "required".
+                    repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body, relaxed=True)
                     yield from exact_file_content.repair_sse(repaired, body)
                 live_report.finish(
                     live_id, status="done" if upstream.ok else "error",
@@ -241,6 +285,7 @@ def chat_completions():
                 )
                 reported_finish = True
             finally:
+                model_stream_cancel.streams.finish(stream_id)
                 if not reported_finish:
                     try:
                         upstream.close()
@@ -269,6 +314,12 @@ def chat_completions():
                     repaired_completion = True
         repaired_completion = tool_argument_json.repair_completion(upstream_json) or repaired_completion
         repaired_completion = exact_tool_contract.repair_completion(upstream_json, body) or repaired_completion
+        # Same reasoning as the streamed branch: the client's named tool_choice is the
+        # authority for rebuilding a call the backend mangled or dropped entirely
+        # (2026-10-30, mimo-v2.6-distill: LM Studio's parser swallowed its legacy tool
+        # markup and returned neither a usable call nor the text it parsed).
+        repaired_completion = exact_tool_contract.enforce_named_choice_completion(
+            upstream_json, client_body, relaxed=True) or repaired_completion
         repaired_completion = question_tool_compat.repair_completion(upstream_json, body) or repaired_completion
         repaired_completion = exact_file_content.repair_completion(upstream_json, body) or repaired_completion
         usage = upstream_json.get("usage", {})
@@ -292,6 +343,7 @@ def chat_completions():
         json.dumps(upstream_json).encode('utf-8') if repaired_completion else upstream.content, status=upstream.status_code,
         content_type=upstream.headers.get("content-type", "application/json"),
     )
+    model_stream_cancel.streams.finish(stream_id)
     response.headers["X-Hearth-Metrics-Recorded"] = "1"
     return response
 

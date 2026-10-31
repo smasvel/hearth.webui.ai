@@ -103,3 +103,35 @@ class ExactToolContractTests(unittest.TestCase):
         self.assertEqual(calls[0]['name'], 'edit')
         self.assertEqual(calls[0]['arguments'], ARGS)
         self.assertEqual(finishes, ['tool_calls'])
+
+    def test_contract_survives_framing_prose_and_singular_wording(self):
+        """Observed live 2026-10-30 (OpenCode workflow replay): the instruction frames the
+        contract inside a sentence and can use "exactly this argument" plus trailing prose."""
+        b = body()
+        b['tool_choice'] = {'type': 'function', 'function': {'name': 'edit'}}
+        b['messages'] = [{'role': 'user', 'content':
+            'Read the invoice implementation first. Call edit with exactly this argument: '
+            + json.dumps(ARGS) + '. Then read the API caller in the next turn.'}]
+        p = {'choices': [{'message': {'content': ''}, 'finish_reason': 'length'}]}
+        self.assertTrue(contract.enforce_named_choice_completion(p, b, relaxed=True))
+        self.assertEqual(json.loads(p['choices'][0]['message']['tool_calls'][0]['function']['arguments']), ARGS)
+
+    def test_duplicate_forced_call_is_collapsed_only_when_identical(self):
+        b = body()
+        b['tool_choice'] = {'type': 'function', 'function': {'name': 'edit'}}
+        duplicate = payload(ARGS)
+        duplicate['choices'][0]['message']['tool_calls'].append(
+            copy.deepcopy(duplicate['choices'][0]['message']['tool_calls'][0]))
+        # Strict callers (Lemonade) keep the previous multi-call no-op.
+        strict = copy.deepcopy(duplicate)
+        self.assertFalse(contract.enforce_named_choice_completion(strict, b))
+        self.assertEqual(len(strict['choices'][0]['message']['tool_calls']), 2)
+        self.assertTrue(contract.enforce_named_choice_completion(duplicate, b, relaxed=True))
+        message = duplicate['choices'][0]['message']
+        self.assertEqual(len(message['tool_calls']), 1)
+        self.assertEqual(json.loads(message['tool_calls'][0]['function']['arguments']), ARGS)
+        # Different argument sets are a genuine parallel request: never collapsed.
+        different = payload(ARGS)
+        different['choices'][0]['message']['tool_calls'].append({'id': 'second', 'function': {
+            'name': 'edit', 'arguments': json.dumps({**ARGS, 'filePath': '/project/y.py'})}})
+        self.assertFalse(contract.enforce_named_choice_completion(different, b, relaxed=True))

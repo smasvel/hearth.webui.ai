@@ -355,7 +355,8 @@ class Manager:
         # The model relay tracks streamed tokens independently of OpenCode's
         # message persistence. Surface that progress so long reasoning turns do
         # not look indistinguishable from a dead session in the task Activity.
-        model_request = next((row for row in live_requests.snapshot(limit=500)
+        request_rows = live_requests.snapshot(limit=500)
+        model_request = next((row for row in request_rows
                               if row.get('status') == 'streaming'
                               and row.get('source') == job.get('assignee')
                               and (row.get('task_id') == job['id'][:24] if row.get('task_id') else
@@ -408,10 +409,18 @@ class Manager:
                                                  if m.get('type') == 'assistant'), {})]
                            for part in message.get('content', []))
         if running_tool:
-            job['agent_no_request_since'] = None
-            return True
+            # OpenCode can leave a pending tool part behind after its model
+            # stream ends. A stale part must not suppress handoff recovery forever.
+            tool_progress = float(job.get('agent_last_progress_at') or job.get('awaiting_since') or now)
+            if now - tool_progress < PROGRESS_TIMEOUT:
+                job['agent_no_request_since'] = None
+                return True
         if not job.get('agent_no_request_since'):
-            job['agent_no_request_since'] = now
+            finished = [float(row.get('finished_at') or 0) for row in request_rows
+                        if row.get('status') == 'done'
+                        and row.get('task_id') == job['id'][:24]
+                        and float(row.get('finished_at') or 0) >= float(job.get('awaiting_since') or 0)]
+            job['agent_no_request_since'] = min(now, max(finished)) if finished else now
         awaiting_since = float(job.get('awaiting_since') or now)
         last_wait_note = float(job.get('agent_no_request_note_at') or 0)
         if now - awaiting_since >= 30 and now - last_wait_note >= 30:

@@ -32,7 +32,7 @@ def session():
         'role': 'admin', 'last_activity': time.time(), 'login_csrf_token': csrf})
     client = requests.Session()
     client.verify = False
-    client.cookies.set('session', cookie, domain='127.0.0.1', path='/')
+    client.cookies.set(app.app.config['SESSION_COOKIE_NAME'], cookie, domain='127.0.0.1', path='/')
     client.headers['X-CSRF-Token'] = csrf
     return client
 

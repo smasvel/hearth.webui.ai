@@ -4,10 +4,13 @@
   const feed = document.getElementById("live-feed");
   const count = document.getElementById("live-count");
   const npu = document.getElementById("npu-status");
+  const search = document.getElementById("live-search");
+  const searchCount = document.getElementById("live-search-count");
   let retryMs = 1000;
   let loaded = false;
   const traceCache = new Map();
   const traceOpenState = new Map();
+  let latestRows = [];
 
   const addText = (parent, className, value) => {
     const span = document.createElement("span");
@@ -18,6 +21,14 @@
   };
 
   function render(rows) {
+    latestRows = rows;
+    const query = search.value.trim().toLocaleLowerCase();
+    const filtered = query ? rows.filter(row => {
+      const haystack = [row.id, row.source, row.backend, row.model, row.status, row.error_detail,
+        traceCache.get(row.id)?.request_content, traceCache.get(row.id)?.response_content].join(" ").toLocaleLowerCase();
+      return haystack.includes(query);
+    }) : rows;
+    searchCount.textContent = query ? `${filtered.length} of ${rows.length} shown (loaded trace text included)` : "";
     const active = rows.filter(row => row.status === "streaming").length;
     count.textContent = `· ${active} active · ${rows.length} shown`;
     const busy = rows.find(row => row.status === "streaming" && row.is_npu);
@@ -25,14 +36,14 @@
       ? `<span class="metric-npu-badge metric-npu-busy">⚡ NPU busy</span>`
       : `<span class="metric-npu-badge metric-npu-idle">NPU idle</span>`;
     feed.replaceChildren();
-    if (!rows.length) {
+    if (!filtered.length) {
       const empty = document.createElement("div");
       empty.className = "metric-dev-empty";
-      empty.textContent = "Waiting for inference traffic…";
+      empty.textContent = query ? "No matching log entries." : "Waiting for inference traffic…";
       feed.appendChild(empty);
       return;
     }
-    for (const row of rows) {
+    for (const row of filtered) {
       const done = row.status !== "streaming";
       const line = document.createElement("div");
       line.className = `metric-dev-line dev-${row.status}`;
@@ -45,6 +56,22 @@
       addText(line, "dev-route", `${row.backend || "unknown"} / ${row.model || "unknown"}`);
       if (row.is_npu) addText(line, "dev-npu", "NPU");
       addText(line, "dev-event", done ? (row.status === "error" ? "request failed" : "generation completed") : "streaming");
+      if (!done) {
+        const stop = document.createElement("button");
+        stop.className = "panel-btn danger";
+        stop.type = "button";
+        stop.textContent = "Kill request";
+        stop.addEventListener("click", async () => {
+          stop.disabled = true;
+          try {
+            const response = await fetch(`/api/metrics/live/${encodeURIComponent(row.id)}/cancel`, {method:"POST",headers:{"X-CSRF-Token":document.querySelector('meta[name="csrf-token"]').content}});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            stop.textContent = "Stopping…";
+          } catch (error) { stop.disabled = false; stop.textContent = `Stop failed: ${error.message}`; }
+        });
+        line.appendChild(stop);
+      }
       const stats = [`${row.tokens ?? 0} tok`, row.tokens_per_sec != null ? `${row.tokens_per_sec} tok/s` : null,
         row.ttft_s != null ? `TTFT ${row.ttft_s}s` : null, `${row.elapsed_s ?? 0}s`,
         row.pct != null ? `${row.pct}% max` : null].filter(Boolean).join(" · ");
@@ -84,6 +111,7 @@
             if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
             traceCache.set(row.id, data);
             drawTrace(data);
+            if (search.value.trim()) render(latestRows);
           } catch (error) {
             panel.replaceChildren();
             addText(panel, "dev-error-detail", `Could not load trace: ${error.message}`);
@@ -95,6 +123,8 @@
       feed.appendChild(line);
     }
   }
+
+  search.addEventListener("input", () => render(latestRows));
 
   async function poll() {
     try {

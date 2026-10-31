@@ -4,6 +4,69 @@ Historical repair investigations, implementation notes, and validation records m
 from the main README. Earlier entries may be superseded by later fixes. For current
 features, setup, and usage, see [README.md](README.md).
 
+### Independent logins for multiple instances on one host
+
+Browsers scope cookies by host, not port. With the default `session` cookie name, the
+native installation on `localhost:5443` and the containerized one on `localhost:5444`
+wrote the same cookie for the same host. Signing into either overwrote the other's
+cookie, and because each installation has its own signing key the surviving value was
+rejected, so switching ports looked like an unexpected logout.
+
+`session_cookie.py` now derives the cookie name from the listen port
+(`hearth_session_5443`, `hearth_session_5444`, ...), and `app.py` sets
+`SESSION_COOKIE_NAME` from it. Cookies for different ports coexist in the browser,
+while hostname scoping and the per-installation signing key still provide the other
+isolation layers. The name is stable for a given port and valid as a cookie token.
+
+The UI verification helpers in `tools/check_*_ui.py` and `tools/test_support_models.py`
+used to copy a hard-coded `session` cookie; they now read
+`app.config['SESSION_COOKIE_NAME']`, so they keep working with any port. Existing
+browsers sign in once after the upgrade (or after a port change) because the old
+`session` cookie is no longer read.
+
+Validation: `tests.test_session_cookie_isolation` covers per-port names, token safety,
+stability, and two Flask apps not seeing each other's cookie. Live check against the
+rebuilt Docker instance: `https://localhost:5444/login` now sets
+`hearth_session_5444`, while the not-yet-restarted host process still sets `session`;
+after its restart the host sets `hearth_session_5443`.
+
+### Installer-generated Caddy gateway keys and certificates
+
+The authenticated model gateway used to require hand-assembly: three bearer tokens
+pasted into a `(client_auth)` snippet, five proxy blocks copied from the docs, and
+Caddy's local CA trusted separately. That made a fresh host start with
+`SET_A_BEARER_TOKEN_IN_CADDYFILE` in Help, and the Docker deployment had no way to
+show working OpenCode/Continue keys at all.
+
+`tools/caddy_gateway_setup.py` now owns that setup:
+
+- Generates random 64-hex `opencode`, `vscode`, and `lan` tokens and writes the full
+  Caddyfile to `~/.local/share/hearth/Caddyfile`.
+- Detects the primary LAN address, the Tailscale address, `localhost`, and
+  `127.0.0.1`; container/bridge interfaces are skipped.
+- Installs a marked `BEGIN/END` block in `/etc/caddy/Caddyfile`, preserving every
+  other site and any earlier hand-installed block (the old bare marker is detected
+  and left untouched, so existing tokens and edits survive).
+- Validates and reloads Caddy, primes each leaf certificate with a local TLS
+  request, and exports the local CA root to `~/.local/share/hearth/hearth-ca.crt`.
+- Never rotates existing tokens: a state file that already exists is reused
+  byte-for-byte, so clients configured by an earlier install keep working.
+
+`deploy/install-host-deps.sh` calls it instead of its previous append-only snippet
+handler. `deploy/install-first-time.sh` runs the same generation when Caddy is already
+installed. `deploy/install-docker.sh` generates the user-side files, publishes the
+system block through passwordless `sudo` when available (otherwise prints the exact
+command), and adds `compose.caddy.yaml` to mount `/etc/caddy/Caddyfile` read-only.
+Docker Hearth therefore shows the generated gateway keys and configurations in Help,
+and reaches Caddy's admin API for the CA through host networking.
+
+Validation: `tests.test_caddy_gateway_setup` covers token shape/preservation, the
+rendered listeners and upstreams, managed-block replacement, idempotency, and the
+legacy-marker no-op. Live verification on the Docker install: the container parsed all
+three tokens and five ports from the host Caddyfile, fetched Caddy's CA root (630
+bytes), and `GET https://localhost:9443/v1/models` returned 200 with a key and 401
+without one.
+
 ### Admin-chat host security scanner
 
 Admins can run a defensive host audit directly in chat by entering:
@@ -3064,6 +3127,64 @@ Validation:
 
 The browser check uses isolated simulated models and checks progress, verified
 repair, HTML escaping, report download, reload recovery, reset, and cancellation.
+
+
+### LM Studio named-choice tool-call repair
+
+Observed live (2026-10-30) with `mimo-v2.6-distill-qwen-9b` on LM Studio: the model emits
+its legacy `function=/parameter=` tool markup inside a tool-call request, and LM Studio's
+server-side parser mis-converts it. Two failure shapes reached Hearth:
+
+- a structured tool call whose arguments contain the raw markup
+  (`{"pattern":"</parameter>\n<parameter=path>"}`), with the *correct* arguments left as
+  plain `content` text;
+- no tool call at all after a length-finish, with the markup swallowed entirely.
+
+`tool_argument_json` correctly rejected both shapes (the markup suffix is not print-closing
+noise), and no other rewriter claims them, so the harness reported empty/mangled calls and
+blocked every dependent workflow step (16 failed / 44 blocked).
+
+The repair: `lmstudio_shim.py` now applies `exact_tool_contract.enforce_named_choice_completion`
+and `enforce_named_choice_sse` — the same authority rule Lemonade already uses. When the
+latest user message explicitly asks "call X with exactly these arguments: {...}" and the
+client's `tool_choice` names X, the shim rebuilds (or inserts) that one call from the
+contract regardless of what the backend produced. This runs on the pre-normalization
+request body, because `normalize_tool_choice` flattens LM Studio's named choice to
+`required` before any repair. Requests without that exact-arguments phrase keep the
+previous behavior untouched; ordinary auto/required tool calls, garbage answers, and other
+models are unaffected because the contract regex never matches them.
+
+Validation: `python -m unittest tests.test_lmstudio_tool_contracts` (includes a new
+regression test covering both failure shapes in both response modes), plus a live replay
+of the previously failing `opencode-build-discover` through the restarted shim passing in
+stream and non-stream modes with exact arguments and `finish_reason: tool_calls`.
+
+Follow-up after the full run (97 passed / 8 failed / 8 blocked): four remaining shapes needed
+their own handling.
+
+- **Duplicate forced call.** mimo emits the identical call twice; `enforce_named_choice_*`
+  previously skipped any response with more than one call. The relaxed LM Studio caller now
+  collapses duplicates when every call targets the contracted function and all parseable
+  argument sets are identical. Calls with differing names or arguments are still treated as
+  a real parallel request, and the strict (default) caller keeps the previous no-op path.
+- **Framed / singular contracts.** `_request` accepts only a message that *is* the contract
+  ("Next call X with exactly these arguments: {...}."). The OpenCode multi-file-read step
+  frames it in prose and uses "exactly this argument" plus a following sentence. The new
+  `relaxed=True` mode (used only by `lmstudio_shim`, never by Lemonade) searches for the
+  contract anywhere in the latest user message and tolerates trailing prose. It still
+  requires a complete JSON object directly after the colon and a uniquely offered function.
+- **Prose-only args.** The checkpoint-resume step was the one workflow instruction that gave
+  its arguments in prose ("call bash with command pytest -q and workdir ..."). Every other
+  step supplies exact JSON, so the fixture now does too; the checkpoint semantics are
+  unchanged, and the shim's contract repair covers the step.
+- **Test-count phrasing.** `reports_passed_tests` accepted "4 tests passed" but rejected the
+  equally correct "All 4 tests pass (`pytest -q` exit code 0)". A present-tense pattern was
+  added; wrong counts and any "failed" claim are still rejected.
+
+Validation after the follow-up: `tests.test_exact_tool_contract` and
+`tests.test_lmstudio_tool_contracts` pass (17 tests, including new duplicates, framed-contract,
+and phrasing cases), and simulated end-to-end runs through the actual shim chain pass for the
+duplicate-question, multi-file-read, and checkpoint-resume shapes in both response modes.
 
 
 ### Qwen3.8 FLM context and output budgets

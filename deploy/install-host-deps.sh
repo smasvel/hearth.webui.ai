@@ -43,6 +43,17 @@ PYTHON
 apt-get update
 apt-get install -y python3 python3-venv docker.io docker-compose-v2 acl curl git ffmpeg lynis caddy build-essential cmake pkg-config libatomic1 libvulkan1 mesa-vulkan-drivers vulkan-tools libsndfile1 espeak-ng software-properties-common libtcmalloc-minimal4t64
 systemctl enable --now docker.service
+# Generate the authenticated model gateway: random per-client bearer tokens (used as the
+# apiKey in the OpenCode/Continue configs), the Caddyfile blocks, and Caddy's local CA.
+# Existing tokens are preserved, and a legacy hand-installed block is left untouched.
+# This runs before the optional backend packages so a missing FastFlowLM bundle cannot
+# leave the gateway half-configured.
+if command -v caddy >/dev/null; then
+  python3 "${project_dir}/tools/caddy_gateway_setup.py" \
+    --state-file "${target_home}/.local/share/hearth/Caddyfile" \
+    --owner "$target_user" \
+    --system-file /etc/caddy/Caddyfile
+fi
 if ! snap list lemonade-server >/dev/null 2>&1 && ! dpkg-query -W -f='${Status}' lemonade-server 2>/dev/null | grep -q 'install ok installed'; then
   apt-get install -y lemonade-server
 fi
@@ -53,16 +64,6 @@ chmod 0644 /etc/systemd/system/flm.service
 render_template "${project_dir}/50-flm.rules" /etc/polkit-1/rules.d/50-flm.rules
 chmod 0644 /etc/polkit-1/rules.d/50-flm.rules
 systemctl daemon-reload
-if [[ -f "${target_home}/.local/share/hearth/Caddyfile" ]]; then
-  if ! grep -qx '# Hearth authenticated backend proxies' /etc/caddy/Caddyfile; then
-    cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-hearth
-    printf '\n# Hearth authenticated backend proxies\n' >> /etc/caddy/Caddyfile
-    cat "${target_home}/.local/share/hearth/Caddyfile" >> /etc/caddy/Caddyfile
-  fi
-  install -d -o caddy -g caddy -m 0755 /var/log/caddy
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-  systemctl reload caddy
-fi
 # Ubuntu 26.04 includes Lemonade in its own package repository.
 "${project_dir}/.venv/bin/python" -m playwright install-deps chromium
 render_template "${project_dir}/deploy/hearth-lynis-sudoers" /etc/sudoers.d/hearth-lynis

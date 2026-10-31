@@ -58,6 +58,16 @@ The local model proxies also preserve the blank-line delimiters required by stre
 responses, so OpenAI-compatible clients can receive tool and answer events reliably.
 No additional setup is required; start a new conversation when older context is essential.
 
+For OpenCode, the generated Help configurations bound retained compaction history to
+one eighth of the smallest configured session model's context, with a buffer between
+one eighth and one quarter, for every backend. After updating, copy the new LAN or
+Tailscale configuration from Help and restart OpenCode to apply these limits. If a
+request exceeds the available context or compaction reaches its output limit, compare
+the configuration with the model's loaded context in Models. Reload the model at the
+intended context and regenerate the configuration. The maximum supported context is
+not necessarily the loaded context. A 4,096-token window may not fit the Build agent's
+prompt and tools; load a larger window and retry in a new session if needed.
+
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` on the
 Hearth computer and create the administrator account on first visit. For a Mac laptop
@@ -134,16 +144,25 @@ CSV attachment extraction is built into Hearth.
   machine restart even before that account logs in.
 - Starts Hearth's persistent agent worker with the service. The worker checks
   PostgreSQL for due schedules while Hearth is running.
+- When Caddy is already installed, generates the model gateway bearer tokens and local
+  CA, and publishes the managed gateway block through passwordless sudo when available
+  (otherwise it prints the exact `sudo` command).
 
-Existing credentials, users, and database contents are preserved on reruns. The
-installer does not configure model backends, Tailscale, Caddy, or LAN proxy services.
+Existing credentials, users, and database contents are preserved on reruns. The basic
+installer does not install model backends, Tailscale, or Caddy; the full host backend
+setup (`sudo bash deploy/install-host-deps.sh`) installs Caddy and generates the model
+gateway keys and local CA.
 Account profile fields (username, role, creation time, gateway token, and agent access)
 are stored in PostgreSQL. Passwords use salted, one-way Werkzeug hashes; Hearth never
 stores plaintext passwords or returns password hashes through user APIs. Hashing is
 intentional because passwords should be verified, not reversibly encrypted.
 The encrypted Flask session key is stored in PostgreSQL as well. Its encryption key is
 derived from the PostgreSQL connection password, so changing that database password
-rotates the session key and requires users to sign in again.
+rotates the session key and requires users to sign in again. The session cookie is named
+after the listen port (`hearth_session_5443`, `hearth_session_5444`, and so on), because
+browsers share cookies across ports on the same host. Several Hearth installations on
+one machine can therefore be signed in at the same time without their logins
+overwriting each other; changing a port starts a new cookie and requires one new login.
 
 Useful options:
 
@@ -223,6 +242,13 @@ blocked or interrupted task with a changed limit starts a fresh OpenCode session
 its saved project files.
 Hearth project agents use OpenCode's direct file and shell tools. Shell commands still
 follow the task's **Ask me first** or **Allow automatically** approval mode.
+Pausing or stopping an assignment closes that container's active model response,
+including buffered tool output. Restart Hearth after updating to activate this behavior.
+For LM Studio, the agent relay propagates a per-request cancellation ID through
+both local gateways so stopping an agent closes the upstream generation.
+After a model request completes, Hearth times the OpenCode handoff from that
+completion. If a pending tool remains without progress, Hearth recovers the
+session after its progress and handoff limits instead of waiting indefinitely.
 Transient provider connection resets are retried automatically in the same task cycle.
 The model relay avoids sending a second HTTP response after a streamed response has begun.
 The agent label is used for Hearth's request attribution and is removed by compatibility
@@ -432,6 +458,12 @@ across open Models pages every five seconds. Hearth clears the current error aft
 successful load and keeps its reviewed model warning dismissed until a later load attempt
 fails. Open **Model tests** from
 the navigation, choose an installed chat model, and run its checks individually.
+LM Studio model cards offer administrators a per-model **Enable thinking** switch.
+It is saved in PostgreSQL and applies to chat, model tests, and gateway requests
+on the next request. Some models may ignore the thinking controls.
+OpenCode assignments send both LM Studio thinking controls. The LM Studio gateway
+forwards streamed reasoning before buffered tool arguments finish; restart Hearth
+and `lmstudio-shim.service` after updating to activate this behavior.
 The page has tabs for compatibility, tool calling, model reasoning, and model
 security behavior. The reasoning tab asks 12 original questions one at a time and
 scores points correct; it is a comparison benchmark, not a human IQ score. The
@@ -441,6 +473,13 @@ and generated tools/actions are not executed. Results are saved as model-test re
 Tool checks use a 2,048-token completion budget to leave room for internal reasoning
 and complete tool arguments. Malformed argument failures include finish reasons,
 completion token counts, and a bounded argument excerpt in the saved error details.
+OpenCode workflow checks also inherit this budget on every turn. Start a new run
+after restarting Hearth; previously saved reports retain their original results.
+Tool-call mismatch errors include finish reasons, the requested response budget,
+and completion token usage when supplied by the backend.
+When a request names one function and gives its exact JSON arguments, the LM Studio
+proxy rebuilds that call if the backend mangles, duplicates, or drops it. Ordinary
+tool choices and other requests are unaffected.
 No additional configuration is needed; restart Hearth after updating to use these checks.
 Monitor compatibility repairs and review saved reports there. Completed older
 reports can be deleted while another test is running; the active report stays
@@ -498,6 +537,9 @@ reviews after two confirmation warnings; subsequent requests are recorded normal
 The **Live logs** page also has **Reset live logs**, which clears completed history and
 captured request/response traces after two confirmation warnings. In-flight rows remain
 visible and their completed entries are recorded after they finish.
+Live logs also include text search across request metadata and opened traces. Admins
+can kill active Hearth chat and agent relay requests from their rows. Requests handled
+entirely by an external backend cannot be stopped from Hearth.
 Rejected agent relay chat requests appear as failed 403 entries labeled with the agent
 name and model; Hearth does not read or save their prompt body.
 For streamed chat requests, Hearth asks Lemonade, FastFlowLM, and LM Studio for token
@@ -578,6 +620,14 @@ These choices do not download models. Configure the local URL in Hearth Settings
 (the release installer saves its selected endpoint), then download a model in Hearth.
 An explicitly configured remote URL is preserved even when local runtimes are installed.
 
+Administrators can restart managed inference services from **Settings → Service
+controls → Restart all backends**. Hearth restarts LM Studio, Lemonade's gateway,
+vLLM, KoboldCPP, and FastFlowLM independently and reports each result. A backend
+restart interrupts active inference and may require loading the model again. Use
+**Restart Hearth** in the same section to restart the web application; the page
+disconnects briefly while the service comes back. Active agent tasks may be
+interrupted and can be resumed from Agents.
+
 
 For noninteractive setup, use `--skip-backend-install` or an explicit
 `--install-backends` selection; closed input skips the optional runtime prompt.
@@ -616,7 +666,9 @@ persistent runtime directory.
 Existing configuration is preserved on reruns. Customize that file before rerunning
 if either port is occupied. Keep the file private and retain it with your backups.
 This containerized deployment uses its own PostgreSQL volume and app data; it does
-not migrate or share the current host installation's accounts or conversations.
+not migrate or share the current host installation's accounts or conversations. Each
+instance names its session cookie after its listen port, so the container login and
+the host login coexist in the same browser without replacing each other.
 
 The app image includes Chromium and its OS libraries. Model runtimes are configured
 separately in Settings; Linux host networking lets the container reach existing
@@ -644,6 +696,13 @@ host-network configuration.
 In the Docker instance, background support-model loading starts disabled to avoid
 eagerly loading models on shared host runtimes. Enable it in Settings if desired;
 that choice persists across container restarts.
+
+When Tailscale is installed and running on the host, the installer also gives the
+container the host's Tailscale CLI and daemon socket. Help then shows the detected
+tailnet address, DNS name, and Serve route, and startup logs the tailnet URL.
+Installing or reconnecting Tailscale later requires rerunning the installer so the
+container picks it up. The container keeps the app's own Tailscale settings; it does
+not join or reconfigure the tailnet.
 
 On first creation of `.env.docker`, setup selects free ports starting at 5444
 for HTTPS and 55434 for PostgreSQL. It prints the actual app URL when ready.
@@ -676,6 +735,39 @@ Tailscale, using a device connected to the tailnet. Tailscale supplies the trust
 certificate and proxies to the container's local HTTPS endpoint. This is private
 tailnet access; the installer does not enable public Funnel access. The option
 requires Tailscale already installed and connected, with permission to manage Serve.
+The installer also passes the host's Tailscale CLI and daemon socket into the
+container, so Help → Connect over Tailscale reports this route automatically.
+
+When the host already has a Caddy gateway configuration, the installer mounts
+`/etc/caddy/Caddyfile` into the container read-only. Help then shows the generated
+bearer tokens and Continue/OpenCode configurations, and reaches Caddy's admin API
+through host networking. Generate or update the host gateway with
+`sudo bash deploy/install-host-deps.sh`; without host Caddy, Docker Hearth still runs
+but Help cannot generate gateway keys.
+
+
+### Model gateway keys and certificates
+
+`sudo bash deploy/install-host-deps.sh` installs Caddy and generates Hearth's model
+gateway. It creates random `opencode`, `vscode`, and `lan` bearer tokens, five
+authenticated HTTPS proxy blocks for LM Studio, Lemonade, vLLM, KoboldCPP, and
+FastFlowLM, Caddy's local CA certificates, and an exported CA root at
+`~/.local/share/hearth/hearth-ca.crt`. Tokens are written once to
+`~/.local/share/hearth/Caddyfile`; reruns preserve them, so OpenCode and Continue
+configurations already copied to clients keep working. The installer publishes a
+marked block to `/etc/caddy/Caddyfile`, validates it, and reloads Caddy. A
+hand-installed block from an older setup is left untouched.
+
+The basic `install-first-time.sh` installation does not install Caddy. When Caddy is
+already present, it generates the same tokens and CA and publishes the block through
+passwordless sudo (otherwise it prints the command). Gateway files are never generated
+when Caddy is absent. To rotate a standard key, change it in
+`~/.local/share/hearth/Caddyfile`, rerun `sudo bash deploy/install-host-deps.sh`, and
+update the clients that use that key. Per-user keys are managed from **Users**.
+
+The Continue and OpenCode configurations in Help use these keys when the app can read
+`/etc/caddy/Caddyfile`; otherwise they show a placeholder. The CA root can also be
+downloaded from Help, which is the certificate clients must trust for the gateway.
 
 
 First-time setup validates database ports and service availability before prompting
@@ -687,3 +779,10 @@ installation follow this check. Rerunning the normal service installer restarts
 `ai-webui.service` so updated code and renewed certificates take effect; active
 assignments may be interrupted and can be resumed after restart. Use `--no-service`
 when preparing an installation without starting/restarting the service.
+### Login and password audit history
+
+The **Users** screen includes an admin-only history of successful and failed sign-ins,
+initial password creation, and administrator password resets. Each event includes the
+account, acting administrator for resets, local timestamp, and request address; passwords and password hashes are never
+stored in or displayed by the history. Existing installations create the audit table
+automatically when the Hearth service starts.
