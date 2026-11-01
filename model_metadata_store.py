@@ -44,6 +44,28 @@ def init_db():
             )
         """)
         conn.execute("CREATE TABLE IF NOT EXISTS model_metadata_migrations (key TEXT PRIMARY KEY, migrated_at DOUBLE PRECISION NOT NULL)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_configured_context (
+                backend TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                context_tokens INTEGER NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        # Model ids are matched case-insensitively (backends report the same model with
+        # different casing between catalog and health endpoints), so this expression index
+        # is the only unique constraint and therefore the ON CONFLICT arbiter used by
+        # set_model_configured_context(). A second unique constraint (such as a plain
+        # (backend, model_id) primary key) is not allowed here: a concurrent upsert whose
+        # arbiter is one index can still fail on the other with a duplicate-key error.
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configured_context_id
+            ON model_configured_context (backend, lower(model_id))
+        """)
+        conn.execute("""
+            ALTER TABLE model_configured_context
+            DROP CONSTRAINT IF EXISTS model_configured_context_pkey
+        """)
 
 
 def registry(backend):
@@ -194,6 +216,33 @@ def mark_model_load_success(backend, model_id):
             "INSERT INTO model_load_successes(backend, model_id, loaded_at) VALUES (%s, %s, %s) "
             "ON CONFLICT(backend, model_id) DO UPDATE SET loaded_at = EXCLUDED.loaded_at",
             (backend, str(model_id), time.time()),
+        )
+
+
+def set_model_configured_context(backend, model_id, context_tokens):
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO model_configured_context (backend, model_id, context_tokens, updated_at) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (backend, lower(model_id)) "
+            "DO UPDATE SET context_tokens = excluded.context_tokens, updated_at = excluded.updated_at",
+            (backend, str(model_id), int(context_tokens), time.time()),
+        )
+
+
+def get_model_configured_context(backend, model_id):
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT context_tokens FROM model_configured_context WHERE backend = %s AND lower(model_id) = lower(%s)",
+            (backend, str(model_id)),
+        ).fetchone()
+    return row['context_tokens'] if row and row['context_tokens'] else None
+
+
+def clear_model_configured_context(backend, model_id):
+    with database.connect() as conn:
+        conn.execute(
+            "DELETE FROM model_configured_context WHERE backend = %s AND lower(model_id) = lower(%s)",
+            (backend, str(model_id)),
         )
 
 

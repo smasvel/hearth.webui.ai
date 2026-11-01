@@ -36,6 +36,7 @@ import model_test_profiles
 
 import settings_store
 import lemonade_templates
+import lemonade_thinking
 
 _DEFAULT_BASE_URL = "http://localhost:13305"
 EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-text-v1-GGUF")
@@ -280,6 +281,19 @@ def list_models() -> list[dict]:
         # surface it so the Models panel can show on-disk size. Absent/None for flm/NPU
         # entries (Lemonade doesn't report a size for those); the UI just omits it then.
         raw_size = m.get("size")
+        # flm/NPU catalog entries report their raw max_context_window (e.g. 2048 for a
+        # default-sized Qwen3.8 flm), not necessarily the larger --ctx-size Lemonade serves
+        # for known large-context variants. load_options() sets ctx_size for those, but the
+        # catalog entry itself can't see that applied choice, so surface the real served
+        # limit from the loaded recipe_options as well.
+        raw_max = m.get("max_context_window")
+        loaded_context = _loaded_context_length(loaded_entry)
+        # Advertise the larger of the catalog maximum and what is actually loaded. A loaded
+        # context smaller than the catalog maximum must not hide the model's real limit, or
+        # the Models page could not offer to raise it back up.
+        max_context = max([value for value in (
+            int(raw_max) if isinstance(raw_max, int) and raw_max > 0 else None,
+            loaded_context) if isinstance(value, int) and value > 0], default=None)
         models.append(
             {
                 "id": model_id,
@@ -287,11 +301,11 @@ def list_models() -> list[dict]:
                 "publisher": publisher,
                 "quantization": _device_label(loaded_entry, m.get("recipe") or ""),
                 "type": entry_type,
-                "max_context_length": m.get("max_context_window"),
+                "max_context_length": max_context,
                 # Real server context while loaded (see _loaded_context_length) — consumed by
                 # help_data's OpenCode config generation so it never advertises more context
                 # than Lemonade is actually serving.
-                "loaded_context_length": _loaded_context_length(loaded_entry),
+                "loaded_context_length": loaded_context,
                 "size_gb": raw_size if isinstance(raw_size, (int, float)) and raw_size > 0 else None,
                 "_checkpoint": checkpoint,  # internal: used only to recover a missing size below
             }
@@ -508,6 +522,19 @@ def unload_model(identifier: str) -> None:
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise LemonadeError(f"Failed to unload '{identifier}' on Lemonade: {exc}") from exc
+
+
+def set_context_length(model_key: str, context_length: int) -> None:
+    """Reload a *loaded* Lemonade model at a new --ctx-size. The model has to be evicted
+    and reloaded to change ctx_size (llama-server reads it at startup), so this unloads
+    then loads with the new size — same cold-start tradeoff as the Unload button, but it
+    lands the user's chosen context in one step. Fail-soft on any error.
+    """
+    try:
+        unload_model(model_key)
+    except LemonadeError:
+        raise
+    load_model(model_key, context_length=context_length)
 
 
 def delete_model(identifier: str) -> None:
@@ -1237,7 +1264,7 @@ def chat_stream(
     try:
         with requests.post(
             url,
-            json=model_test_profiles.apply(payload, "lemonade"),
+            json=lemonade_thinking.apply(model_test_profiles.apply(payload, "lemonade")),
             headers=_auth_headers(),
             stream=True,
             timeout=(10, 600),

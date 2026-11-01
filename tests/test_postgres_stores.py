@@ -6,6 +6,7 @@ import database
 import browse_history_store
 import chat_store
 import metrics_store
+import model_metadata_store
 import quiz_store
 import settings_store
 import secret_store
@@ -125,3 +126,18 @@ class PostgreSQLStoreTests(unittest.TestCase):
             with database.connect() as conn:
                 ciphertext = conn.execute("SELECT value FROM settings WHERE key='lmstudio_api_key'").fetchone()['value']
             self.assertTrue(ciphertext.startswith('v1:'))
+
+    def test_configured_context_is_case_insensitive_and_updates(self):
+        model_metadata_store.set_model_configured_context('lemonade', 'Muse-Glimmer-30B-GGUF', 131072)
+        self.assertEqual(
+            model_metadata_store.get_model_configured_context('lemonade', 'muse-glimmer-30b-gguf'),
+            131072,
+        )
+        model_metadata_store.set_model_configured_context('lemonade', 'muse-glimmer-30b-gguf', 65536)
+        self.assertEqual(
+            model_metadata_store.get_model_configured_context('lemonade', 'Muse-Glimmer-30B-GGUF'),
+            65536,
+        )
+        model_metadata_store.clear_model_configured_context('lemonade', 'MUSE-GLIMMER-30B-GGUF')
+        self.assertIsNone(
+            model_metadata_store.get_model_configured_context('lemonade', 'Muse-Glimmer-30B-GGUF'))

@@ -31,6 +31,7 @@ import vllm_client as vllm
 import kobold_client as kobold
 import fastflowlm_client as fastflowlm
 import settings_store
+import model_metadata_store
 import flm_context
 
 CADDYFILE = "/etc/caddy/Caddyfile"
@@ -116,8 +117,10 @@ def opencode_context_settings() -> dict:
 
 
 def _advertised_context(be: str, model_id: str, ctx_by_model: dict, fallback: int | None) -> int:
-    """Context to advertise for one model: the backend's reported real context when known
-    (ctx_by_model), else the admin's global fallback, else this backend's tuned default."""
+    """Context to advertise for one model: the saved/loaded window the caller resolved for
+    this (backend, model) in ctx_by_model, else the admin's global fallback, else this
+    backend's tuned default. fastflowlm is special-cased because its live --ctx-len is the
+    only meaningful value and Hearth cannot change it per model."""
     if be == "fastflowlm":
         return flm_context.context_limit(model_id)
     detected = ctx_by_model.get((be, model_id))
@@ -365,7 +368,7 @@ def _pick_default(chat_by_be: dict, loaded_by_be: dict, override: str | None = N
     return None
 
 
-def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_label="LAN") -> str:
+def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_label="LAN", ctx_by_model=None) -> str:
     # network_label is purely cosmetic (model display names + the config's own title) — lets
     # the same builder produce a LAN-flavored or Tailscale-flavored config from the same live
     # model list without duplicating this whole function; the actual connectivity is entirely
@@ -397,11 +400,12 @@ def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_labe
         return b
 
     any_chat = False
+    ctx_by_model = dict(ctx_by_model or {})
     for be in ("lemonade", "vllm", "kobold", "fastflowlm", "lmstudio"):
         for mid in chat_by_be.get(be, []):
             any_chat = True
             lines += entry(f"{mid} ({_LABELS[be]}, {network_label})", mid, ports[be],
-                           _advertised_context(be, mid, {}, None),
+                           _advertised_context(be, mid, ctx_by_model, None),
                            ["chat", "edit", "apply"], 120000)
     for em in embed_models:
         be = em["backend"]
@@ -418,9 +422,9 @@ def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_labe
 
 def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_override=None, network_label="LAN", ctx_by_model=None) -> str:
     # network_label: see build_continue_yaml's docstring comment — same reasoning, cosmetic only.
-    # ctx_by_model: {(backend, model_id): real_loaded_context} from build()'s live inventory.
-    # Used (unless the admin turned auto-detect off) so each entry advertises what its server
-    # is actually running, instead of a fixed per-backend guess that can over-advertise.
+    # ctx_by_model: {(backend, model_id): context_to_advertise} resolved by build() from the
+    # admin's saved per-model ctx-size (preferred) or the live loaded context. This keeps a
+    # generated client config current even before a running model has been reloaded.
     ctx_by_model = dict(ctx_by_model or {})
     context_settings = opencode_context_settings()
     if not context_settings["advertise_loaded"]:
@@ -532,14 +536,24 @@ def build(app_port: int = 5443) -> dict:
              and m.get("loadable") is not False and m.get("state") == "loaded"]
         for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
     }
-    # Real loaded context per (backend, model), for the generated OpenCode config — only
-    # meaningful for models a backend is actually serving right now (see
-    # _advertised_context); unloaded models report none and fall back to a backend default.
-    ctx_by_model = {
-        (m.get("backend"), m["id"]): m["loaded_context_length"]
-        for m in models
-        if isinstance(m.get("loaded_context_length"), int) and m["loaded_context_length"] > 0
-    }
+    # Context advertised in generated LAN/Tailscale configs. The admin's saved per-model
+    # value is authoritative because it is what the next Load applies; a live loaded value
+    # is the fallback when nothing has been saved. Without preferring the saved value, a
+    # model running below its configured window (for example while waiting for a reload)
+    # kept advertising the old, smaller window in Help.
+    ctx_by_model = {}
+    for m in models:
+        context = m.get("configured_context_length")
+        if not (isinstance(context, int) and context > 0):
+            try:
+                context = model_metadata_store.get_model_configured_context(
+                    m.get("backend"), m.get("id"))
+            except Exception:
+                context = None
+        if not (isinstance(context, int) and context > 0):
+            context = m.get("loaded_context_length")
+        if isinstance(context, int) and context > 0:
+            ctx_by_model[(m.get("backend"), m["id"])] = context
     embed_models = [
         {"id": m["id"], "backend": m.get("backend")}
         for m in models if m.get("type") == "embeddings"
@@ -580,7 +594,8 @@ def build(app_port: int = 5443) -> dict:
     ts_ca_trust_commands = None
     if ts_ip:
         ts_continue_yaml = build_continue_yaml(
-            ts_ip, vscode_token, ports, chat_by_be, embed_models, network_label="Tailscale"
+            ts_ip, vscode_token, ports, chat_by_be, embed_models, network_label="Tailscale",
+            ctx_by_model=ctx_by_model,
         )
         ts_opencode_config = build_opencode_config(
             ts_ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
@@ -623,7 +638,8 @@ def build(app_port: int = 5443) -> dict:
                            "check the admin API at localhost:2019)",
         "ca_cert_ok": bool(cert),
         "ca_trust_commands": ca_trust_commands(ip, app_port),
-        "continue_yaml": build_continue_yaml(ip, vscode_token, ports, chat_by_be, embed_models),
+        "continue_yaml": build_continue_yaml(ip, vscode_token, ports, chat_by_be, embed_models,
+                                             ctx_by_model=ctx_by_model),
         "opencode_config": build_opencode_config(
             ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
             ctx_by_model=ctx_by_model,

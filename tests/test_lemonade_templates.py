@@ -33,6 +33,18 @@ class DevstralTemplateTests(unittest.TestCase):
     def test_nemotron_keeps_gpu_on_other_hardware(self, budget):
         self.assertEqual(lemonade_templates.load_options('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF'), {})
 
+    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=True)
+    def test_ornith_35b_uses_cpu_but_9b_keeps_default(self, budget):
+        current = {'ctx_size': 65536, 'llamacpp_backend': 'vulkan', 'llamacpp_args': '--parallel 1'}
+        options = lemonade_templates.load_options('Ornith-1.5-35B-A3B-GGUF', current)
+        self.assertEqual(options, {**current, 'llamacpp_backend': 'cpu'})
+        self.assertEqual(current['llamacpp_backend'], 'vulkan')
+        self.assertEqual(lemonade_templates.load_options('Ornith-1.5-9B-GGUF', current), {})
+
+    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=False)
+    def test_ornith_keeps_gpu_on_other_hardware(self, budget):
+        self.assertEqual(lemonade_templates.load_options('Ornith-1.5-35B-A3B-GGUF'), {})
+
     def test_scoped_override_preserves_context_and_is_idempotent(self):
         current = {"ctx_size": 63569, "llamacpp_args": "--parallel 1"}
         options = lemonade_templates.load_options("Devstral-Small-2507-GGUF", current)

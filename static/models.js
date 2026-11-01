@@ -6,6 +6,7 @@
   const summaryEl = el("model-summary");
   const searchEl = el("model-search");
   const warningsOnlyEl = el("model-warnings-only");
+  const maxContextBtn = el("model-max-context-btn");
   const toastEl = el("toast");
   const localUploadForm = el("local-model-upload-form");
   const localUploadInput = el("local-model-file");
@@ -18,6 +19,33 @@
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
     if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(0)} MB`;
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+
+  function copyableField(text, label, title) {
+    const wrap = document.createElement("span");
+    wrap.className = "model-copyable-field";
+    const span = document.createElement("span");
+    span.className = "model-copyable-text";
+    span.textContent = text;
+    if (title) span.title = title;
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "model-copy-btn";
+    copyBtn.textContent = "copy";
+    copyBtn.setAttribute("aria-label", `Copy ${label}`);
+    copyBtn.title = `Copy ${label}`;
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = "copied";
+        setTimeout(() => { copyBtn.textContent = "copy"; }, 1200);
+      } catch {
+        copyBtn.textContent = "failed";
+        setTimeout(() => { copyBtn.textContent = "copy"; }, 1200);
+      }
+    });
+    wrap.append(span, copyBtn);
+    return wrap;
   }
 
   if (localUploadForm) {
@@ -170,26 +198,55 @@
       ${badge}
       <div class="model-card2-actions"></div>`;
     const contextTokens = Number(m.context_window_tokens);
+    const metaEl = c.querySelector(".model-card2-meta");
     if (Number.isSafeInteger(contextTokens) && contextTokens > 0) {
       const contextLabel = document.createElement("span");
       contextLabel.className = "model-context-label";
       const isModelMax = m.context_window_source === "model_max";
       contextLabel.textContent = `${isModelMax ? "max " : "ctx "}${contextTokens.toLocaleString()} tokens`;
-      const loadedContext = Number(m.loaded_context_length);
       const sourceText = {
         model_max: "Maximum context reported by the model backend.",
         loaded_runtime: "Current loaded runtime context; the model may support a larger window.",
         configured: "Context length configured for this model or runtime.",
         backend_default: "Hearth's default context for this backend; the model's actual maximum is not reported.",
       }[m.context_window_source] || "Context length reported by the backend.";
-      contextLabel.title = isModelMax && Number.isSafeInteger(loadedContext) && loadedContext > 0 && loadedContext !== contextTokens
-        ? `${sourceText} Currently loaded at ${loadedContext.toLocaleString()} tokens.`
-        : sourceText;
-      const metaEl = c.querySelector(".model-card2-meta");
-      if (meta) metaEl.append(document.createTextNode(" · "));
-      else metaEl.innerHTML = "";
+      contextLabel.title = sourceText;
       metaEl.appendChild(contextLabel);
+      metaEl.append(document.createTextNode(" · "));
     }
+    // Editable served context for backends that take ctx-size at load time. The saved
+    // value is reused on every later Load, so an unloaded model keeps the chosen window.
+    const contextEditable = ["lemonade", "lmstudio", "vllm"].includes(m.backend);
+    if (contextEditable && m.type && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
+      const activeContext = Number(m.configured_context_length || m.loaded_context_length || m.context_window_tokens);
+      const loadedContext = Number(m.loaded_context_length);
+      const maxContext = Number(m.max_context_length || m.context_window_tokens);
+      if (Number.isSafeInteger(activeContext) && activeContext > 0) {
+        const ctxField = document.createElement("span");
+        ctxField.className = "model-copyable-field";
+        const fieldLabel = document.createElement("span");
+        fieldLabel.className = "model-field-label";
+        fieldLabel.textContent = "ctx-size:";
+        const ctxInput = document.createElement("input");
+        ctxInput.type = "number";
+        ctxInput.className = "model-context-input";
+        ctxInput.min = 512;
+        if (Number.isSafeInteger(maxContext) && maxContext > 0) ctxInput.max = String(maxContext);
+        ctxInput.value = String(activeContext);
+        ctxInput.disabled = isBusy;
+        ctxInput.title = Number.isSafeInteger(maxContext) && maxContext > 0
+          ? `Served context window in tokens (model maximum ${maxContext.toLocaleString()}). Saving reloads a loaded model.`
+          : "Served context window in tokens. Saving reloads a loaded model.";
+        if (Number.isSafeInteger(loadedContext) && loadedContext > 0 && loadedContext !== activeContext) {
+          ctxInput.title += ` Currently loaded at ${loadedContext.toLocaleString()} tokens; the saved value applies on the next Load.`;
+        }
+        ctxInput.setAttribute("aria-label", `Context size in tokens for ${m.id}`);
+        ctxInput.addEventListener("change", () => updateContextLength(m, ctxInput));
+        ctxField.append(fieldLabel, ctxInput);
+        metaEl.appendChild(ctxField);
+      }
+    }
+    metaEl.appendChild(copyableField(m.id, "model name", `Copy model id: ${m.id}`));
     const actions = c.querySelector(".model-card2-actions");
     if (m.resource_warning) {
       // The warning sits inside the same actions row as the Load button — above it,
@@ -306,6 +363,41 @@
     }
   }
 
+  async function updateContextLength(model, input) {
+    const value = parseInt(input.value, 10);
+    const max = Number(model.max_context_length);
+    if (!Number.isSafeInteger(value) || value < 512) {
+      input.value = String(model.configured_context_length || model.loaded_context_length || model.context_window_tokens);
+      toast("Context size must be at least 512 tokens.", true);
+      return;
+    }
+    if (Number.isSafeInteger(max) && max > 0 && value > max) {
+      input.value = String(model.configured_context_length || model.loaded_context_length || model.context_window_tokens);
+      toast(`${model.id} supports at most ${max.toLocaleString()} context tokens.`, true);
+      return;
+    }
+    input.disabled = true;
+    try {
+      const res = await fetch("/api/models/context", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend: model.backend, model: model.id, context_length: value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "could not update context length");
+      model.configured_context_length = data.context_length;
+      if (data.reloaded) model.loaded_context_length = data.context_length;
+      model.context_window_tokens = data.context_length;
+      model.context_window_source = "configured";
+      toast(`${data.reloaded ? "Reloaded" : "Saved"} ${model.id} at ${value.toLocaleString()} context tokens`);
+      if (data.reloaded) fetchModels();
+    } catch (err) {
+      input.value = String(model.configured_context_length || model.loaded_context_length || model.context_window_tokens);
+      toast(`Could not update context size for ${model.id}: ${err.message}`, true);
+    } finally {
+      input.disabled = false;
+    }
+  }
+
   function btn(label, cls, onClick, disabled) {
     const b = document.createElement("button");
     b.type = "button";
@@ -346,6 +438,24 @@
   }
 
   warningsOnlyEl?.addEventListener("change", renderGroups);
+
+  maxContextBtn?.addEventListener("click", async () => {
+    if (!confirm("Save every chat model's maximum reported context as its configured ctx-size? Loaded models apply it on their next Load.")) return;
+    maxContextBtn.disabled = true;
+    try {
+      const res = await fetch("/api/models/context/max", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "could not update model contexts");
+      const count = (data.updated || []).length;
+      const skipped = (data.skipped || []).length;
+      toast(`Saved max context for ${count} model${count === 1 ? "" : "s"}` + (skipped ? `; ${skipped} had no reported maximum.` : "."));
+      fetchModels();
+    } catch (err) {
+      toast(`Could not set max contexts: ${err.message}`, true);
+    } finally {
+      maxContextBtn.disabled = false;
+    }
+  });
 
   // Cold-starting an on-demand backend's service (vLLM/KoboldCPP/FastFlowLM) can take 60-90+s
   // (confirmed live: a working vLLM cold-start took 91s). Real user report: this looked exactly

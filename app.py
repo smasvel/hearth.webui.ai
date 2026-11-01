@@ -1884,6 +1884,18 @@ def api_list_models():
         m["backend"] = "fastflowlm"
     models += flm_models
     models.append(comfyui.video_model_info())
+    # Per-model context the admin saved from the Models page. Backends only report what is
+    # currently loaded (or their own default), so without this an unloaded model would lose
+    # the chosen window on the next load. Also what the Models page edits and what the
+    # OpenCode config generation reads when a model has no live loaded value.
+    for model in models:
+        try:
+            configured_context = model_metadata_store.get_model_configured_context(
+                model.get("backend"), model.get("id"))
+        except Exception:
+            configured_context = None
+        if configured_context:
+            model["configured_context_length"] = configured_context
     def positive_context(value):
         if isinstance(value, bool):
             return None
@@ -1988,6 +2000,109 @@ def api_set_model_thinking():
     overrides[model_id] = body["enabled"]
     settings_store.set(backend + "_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
     return jsonify({"model": model_id, "enable_thinking": body["enabled"]})
+
+
+def _saved_model_context(backend: str, model_id: str) -> int | None:
+    """Context length the admin chose for this model in the Models page, if any."""
+    try:
+        value = model_metadata_store.get_model_configured_context(backend, model_id)
+    except Exception:
+        return None
+    return value if isinstance(value, int) and value > 0 else None
+
+
+@app.post("/api/models/context")
+@admin_required
+def api_set_model_context():
+    """Save the context length to use for a model, reloading it when already loaded.
+
+    Backends apply --ctx-size only at load time, so a loaded model has to be restarted to
+    change its window; an unloaded one picks the saved value up on its next Load. This is
+    the per-model answer to "let me use the model's full window": without it an unloaded
+    model always fell back to the backend default and a loaded one kept whatever it was
+    started with, which made OpenCode compact far more often than the model required.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    model_id = str(body.get("model") or "").strip()
+    if not model_id or len(model_id) > 512:
+        return jsonify({"error": "model is required"}), 400
+    backend = body.get("backend", "lemonade")
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm}
+    if backend not in clients:
+        return jsonify({"error": f"{backend} does not support changing its served context from Hearth."}), 400
+    try:
+        value = int(body.get("context_length"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "context_length must be an integer"}), 400
+    if value < 512:
+        return jsonify({"error": "context_length must be at least 512"}), 400
+    try:
+        entry = next((m for m in clients[backend].list_models() if m.get("id") == model_id), None)
+    except Exception as exc:
+        return jsonify({"error": f"Could not read the {backend} model list: {exc}"}), 502
+    if entry is None:
+        return jsonify({"error": f"{model_id} is not available from {backend}."}), 404
+    maximum = entry.get("max_context_length")
+    if (isinstance(maximum, int) and not isinstance(maximum, bool) and maximum > 0
+            and value > maximum):
+        return jsonify({"error":
+                        f"{model_id} supports at most {maximum:,} context tokens."}), 400
+    try:
+        model_metadata_store.set_model_configured_context(backend, model_id, value)
+    except Exception as exc:
+        return jsonify({"error": f"Could not save the context length: {exc}"}), 500
+    if entry.get("state") != "loaded":
+        return jsonify({"model": model_id, "context_length": value, "reloaded": False})
+    # Reuse the normal load route so eviction, NPU locking, and memory checks stay in one
+    # place instead of a second, subtly different reload path.
+    try:
+        with app.test_request_context("/api/models/load", method="POST",
+                                      json={"model": model_id, "context_length": value}):
+            response = app.make_response(api_load_model.__wrapped__())
+        data = response.get_json() or {}
+    except Exception as exc:
+        return jsonify({"error": f"Failed to reload {model_id}: {exc}"}), 502
+    if response.status_code >= 400:
+        return jsonify({"error": data.get("error", f"Failed to reload {model_id}.")}), response.status_code
+    return jsonify({"model": model_id, "context_length": value, "reloaded": True})
+
+
+@app.post("/api/models/context/max")
+@admin_required
+def api_set_max_model_contexts():
+    """Save each model's reported maximum context as its configured default.
+
+    This is the bulk version of the per-model ctx-size field: it does not reload loaded
+    models (that would interrupt work), but every later Load uses the saved maximum. Models
+    whose backend does not report a maximum, or that are not chat models, are left alone.
+    """
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm}
+    updated, skipped, failures = [], [], []
+    for backend, client in clients.items():
+        try:
+            inventory = client.list_models()
+        except Exception as exc:
+            failures.append({"backend": backend, "error": str(exc)})
+            continue
+        for model in inventory:
+            model_id = model.get("id")
+            if not model_id or model.get("type") in _SUPPORT_MODEL_TYPES:
+                continue
+            maximum = model.get("max_context_length")
+            if isinstance(maximum, str) and maximum.isdigit():
+                maximum = int(maximum)
+            if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 512:
+                maximum = model.get("configured_context_length")
+            if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 512:
+                skipped.append({"backend": backend, "model": model_id,
+                                "reason": "maximum context was not reported"})
+                continue
+            try:
+                model_metadata_store.set_model_configured_context(backend, model_id, maximum)
+                updated.append({"backend": backend, "model": model_id, "context_length": maximum})
+            except Exception as exc:
+                failures.append({"backend": backend, "model": model_id, "error": str(exc)})
+    return jsonify({"updated": updated, "skipped": skipped, "failures": failures})
 
 
 _model_test_context = threading.local()
@@ -2892,7 +3007,8 @@ def _claim_selected_npu(backend, model: str):
                 for m in lemonade.list_models()
             )
             if not loaded:
-                lemonade.load_model(model, context_length=65536)
+                lemonade.load_model(model, context_length=(
+                    _saved_model_context("lemonade", model) or 65536))
         return handle
     except Exception:
         npu_request_lock.release(handle)
@@ -3007,7 +3123,7 @@ def api_load_model():
                 return jsonify({"error": refusal}), 422
             vllm.load_model(
                 model_key,
-                max_model_len=body.get("context_length") or None,
+                max_model_len=body.get("context_length") or _saved_model_context("vllm", model_key) or None,
             )
         except (vllm.VLLMError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 502
@@ -3062,7 +3178,8 @@ def api_load_model():
             refusal = resource_guard.check_available_memory()
             if refusal:
                 return jsonify({"error": refusal}), 422
-            lemonade.load_model(model_key, context_length=body.get("context_length") or 65536)
+            lemonade.load_model(model_key, context_length=(
+                body.get("context_length") or _saved_model_context("lemonade", model_key) or 65536))
         except (lemonade.LemonadeError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 502
         finally:
@@ -3103,7 +3220,8 @@ def api_load_model():
                         # tools (Continue, OpenCode) routinely send 8-10k+ tokens of system prompt
                         # and tool definitions before the user's first word, which otherwise fails
                         # with exceed_context_size_error. An explicit `context_length` still overrides.
-                        context_length=body.get("context_length") or 32768,
+                        context_length=(body.get("context_length")
+                                        or _saved_model_context("lmstudio", model_key) or 32768),
                         ttl=body.get("ttl") or None,
                         # Prefer full offload, reserving runtime headroom when the
                         # model approaches the shared GPU memory budget.
@@ -5367,13 +5485,15 @@ def _restore_default_model() -> None:
             elif backend is kobold:
                 kobold.load_model(model)
             elif backend is lemonade:
-                lemonade.load_model(model, context_length=65536)
+                lemonade.load_model(model, context_length=(
+                    _saved_model_context("lemonade", model) or 65536))
             else:
                 if not any(
                     entry.get("id") == model and entry.get("state") == "loaded"
                     for entry in lms.list_models()
                 ):
-                    lms.load_model(model, context_length=32768)
+                    lms.load_model(model, context_length=(
+                        _saved_model_context("lmstudio", model) or 32768))
         print(f"Startup model: restored {backend_name}/{model}", flush=True)
     except Exception as exc:
         # Startup must remain fail-soft: the web UI should still come online when an

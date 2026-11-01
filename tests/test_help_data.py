@@ -37,6 +37,14 @@ class TailscaleHelpTests(unittest.TestCase):
         self.assertIn("contextLength: 262144", mini)
         self.assertIn("contextLength: 8192", qwen)
 
+    def test_continue_uses_saved_context_over_backend_default(self):
+        result = help_data.build_continue_yaml(
+            "100.1.2.3", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["Muse-Glimmer-30B-GGUF"]}, [], network_label="Tailscale",
+            ctx_by_model={("lemonade", "Muse-Glimmer-30B-GGUF"): 131072})
+        self.assertIn("contextLength: 131072", result)
+        self.assertNotIn("contextLength: 65536", result)
+
     @patch.object(help_data.subprocess, "run")
     def test_hardcoded_default_port_does_not_select_another_app(self, run):
         domain = "machine.example.ts.net"

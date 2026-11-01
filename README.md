@@ -144,6 +144,10 @@ administrator to find models, then use **Models** to load and evaluate them.
    include that model's reasoning phase. The toggle is saved per model and overrides the
    Lemonade default in Settings; Hearth passes it through both Lemonade's request control and
    the chat-template option. Models whose runtime does not support thinking controls may ignore it.
+   Disabling thinking also applies to model tests and coding clients using Hearth's Lemonade
+   gateway, including requests with thinking enabled in an older client configuration or agent
+   assignment. Restart Hearth and `lemonade-guard-shim.service` after updating. The change
+   applies to new requests; CPU inference and large conversation histories can still be slow.
 10. Run **Model tests** before using a model for coding or tool-driven workflows.
 
 | Backend | Model discovery and download sources | Execution |
@@ -170,7 +174,29 @@ Embedding, speech, image, and video models have separate purposes from chat mode
 On **Models**, each model label includes its maximum supported context-token count
 when the backend reports or Hearth can determine it. This helps compare model
 limits before loading or chatting; the actual usable context may be lower when a
-runtime or backend setting applies a smaller value.
+runtime or backend setting applies a smaller value. Chat models on Lemonade, LM
+Studio, and vLLM also show a **ctx-size** field. Saving it stores the window for
+that model and reloads it when it is already loaded; the saved value is reused on
+every later load. Enter the reported maximum (for example a model loaded at 13,835
+of a 131,072-token window) to use the full window. **Set all to max context** saves
+each chat model's reported maximum in one step; it applies to loaded models on their
+next Load. Generated LAN and Tailscale configurations (OpenCode and Continue) use the
+saved value for every backend that supports per-model context, even while a loaded
+model is still running at its previous window; reload the model from Models to make
+the server match. Only select a value your hardware can actually hold in memory;
+larger windows use more memory and can make loads slower or fail.
+
+For Lemonade's `Ornith-1.5-35B-A3B-GGUF`, Hearth selects the CPU backend on AMD
+devices with a shared GPU memory pool below 32 GiB to avoid Vulkan memory exhaustion
+during loading. CPU inference uses system RAM and can produce slower replies. Restart
+Hearth and the Lemonade gateway after updating, then reload the model from Models.
+
+If loading a Lemonade model reports that LM Studio cannot be reached, start LM
+Studio's configured API server (locally, `lms server start --port 1234`) and retry
+from Models. Hearth verifies other backends before switching reasoning models,
+even when the requested model belongs to Lemonade. On Linux, the LM Studio
+service can appear active while its API server has stopped; check the endpoint
+rather than relying on service status alone.
 
 ### Model picks for faster replies
 
@@ -347,11 +373,14 @@ Generated OpenCode configurations cap retained compaction history at one eighth 
 the smallest configured session model's context and bound the compaction buffer
 between one eighth and one quarter of that window, across all backends. If OpenCode
 reports that a request exceeds the available context, check the model's **loaded**
-context in Models: its maximum supported context can be much larger. Reload it with
-the intended context, copy the updated LAN or Tailscale configuration from Help,
-restart OpenCode, and retry in a new session if the old transcript still overflows.
-A 4,096-token runtime can be too small for the Build agent's prompt and tools even
-with compaction; increasing the loaded context is necessary in that case.
+context in Models: its maximum supported context can be much larger. Use the
+card's **ctx-size** field to load it at up to that maximum; Hearth advertises the
+new loaded window in the next generated configuration, so compaction happens near
+the real window instead of the old default. Then copy the updated LAN or Tailscale
+configuration from Help, restart OpenCode, and retry in a new session if the old
+transcript still overflows. A 4,096-token runtime can be too small for the Build
+agent's prompt and tools even with compaction; increasing the loaded context is
+necessary in that case.
 
 See [codebase RAG](#codebase-retrieval-for-coding-clients),
 [client attribution](#metrics-and-diagnostics), and
@@ -1096,10 +1125,19 @@ docker compose --env-file .env.postgres ps
 For updates, reinstall requirements and restart after active work has finished:
 
 ```bash
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -U -r requirements.txt
 bash deploy/install-first-time.sh --rebuild-agent-image
 systemctl --user restart ai-webui
+systemctl --user restart lemonade-guard-shim flm-tool-shim lmstudio-shim
 ```
+
+Using `-U` matters for security maintenance: plain `-r` leaves an already-installed
+package at its older version even when `requirements.txt` now declares a fixed minimum
+(for example `cryptography>=50` and `mcp>=1.30`). Re-run an administrator host scan and
+a Python audit after upgrades. The separate vLLM virtualenv is updated independently;
+keep `setuptools` at the version its installed vLLM release pins, because forcing a newer
+`setuptools` breaks vLLM's dependency check. Update LM Studio, Lemonade, and other runtimes
+through their own installer or package manager, then restart their services and Hearth.
 
 The first-time installer prepares the isolated agent image automatically. Rebuild
 it after updating the container recipe or OpenCode version. The image includes

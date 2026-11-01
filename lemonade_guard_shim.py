@@ -49,6 +49,7 @@ import live_report
 import npu_request_lock
 import generation_guard
 import lemonade_templates
+import lemonade_thinking
 from flm_tool_shim import _repair_streamed_textual_tool_calls, _repair_textual_tool_calls
 
 LEMONADE_BASE = "http://127.0.0.1:13305"
@@ -584,7 +585,7 @@ class _KeepaliveLineReader:
 def chat_completions():
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
-    body = model_test_profiles.apply(body, "lemonade")
+    body = lemonade_thinking.apply(model_test_profiles.apply(body, "lemonade"))
     body = _prepare_agent_request(body)
     if body.get("stream"):
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}

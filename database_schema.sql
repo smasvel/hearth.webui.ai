@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS model_load_successes (
 );
 COMMENT ON TABLE model_load_successes IS
     'Successful Hearth model loads used to dismiss reviewed model warnings until another load fails.';
+CREATE TABLE IF NOT EXISTS model_configured_context (
+    backend TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    context_tokens INTEGER NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+ALTER TABLE model_configured_context
+    DROP CONSTRAINT IF EXISTS model_configured_context_pkey;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configured_context_id
+    ON model_configured_context (backend, lower(model_id));
+COMMENT ON TABLE model_configured_context IS
+    'Admin-selected served context window per model, applied on load and used when Hearth generates client configurations.';
 CREATE TABLE IF NOT EXISTS model_metadata_migrations (
     key TEXT PRIMARY KEY,
     migrated_at DOUBLE PRECISION NOT NULL

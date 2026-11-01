@@ -4,6 +4,19 @@ The Lemonade gateway removes disabled tool schemas for `tool_choice: none`, avoi
 native parser failures on ordinary answers. Restart `lemonade-guard-shim.service`
 after updating the gateway code to apply this behavior.
 
+Lemonade's `Ornith-1.5-35B-A3B-GGUF` uses the CPU backend when Hearth detects an
+AMD shared GPU memory pool below 32 GiB. This avoids Vulkan memory exhaustion at
+load time, at the cost of slower replies. Restart Hearth and
+`lemonade-guard-shim.service` after updating, then reload Ornith from Models.
+The 9B variant and devices with larger GPU pools keep their default backend.
+
+Hearth checks other backends before switching reasoning models, including when
+loading a Lemonade model such as `Ornith-1.5-35B-A3B-GGUF`. If a load reports that
+LM Studio cannot be reached, start its configured API server (for a local
+installation, `lms server start --port 1234`) and retry from Models. On Linux,
+`lmstudio.service` can appear active while the API server has stopped. Confirm
+the configured endpoint responds instead of relying on service status alone.
+
 ## Windows, macOS, and Linux release bundles
 
 Published GitHub releases include platform-labelled bundles for Windows, macOS,
@@ -509,6 +522,21 @@ On the **Models** page, Lemonade model cards include an **Enable thinking** chec
 sets the per-model reasoning preference for Hearth chat, overriding the global Lemonade
 default in Settings. Hearth sends the preference through Lemonade's request control and
 chat-template option. Models whose runtime does not support thinking controls may ignore it.
+Disabling thinking also overrides enabled request flags in model tests and coding clients
+using Hearth's Lemonade gateway, including agent assignments and older OpenCode configs.
+Restart Hearth and `lemonade-guard-shim.service` after updating; the saved preference applies
+to new requests without reloading the model. An already running response keeps its original
+setting. Large input histories and CPU inference can still take time with thinking disabled.
+Lemonade, LM Studio, and vLLM model cards also include an editable **ctx-size** field.
+Saving a value stores it for that model and reloads the model when it is already loaded;
+the next Load reuses the saved value. **Set all to max context** saves every chat model's
+reported maximum at once and leaves already-loaded models running until their next Load.
+Enter the model's reported maximum to use its full context window instead of the backend
+default. Generated LAN and Tailscale configurations for OpenCode and Continue use the saved
+value across every backend that supports per-model context, even before a running model has
+been reloaded. This is the setting that reduces frequent OpenCode compaction on a
+large-window model. A larger window needs enough system or GPU memory, and a reload
+interrupts requests using that model.
 
 ## Verify and maintain
 
@@ -568,10 +596,20 @@ For an application update, install requirements again, rebuild the agent image
 when its recipe or OpenCode version changed, and restart the service:
 
 ```bash
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -U -r requirements.txt
 bash deploy/install-first-time.sh --rebuild-agent-image
 systemctl --user restart ai-webui.service
+systemctl --user restart lemonade-guard-shim.service flm-tool-shim.service lmstudio-shim.service
 ```
+
+Use `-U` so security-fixed minimums in `requirements.txt` replace older installed
+packages; plain `-r` skips packages that are already installed. The current floors are
+`cryptography>=50` and `mcp>=1.30,<2`. The separate vLLM virtualenv is updated on its
+own; keep its `setuptools` at the version the installed vLLM release pins, since a forced
+upgrade makes vLLM refuse to start. Update model runtimes through their own installers or
+package managers (for example `sudo snap refresh lemonade-server` for Lemonade and
+`sudo tailscale update` for Tailscale), then restart their services and Hearth. Re-run the
+administrator host security scan after the upgrade.
 
 The agent image is built by the installer as the regular Hearth user, using the
 existing Docker permission. Its apt and language package managers run inside
