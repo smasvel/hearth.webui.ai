@@ -18,6 +18,23 @@ class WebSearchRoutingTests(unittest.TestCase):
         self.assertTrue(web_search.should_search_web("Research solid-state battery progress online"))
         self.assertTrue(web_search.is_explicit_search_request("Research solid-state battery progress online"))
 
+    def test_social_greetings_do_not_trigger_live_lookup(self):
+        for message in (
+            "How are you?", "how are you today", "How's it going?", "Hello there",
+            "Good morning", "Are you okay?", "hi there", "What's up?",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(web_search.should_search_web(message))
+
+    def test_social_messages_still_search_when_user_asks_for_lookup(self):
+        self.assertTrue(web_search.should_search_web("How are you feeling about batter today? search for current scores online"))
+
+    def test_greeting_plus_topical_follow_up_still_triggers_lookup(self):
+        self.assertTrue(web_search.should_search_web("How are you? and what is the latest version of Firefox?"))
+
+    def test_greeting_follow_up_without_topic_is_not_searched(self):
+        self.assertFalse(web_search.should_search_web("How are you? please tell me more about that."))
+
     def test_news_context_prefers_playwright_article_text(self):
         note = web_search.format_news_for_context("chip news", [{
             "title": "A headline",

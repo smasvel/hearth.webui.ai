@@ -346,6 +346,84 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.client.create.call_count, 2)
         self.assertEqual(self.client.prompt.call_count, 2)
 
+    def test_compaction_failure_recovery_supports_lemonade_muse_models(self):
+        self.client.models.return_value = [{'providerID': 'lemonade', 'id': 'Muse-Glimmer-30B-GGUF',
+                                            'usable': True, 'context': 65536}]
+        self.values = {**self.values, 'model': {'providerID': 'lemonade', 'id': 'Muse-Glimmer-30B-GGUF'}}
+        key = self.create()
+        self.client.create.side_effect = ['ses_fresh']
+        self.snap['active'] = False
+        self.snap['messages'] = [{
+            'id': 'muse-compact-failed',
+            'type': 'idle',
+            'error': {'type': 'compaction.failed',
+                      'message': 'Compaction summary reached the output token limit'},
+        }]
+
+        self.manager.tick()
+
+        queued = self.manager.get(key)
+        self.assertEqual(queued['status'], 'running')
+        self.assertIsNone(queued['session_id'])
+        self.assertTrue(queued['retry_current_cycle'])
+        self.assertIn('fresh session', queued['pending_prompt']['text'].lower())
+        self.assertEqual(queued['compaction_recovery_message'], 'muse-compact-failed')
+
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+
+        recovered = self.manager.get(key)
+        self.assertEqual(recovered['session_id'], 'ses_fresh')
+        self.assertEqual(self.client.create.call_count, 2)
+        self.assertEqual(self.client.prompt.call_count, 2)
+
+    def test_compaction_failure_recovery_preserves_the_assignment_scope(self):
+        key = self.create()
+        self.client.create.side_effect = ['ses_fresh']
+        self.snap['active'] = False
+        self.snap['messages'] = [{
+            'id': 'compact-failed',
+            'type': 'idle',
+            'error': {'type': 'compaction.failed',
+                      'message': 'Compaction summary reached the output token limit'},
+        }]
+
+        self.manager.tick()
+
+        queued = self.manager.get(key)
+        prompt = queued['pending_prompt']['text']
+        self.assertIn('Assignment goal', prompt)
+        self.assertIn('Acceptance criteria', prompt)
+        self.assertIn('Technical requirements', prompt)
+        self.assertIn('Persistent task memory', prompt)
+        self.assertIn('fresh session', prompt.lower())
+
+    def test_the_same_compaction_error_does_not_restart_repeatedly(self):
+        key = self.create()
+        self.client.create.side_effect = ['ses_fresh']
+        self.snap['active'] = False
+        self.snap['messages'] = [{
+            'id': 'same-compaction', 'type': 'idle',
+            'error': {'type': 'compaction.failed',
+                      'message': 'Compaction summary reached the output token limit'},
+        }]
+
+        self.manager.tick()
+        self.assertEqual(self.client.create.call_count, 1)
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+        self.assertEqual(self.client.create.call_count, 2)
+        recovery_message = self.manager.get(key)['compaction_recovery_message']
+        self.assertEqual(recovery_message, 'same-compaction')
+        # The identical snapshot carrying the same failure id must not spawn
+        # another compaction recovery; only a different failed id may.
+        self.client.create.side_effect = ['ses_duplicate']
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+        self.assertEqual(self.client.create.call_count, 2)
+        self.manager.tick()
+        self.assertEqual(self.manager.get(key)['session_id'], 'ses_fresh')
+
     def test_completed_assignment_can_rerun_from_saved_task_state(self):
         key=self.create(enable_thinking=False)
         self.finish_turn(assistant('a1','Evidence\n'+MARKER))

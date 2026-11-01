@@ -68,6 +68,7 @@ from pathlib import Path
 
 import psutil
 import requests
+import backend_broker_client
 import model_test_profiles
 import model_metadata_store
 
@@ -154,12 +155,28 @@ def _systemctl(*args: str, timeout: int = 120) -> str:
     and didn't actually finish (SIGKILL) until ~90s in. 120s gives real margin above that
     without hanging forever on a truly stuck unit."""
     try:
+        # Docker Hearth has no systemd: route through the host backend broker.
+        brokered = backend_broker_client.systemctl_via_broker(list(args), SERVICE_NAME, timeout=timeout)
+        if brokered is not None:
+            return brokered
         result = subprocess.run(
             ["systemctl", "--user", *args, SERVICE_NAME],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         raise VLLMError(f"'systemctl --user {' '.join(args)} {SERVICE_NAME}' timed out") from exc
+    except backend_broker_client.BackendBrokerError:
+        raise
+    except FileNotFoundError as exc:
+        # The Docker app container has no systemd; the hearth host user's systemd units
+        # are out of reach from here. Surface a clear error instead of a raw 500 page.
+        raise VLLMError(
+            "vLLM's systemd service cannot be managed from this environment. "
+            "The Docker app container has no systemd; start or stop vllm.service on the "
+            "host, or use the host Hearth installation."
+        ) from exc
+    except OSError as exc:
+        raise VLLMError(f"Could not run systemctl for {SERVICE_NAME}: {exc}") from exc
     if result.returncode != 0 and "is-active" not in args:
         raise VLLMError((result.stderr or result.stdout or "systemctl command failed").strip())
     return result.stdout
@@ -172,18 +189,65 @@ def _write_service_config(model_id: str, max_model_len: int, dtype: str) -> None
     )
 
 
+def _current_reload_default(model_id: str) -> int | None:
+    """The window to reuse when Hearth is *reloading* a model rather than switching.
+
+    Prefer the live /v1/models ``max_model_len`` while the service is up; the mounted
+    service.env is the fallback for a stop-start process or the restart crash-loop
+    window. When vLLM was started outside Hearth and there is no registry entry, this
+    avoids writing the 4,096 default over a smaller, model-derived limit (TinyLlama's
+    2,048 is the case that made the first Docker reload crash-loop)."""
+    if _current_served_model() == model_id:
+        live = _served_max_model_len()
+        if live:
+            return live
+    return _service_config_value(model_id, "VLLM_MAX_MODEL_LEN")
+
+
+def _service_config_value(model_id: str, key: str) -> int | None:
+    try:
+        current_model = None
+        for line in _SERVICE_ENV_FILE.read_text().splitlines():
+            name, _, value = line.partition("=")
+            if name == "VLLM_MODEL":
+                current_model = value.strip()
+            elif name == key:
+                if current_model == model_id and value.strip().isdigit():
+                    return int(value.strip())
+    except OSError:
+        pass
+    return None
+
+
+def _vllm_server_model_info() -> dict | None:
+    """The live /v1/models entry for the model vllm.service is serving right now.
+    Includes `max_model_len` even when the app never registered the model, so the UI
+    and chat guard can use the real active window. None on any failure."""
+    try:
+        resp = requests.get(f"{base_url()}/v1/models", headers=_auth_headers(), timeout=5)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return data[0] if data else None
+    except (requests.RequestException, KeyError, IndexError, ValueError):
+        return None
+
+
 def _current_served_model() -> str | None:
     """The model id the running vllm.service actually reports via its own live
     /v1/models — not just what the config file says (the service could still be
     starting up, crashed, or serving a stale config from before a pending restart).
     None on any failure, never raises — same fail-soft contract as list_models()."""
-    try:
-        resp = requests.get(f"{base_url()}/v1/models", headers=_auth_headers(), timeout=5)
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        return data[0]["id"] if data else None
-    except (requests.RequestException, KeyError, IndexError, ValueError):
-        return None
+    info = _vllm_server_model_info()
+    return info.get("id") if info else None
+
+
+def _served_max_model_len() -> int | None:
+    """The active /v1/models max_model_len for the currently served model. This is
+    the definitive loaded window when the model was started outside Hearth and is
+    therefore not in the app registry."""
+    info = _vllm_server_model_info()
+    value = (info or {}).get("max_model_len")
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def list_models() -> list[dict]:
@@ -196,6 +260,7 @@ def list_models() -> list[dict]:
     Lemonade not being installed."""
     registry = _load_registry()
     served_id = _current_served_model()
+    served_len = _served_max_model_len()
     sizes = _cached_repo_sizes_gb()  # {repo_id: on-disk GB} from the HF cache
     ids = list(registry)
     if served_id and served_id not in registry:
@@ -205,9 +270,13 @@ def list_models() -> list[dict]:
         # The registry records the exact --max-model-len each repo was loaded with, so for
         # the model vllm.service is actually serving right now we can report the real context
         # (help_data advertises it in the generated OpenCode config instead of the old fixed
-        # 8192, which had drifted from service.env's VLLM_MAX_MODEL_LEN). Unknown for a
-        # served-but-unregistered id → None, so the caller falls back to a backend default.
+        # 8192, which had drifted from service.env's VLLM_MAX_MODEL_LEN). For a model the app
+        # never registered but vLLM is serving right now, fall back to the live /v1/models
+        # max_model_len instead of reporting unknown context.
         meta = registry.get(model_id) or {}
+        active_len = meta.get("max_model_len")
+        if model_id == served_id:
+            active_len = active_len or served_len
         models.append({
             "id": model_id,
             "publisher": "vllm",
@@ -218,8 +287,8 @@ def list_models() -> list[dict]:
             # cached — the UI omits size then).
             "size_gb": sizes.get(model_id),
             # The registry stores the largest context length configured for this model.
-            "configured_context_length": meta.get("max_model_len"),
-            "loaded_context_length": meta.get("max_model_len") if model_id == served_id else None,
+            "configured_context_length": active_len,
+            "loaded_context_length": active_len if model_id == served_id else None,
         })
     return models
 
@@ -373,9 +442,20 @@ def load_model(model_id: str, max_model_len: int | None = None, dtype: str | Non
     down). A generous timeout (10 min) since this covers a first-time download too —
     vLLM downloads a model's weights lazily on first `serve` if not already cached,
     same as `download_model()` below would, just blocking instead of streaming
-    progress."""
+    progress.
+
+    When a model was started outside Hearth and Hearth reloads it, the live
+    /v1/models ``max_model_len`` is the safest default: vLLM refuses to come up with
+    a window larger than the model's own derived limit (TinyLlama's 2,048 is the
+    confirmed case), so the earlier 4,096 default caused an immediate crash loop on
+    the first Docker-side reload of such a model."""
     existing = _load_registry().get(model_id, {})
-    resolved_max_len = max_model_len or existing.get("max_model_len") or _DEFAULT_MAX_MODEL_LEN
+    resolved_max_len = (
+        max_model_len
+        or _current_reload_default(model_id)
+        or existing.get("max_model_len")
+        or _DEFAULT_MAX_MODEL_LEN
+    )
     resolved_dtype = dtype or existing.get("dtype") or _DEFAULT_DTYPE
     _register(model_id, resolved_max_len, resolved_dtype)
     _write_service_config(model_id, resolved_max_len, resolved_dtype)
@@ -384,6 +464,13 @@ def load_model(model_id: str, max_model_len: int | None = None, dtype: str | Non
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
         if _current_served_model() == model_id:
+            # A reload can land with a different (smaller) derived window than the
+            # registry recorded before — the TinyLlama-on-Docker case that made a
+            # reload at 4,096 crash-loop. Keep the registry honest so later calls,
+            # UI labels and generated client configs reflect the real window.
+            live = _served_max_model_len()
+            if live:
+                _register(model_id, live, resolved_dtype)
             return
         active = _systemctl("is-active", timeout=10).strip()
         if active == "failed":

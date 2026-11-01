@@ -3,11 +3,13 @@
 set -euo pipefail
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
-  echo 'Usage: bash deploy/install-docker.sh [--tailscale-https-port PORT]'
+  echo 'Usage: bash deploy/install-docker.sh [--tailscale-https-port PORT] [--skip-lmstudio-server] [--skip-backend-broker]'
   echo 'Linux only. Creates .env.docker once; edit it before rerunning to customize ports.'
   exit 0
 fi
-tailscale_port=''
+skip_lmstudio_server=0
+skip_backend_broker=0
+tailscale_port=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tailscale-https-port)
@@ -16,6 +18,12 @@ while [[ $# -gt 0 ]]; do
       (( tailscale_port >= 1 && tailscale_port <= 65535 )) || { echo 'HTTPS port must be 1-65535.' >&2; exit 1; }
       command -v tailscale >/dev/null || { echo 'Install and connect Tailscale before requesting trusted HTTPS.' >&2; exit 1; }
       shift 2 ;;
+    --skip-lmstudio-server)
+      skip_lmstudio_server=1
+      shift ;;
+    --skip-backend-broker)
+      skip_backend_broker=1
+      shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -67,8 +75,9 @@ fi
 if [[ -r $caddy_file ]]; then
   compose+=(-f compose.caddy.yaml)
 fi
+state_dir="$project_dir/data/docker-hearth"
+local_models_dir="$project_dir/data/local-models"
 if [[ ! -f .env.docker ]]; then
-  state_dir="$project_dir/data/docker-hearth"
   ports=$(python3 -c 'import socket
 
 def free_port(first, host):
@@ -84,12 +93,51 @@ print(free_port(55434, "127.0.0.1"), free_port(5444, "0.0.0.0"))')
   postgres_port=${ports% *}
   hearth_port=${ports#* }
   password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-  (umask 077; set -o noclobber; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_PORT=%s\nHEARTH_PORT=%s\nHEARTH_DOCKER_STATE_DIR=%s\n' "$password" "$postgres_port" "$hearth_port" "$state_dir" > .env.docker)
+  (umask 077; set -o noclobber; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_PORT=%s\nHEARTH_PORT=%s\nHEARTH_DOCKER_STATE_DIR=%s\nHEARTH_HOST_HOME=%s\nHEARTH_LOCAL_MODELS_DIR=%s\n' \
+    "$password" "$postgres_port" "$hearth_port" "$state_dir" "$HOME" "$local_models_dir" > .env.docker)
 fi
+# Existing .env.docker files from older installs predate the shared model paths. Add the
+# defaults without touching any ports, passwords, or user edits already present.
+ensure_env() {
+  local key=$1 value=$2
+  grep -q "^${key}=" .env.docker || printf '%s=%s\n' "$key" "$value" >> .env.docker
+}
+ensure_env HEARTH_HOST_HOME "$HOME"
+ensure_env HEARTH_LOCAL_MODELS_DIR "$local_models_dir"
+# The host Hearth install runs as this user; the Docker container chowns shared state
+# (FastFlowLM paused/active files) to it so both installs can drive the same backend.
+ensure_env HEARTH_HOST_UID "$(id -u)"
+ensure_env HEARTH_HOST_GID "$(id -g)"
+chmod 600 .env.docker
 # Compose resolves the persistent runtime path used by both the app and agent containers.
 state_dir=$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["hearth"]["environment"]["HEARTH_AGENT_RUNTIME_DIR"])')
-mkdir -p "$state_dir"
+mkdir -p "$state_dir" "$local_models_dir" "$HOME/.lmstudio" "$HOME/.cache/huggingface"
 chmod 700 "$state_dir"
+# Install the Docker backend-control broker on this host, so the containerized Hearth app can
+# start/stop the shared host backends (vLLM / KoboldCPP / FastFlowLM) and run `flm` on
+# the host. Idempotent; skip when another install already created it fresh.
+if [[ $skip_backend_broker -eq 1 ]]; then
+  echo 'Skipping the backend-control broker (--skip-backend-broker).'
+elif command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+  bash "$project_dir/deploy/install-backend-broker.sh" --skip-if-active || true
+else
+  echo 'Skipping the backend-control broker: systemd user services are not available here.'
+fi
+# Keep LM Studio's API server reachable too: inventory / load / unload go through the
+# shared `~/.lmstudio` CLI. Idempotent boot/start helper behind a systemd user unit.
+if [[ $skip_lmstudio_server -eq 0 ]]; then
+  if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    # When LM Studio isn't installed the helper is a no-op, so the unit is harmless.
+    bash "$project_dir/deploy/install-lmstudio-server.sh" --skip-if-active || true
+  fi
+else
+  echo 'Skipping the LM Studio API bootstrap service (--skip-lmstudio-server).'
+fi
+# Mount the host's systemd-managed backend state directories into the container at the
+# same absolute path so the *inventory* (registry, service.env, FLM active-file) is shared
+# with the Docker Hearth install. The **broker** (deploy/install-backend-broker.sh) runs
+# the actual systemctl commands on the Hearth host; the mounts are what make the
+# registration and service files visible to the running app.
 "${compose[@]}" up --build --detach --wait --wait-timeout 600
 app_port=$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["hearth"]["environment"]["PORT"])')
 printf 'Hearth Docker is ready: https://localhost:%s\nCreate the administrator account on first visit.\n' "$app_port"

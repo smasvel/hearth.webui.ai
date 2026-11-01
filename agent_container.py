@@ -590,33 +590,42 @@ class ContainerOpenCode(OpenCode):
             'enable_thinking': enable_thinking}
         provider['options']['extraBody'] = extra_body
         provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
-        compaction = copy.deepcopy(original.get('compaction') or {'auto': True})
+        comp = copy.deepcopy(original.get('compaction') or {'auto': True})
         model_config = (provider.get('models') or {}).get(model_id) or {}
         model_limit = model_config.get('limit') or {}
         context_limit = model_limit.get('context')
         if isinstance(context_limit, int) and not isinstance(context_limit, bool) and context_limit >= 8192:
             # Do not let a generated desktop config's large keep budget consume the
-            # entire agent context. A compaction request that starts too late has to
-            # summarize an enormous transcript and can hit the model's output cap.
-            safe_budget = max(1024, context_limit // 8)
-            keep = compaction.get('keep')
+            # entire agent context. Larger Lemonade/Muse-style models still need their
+            # full recent-context and output budgets: a 65K-token window should not be
+            # truncated by a smaller sibling's 1K budget; buffer is the output reserve.
+            keep = comp.get('keep')
             if not isinstance(keep, dict):
                 keep = {}
-                compaction['keep'] = keep
-            current_keep = keep.get('tokens', 15000)
+                comp['keep'] = keep
+            current_keep = keep.get('tokens', 0)
             if not isinstance(current_keep, int) or isinstance(current_keep, bool) or current_keep < 0:
-                current_keep = 15000
-            keep['tokens'] = min(current_keep, safe_budget)
-            current_buffer = compaction.get('buffer')
+                current_keep = 0
+            current_buffer = comp.get('buffer')
             if not isinstance(current_buffer, int) or isinstance(current_buffer, bool) or current_buffer < 0:
                 current_buffer = 0
-            compaction['buffer'] = min(max(current_buffer, safe_budget), context_limit // 4)
+            if context_limit >= 65536:
+                keep_budget = min(context_limit, 65536)
+                keep['tokens'] = min(max(current_keep, keep_budget), context_limit)
+                output_reserve = model_limit.get('output')
+                if not isinstance(output_reserve, int) or isinstance(output_reserve, bool) or output_reserve <= 0:
+                    output_reserve = 8192
+                comp['buffer'] = min(max(current_buffer, output_reserve), context_limit // 4)
+            else:
+                safe_budget = max(1024, context_limit // 8)
+                keep['tokens'] = min(max(current_keep, safe_budget), context_limit)
+                comp['buffer'] = min(max(current_buffer, safe_budget), context_limit // 4)
         return {'$schema': 'https://opencode.ai/config.json', 'model': f'{provider_id}/{model_id}',
                 'provider': {provider_id: provider},
                 'agents': {AGENT: {'description': 'Isolated persistent Hearth project worker',
                     'mode': 'primary', 'system': SYSTEM,
                     'steps': opencode_steps}},
-                'compaction': compaction}
+                'compaction': comp}
 
     def _make_proxy(self, name, info):
         info = {**info, 'task_id': name.removeprefix('hearth-agent-')}

@@ -24,8 +24,44 @@ import time
 from pathlib import Path
 
 import requests
+import backend_broker_client
 import model_test_profiles
 import flm_context
+
+
+def _broker_flm(args: list[str], timeout: int = 900) -> str | None:
+    if not backend_broker_client.broker_configured():
+        return None
+    try:
+        response = requests.post(
+            backend_broker_client.broker_src_url().rstrip("/") + "/flm",
+            json={"args": args},
+            headers={"Authorization": f"Bearer {backend_broker_client.broker_token()}"},
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise FastFlowLMError(f"FastFlowLM broker request failed: {exc}") from exc
+    if response.status_code >= 400:
+        try:
+            message = response.json().get("error") or str(response.status_code)
+        except ValueError:
+            message = str(response.status_code)
+        raise FastFlowLMError(f"FastFlowLM broker rejected '{args[0] if args else ''}': {message}")
+    try:
+        payload = response.json()
+        # Read-only calls (pull-progress) return a plain progress payload with no
+        # returncode/stdout fields, so return it serialized as the CLI "stdout" so the
+        # caller can json.loads it back into a dict.
+        if not isinstance(payload, dict) or "returncode" not in payload:
+            return json.dumps(payload)
+        returncode = int(payload["returncode"])
+        stdout = str(payload.get("stdout") or "")
+        stderr = str(payload.get("stderr") or "")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise FastFlowLMError(f"FastFlowLM broker returned a malformed response: {exc}") from exc
+    if returncode != 0 and "--version" not in args:
+        raise FastFlowLMError((stderr or stdout or "flm command failed").strip())
+    return stdout
 
 import flm_backend_profile
 import settings_store
@@ -34,9 +70,102 @@ FLM_DIR = Path(os.environ.get("FLM_DIR", "/opt/fastflowlm"))
 FLM_BIN = os.environ.get("FLM_BIN", str(FLM_DIR / "bin" / "flm"))
 _ENV = {**os.environ, "LD_LIBRARY_PATH": str(FLM_DIR / "lib")}
 SERVICE_NAME = "flm.service"  # SYSTEM unit (needs raised memlock); controlled via polkit
-_STATE_DIR = Path.home() / ".config" / "fastflowlm"
+# The shared FastFlowLM state directory lives on the host (active / manually-unloaded).
+# Host Hearth uses Path.home(); Docker Hearth points at the host's absolute path (via
+# HEARTH_FASTFLOWLM_STATE_DIR) so the same files are read and written from both sides.
+_STATE_DIR = Path(os.environ.get(
+    "HEARTH_FASTFLOWLM_STATE_DIR", str(Path.home() / ".config" / "fastflowlm")
+))
 _ACTIVE_FILE = _STATE_DIR / "active"
 _PAUSED_FILE = _STATE_DIR / "manually-unloaded"
+
+
+def _share_with_ownership(path: Path) -> None:
+    """Keep host-writable permissions on a shared FastFlowLM state file.
+
+    The Docker app runs as root while mounting the host's `~/.config/fastflowlm`, so a
+    naive `touch`/`write_text` leaves the file root-owned and the host Hearth install
+    (running as the actual host user) then gets PermissionError adding or clearing the
+    paused/active flag. Mirror the nearest non-root ancestor's owner onto the state file
+    we create so both installs can drive the same backend."""
+    import os as _os
+    owner = _host_shared_owner()
+    if owner is None:
+        return
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        if (st.st_uid, st.st_gid) != owner:
+            _os.chown(path, owner[0], owner[1])
+            _os.chmod(path, 0o664)
+    except OSError:
+        pass
+
+
+def _host_shared_owner() -> tuple[int, int] | None:
+    """The uid/gid the host Hearth install runs under.
+
+    Walks up from `~/.config/fastflowlm` to the first ancestor with a non-root owner —
+    in practice the host mount `~/.config` — so a state file created by the container's
+    root user does not lock the host Hearth install out of its own backend state."""
+    import os as _os
+    if _os.geteuid() != 0:
+        return None
+    env_uid = _os.environ.get("HEARTH_HOST_UID")
+    env_gid = _os.environ.get("HEARTH_HOST_GID")
+    if env_uid and env_uid.isdigit():
+        try:
+            gid = int(env_gid) if env_gid and env_gid.isdigit() else int(env_uid)
+            return int(env_uid), gid
+        except ValueError:
+            pass
+    probe = _STATE_DIR.parent
+    for _ in range(6):
+        try:
+            st = probe.stat()
+        except OSError:
+            break
+        if st.st_uid != 0:
+            return st.st_uid, st.st_gid
+        if probe == probe.parent:
+            break
+        probe = probe.parent
+    return None
+
+
+def _reclaim_state_ownership() -> None:
+    """Ensure a root-owned state directory/files from a previous Docker write become
+    writable by the host Hearth install again."""
+    import os as _os
+    owner = _host_shared_owner()
+    if owner is None:
+        return
+    try:
+        st = _STATE_DIR.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        if (st.st_uid, st.st_gid) != owner:
+            _os.chown(_STATE_DIR, owner[0], owner[1])
+            _os.chmod(_STATE_DIR, 0o775)
+    except OSError:
+        pass
+    for candidate in (_ACTIVE_FILE, _PAUSED_FILE):
+        try:
+            st = candidate.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        if (st.st_uid, st.st_gid) != owner:
+            _os.chown(candidate, owner[0], owner[1])
+        _os.chmod(candidate, 0o664)
 
 
 def requests_paused() -> bool:
@@ -72,8 +201,10 @@ def _run(args: list[str], timeout: int = 60) -> str:
         r = subprocess.run([FLM_BIN, *args], capture_output=True, text=True, env=_ENV, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise FastFlowLMError(f"'flm {' '.join(args)}' timed out") from exc
-    except FileNotFoundError as exc:
-        raise FastFlowLMError("FastFlowLM binary not found at " + FLM_BIN) from exc
+    except FileNotFoundError:
+        if _broker_flm(args, timeout=timeout) is None:
+            raise FastFlowLMError("FastFlowLM binary not found at " + FLM_BIN)
+        return _broker_flm(args, timeout=timeout)
     return r.stdout
 
 
@@ -82,9 +213,28 @@ def _systemctl(*args: str, timeout: int = 60) -> str:
     if os.name == "nt":
         raise FastFlowLMError("FastFlowLM service management is available on Linux only.")
     try:
+        # Docker Hearth has no systemd: route through the host backend broker.
+        brokered = backend_broker_client.systemctl_via_broker(
+            list(args), SERVICE_NAME, scope="system", timeout=timeout,
+        )
+        if brokered is not None:
+            return brokered
         r = subprocess.run(["systemctl", *args, SERVICE_NAME], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise FastFlowLMError(f"'systemctl {' '.join(args)} {SERVICE_NAME}' timed out") from exc
+    except backend_broker_client.BackendBrokerError:
+        raise
+    except FileNotFoundError as exc:
+        # The Docker app container intentionally has no systemd. FastFlowLM's service is a
+        # host system unit, so an absent systemctl means "not manageable from here", not a
+        # fatal inventory error. Callers such as is_active()/list_models() treat this as an
+        # unavailable backend and keep the other backends usable.
+        raise FastFlowLMError(
+            "FastFlowLM service management is unavailable because systemctl was not found. "
+            "The Docker app container has no systemd; manage flm.service on the host."
+        ) from exc
+    except OSError as exc:
+        raise FastFlowLMError(f"Could not run systemctl for {SERVICE_NAME}: {exc}") from exc
     if r.returncode != 0 and "is-active" not in args:
         raise FastFlowLMError((r.stderr or r.stdout or "systemctl failed").strip())
     return r.stdout
@@ -104,9 +254,42 @@ def _read_active() -> str | None:
         return None
 
 
-def _write_active(tag: str | None) -> None:
+def _mkdir_state_dir() -> None:
+    """Create the shared FastFlowLM state dir with the same ownership as its ancestor.
+
+    If Docker Hearth creates `~/.config/fastflowlm/` before the host Hearth install ever
+    has, a plain mkdir would leave it root-owned; when the ancestor (the host mount,
+    `~/.config`) already has a real user owner, mirror that owner so both installs (one
+    on the host, one in the container) can drive the same backend."""
+    import os as _os
+    ancestors = []
+    probe = _STATE_DIR.parent
+    for _ in range(4):
+        try:
+            st = probe.stat()
+        except OSError:
+            st = None
+        if st is not None and st.st_uid != 0:
+            _STATE_DIR.mkdir(parents=True, exist_ok=True)
+            if _os.geteuid() == 0:
+                try:
+                    current = _STATE_DIR.stat()
+                    if (current.st_uid, current.st_gid) != (st.st_uid, st.st_gid):
+                        _os.chown(_STATE_DIR, st.st_uid, st.st_gid)
+                        _os.chmod(_STATE_DIR, 0o775)
+                except OSError:
+                    pass
+            return
+        if probe == probe.parent:
+            break
+        probe = probe.parent
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _write_active(tag: str | None) -> None:
+    _mkdir_state_dir()
     _ACTIVE_FILE.write_text((tag or "").strip())
+    _share_with_ownership(_ACTIVE_FILE)
 
 
 # ---- model registry / listing ------------------------------------------------------
@@ -235,6 +418,12 @@ def list_models() -> list[dict]:
 
 def check_loadable(model_id: str) -> None:
     """Preflight a model before app.py evicts the currently loaded reasoning model."""
+    if shutil.which("systemctl") is None:
+        raise FastFlowLMError(
+            "FastFlowLM's systemd service cannot be managed from this environment. "
+            "The Docker app container has no systemd; use the host Hearth installation "
+            "or manage flm.service on the host."
+        )
     tag = _tag(model_id)
     if not tag.startswith("local:"):
         if tag not in _installed_tags():
@@ -695,8 +884,19 @@ def unload_model(model_id: str | None = None, *, npu_lock_held: bool = False) ->
     if not npu_lock_held:
         # Manual unload must persist against OpenCode's automatic retries. Internal
         # NPU/model handoffs own the lock and must remain automatically recoverable.
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _PAUSED_FILE.touch(mode=0o600)
+        _reclaim_state_ownership()
+        _mkdir_state_dir()
+        try:
+            _PAUSED_FILE.touch(mode=0o600)
+        except PermissionError as exc:
+            # The shared state was written by the other Hearth install as root and our
+            # chown attempt failed; surface a clear error instead of a raw stack trace.
+            raise FastFlowLMError(
+                "FastFlowLM's paused-state file is not writable from this installation: "
+                f"{_PAUSED_FILE} ({exc}). Clear it on the host, then retry."
+            ) from exc
+        # The shared state must stay writable by the host Hearth install too.
+        _share_with_ownership(_PAUSED_FILE)
         import npu_request_lock
         try:
             lock_handle = npu_request_lock.acquire(timeout=15)
@@ -716,11 +916,18 @@ def unload_model(model_id: str | None = None, *, npu_lock_held: bool = False) ->
 # ---- download (flm pull) -----------------------------------------------------------
 def download_model(query: str):
     """Pull an FLM model by tag via `flm pull <tag>`, yielding structured progress dicts
-    (shape app.py's structured download worker relays). Accepts 'flm/<tag>' or a bare tag."""
+    (shape app.py's structured download worker relays). Accepts 'flm/<tag>' or a bare tag.
+
+    From the Docker app the pull runs on the Hearth host through the backend broker, so
+    this function relays the broker's pull-progress instead of the CLI's stdout; the
+    shape is identical either way."""
     import re
     tag = _tag(query.strip())
     if not tag:
         raise FastFlowLMError("A FastFlowLM model tag is required (e.g. gpt-oss:20b).")
+    if backend_broker_client.broker_configured() and not os.path.isfile(FLM_BIN):
+        yield from _download_model_via_broker(tag)
+        return
     try:
         proc = subprocess.Popen([FLM_BIN, "pull", tag], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, env=_ENV)
@@ -742,6 +949,84 @@ def download_model(query: str):
     if code != 0:
         raise FastFlowLMError(f"'flm pull {tag}' failed (exit {code}). Check the tag exists in FastFlowLM's catalog.")
     yield {"file": tag, "file_index": total, "total_files": total, "percent": 100}
+
+
+def _download_model_via_broker(tag: str):
+    """Run the host's `flm pull <tag>` and yield the same progress dicts as the CLI path
+
+    The broker runs the pull in the background and reports progress, so the caller can
+    drive the same UI bar without the backend's stdout being streamed into the process
+    that made the request."""
+    _broker_flm(["pull", tag], timeout=5)
+    last_pct = -1
+    deadline = time.monotonic() + 1800
+    while time.monotonic() < deadline:
+        snapshot = _flm_pull_progress()
+        if not snapshot.get("running"):
+            break
+        pct = int(snapshot.get("percent") or 0)
+        if pct != last_pct:
+            last_pct = pct
+            yield {
+                "file": "file 1/1", "file_index": 1, "total_files": 1,
+                "percent": pct,
+                "bytes_downloaded": snapshot.get("bytes_downloaded"),
+                "bytes_total": snapshot.get("bytes_total"),
+            }
+        time.sleep(2)
+    # The broker reports the pull as finished either when it exits or when a concurrent
+    # CLI pull ends; verify the target actually landed before telling the UI "done".
+    installed = _installed_tags()
+    if last_pct in (-1, 100) or tag in installed:
+        yield {"file": tag, "file_index": 1, "total_files": 1, "percent": 100}
+        return
+    raise FastFlowLMError(f"'flm pull {tag}' did not finish within the expected window.")
+
+
+def _flm_pull_progress() -> dict:
+    """Pull-progress snapshot, same keys the broker's /flm pull-progress returns."""
+    if backend_broker_client.broker_configured() and not os.path.isfile(FLM_BIN):
+        try:
+            out = _broker_flm(["pull-progress"], timeout=10) or ""
+            value = json.loads(out or "null")
+            return value if isinstance(value, dict) else {"running": False}
+        except FastFlowLMError:
+            return {"running": False}
+    import re
+    # Local pull in progress (host Hearth process)
+    try:
+        out = subprocess.run(["pgrep", "-af", "flm pull"], capture_output=True, text=True, timeout=5).stdout
+    except (subprocess.SubprocessError, OSError):
+        return {"running": False}
+    tag = None
+    for line in out.splitlines():
+        m = re.search(r"\bflm\s+pull\s+(\S+)", line)
+        if m and not m.group(1).startswith("-"):
+            tag = m.group(1)
+            break
+    if not tag:
+        return {"running": False}
+    return _local_pull_progress(tag)
+
+
+def _local_pull_progress(tag: str) -> dict:
+    """The same on-disk progress math the broker uses, but for a local (host) FLM pull
+    Hearth started inside its own process tree."""
+    import re as _re
+    dirname, total = _pull_catalog_map().get(tag, (None, None))
+    if not dirname:
+        return {"running": False}
+    try:
+        directory = _STATE_DIR.parent / "flm" / "models" / dirname
+        cur = sum(f.stat().st_size for f in directory.rglob("*") if f.is_file()) if directory.is_dir() else 0
+    except OSError:
+        cur = 0
+    return {
+        "running": True,
+        "percent": int(min(99, cur * 100 / total)) if total else 0,
+        "bytes_downloaded": cur,
+        "bytes_total": total,
+    }
 
 
 _pull_catalog_cache: dict | None = None
@@ -782,39 +1067,21 @@ def active_pull_progress() -> dict | None:
     dir against the catalog's expected footprint, so the Downloads page can show it. None if
     no pull is running or the tag can't be resolved. Structured-progress shape, same as
     download_model yields, so the Downloads page renders it with its existing snapshot code."""
-    import re
     try:
-        out = subprocess.run(["pgrep", "-af", "flm pull"], capture_output=True, text=True, timeout=5).stdout
-    except (subprocess.SubprocessError, OSError):
+        snapshot = _flm_pull_progress()
+    except Exception:
         return None
-    tag = None
-    for line in out.splitlines():
-        m = re.search(r"\bflm\s+pull\s+(\S+)", line)
-        if m and not m.group(1).startswith("-"):
-            tag = m.group(1)
-            break
-    if not tag:
+    if not snapshot.get("running"):
         return None
-    dirname, total = _pull_catalog_map().get(tag, (None, None))
-    if not dirname:
-        return None
-    model_dir = _STATE_DIR.parent / "flm" / "models" / dirname  # ~/.config/flm/models/<dir>
-    try:
-        cur = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file())
-    except OSError:
-        cur = 0
-    if cur <= 0:
-        return None
-    pct = int(min(99, cur * 100 / total)) if total else 0
     return {
-        "model_id": f"{_ID_PREFIX}{tag}",
+        "model_id": f"{_ID_PREFIX}{snapshot.get('tag') if isinstance(snapshot.get('tag'), str) else snapshot}",
         "backend": "fastflowlm",
         "source": "fastflowlm",
         "kind": "structured",
         "progress": {
-            "percent": pct,
-            "bytes_downloaded": cur,
-            "bytes_total": total,
+            "percent": snapshot.get("percent") or 0,
+            "bytes_downloaded": snapshot.get("bytes_downloaded") or 0,
+            "bytes_total": snapshot.get("bytes_total"),
             "file": "model.q4nx",
             "file_index": 1,
             "total_files": 1,

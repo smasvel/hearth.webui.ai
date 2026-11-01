@@ -28,6 +28,7 @@ from pathlib import Path
 
 import psutil
 import requests
+import backend_broker_client
 import model_test_profiles
 import model_metadata_store
 
@@ -110,12 +111,28 @@ def _file_size_gb(path: str) -> float | None:
 # ---- service control ---------------------------------------------------------------
 def _systemctl(*args: str, timeout: int = 120) -> str:
     try:
+        # Docker Hearth has no systemd: route through the host backend broker.
+        brokered = backend_broker_client.systemctl_via_broker(list(args), SERVICE_NAME, timeout=timeout)
+        if brokered is not None:
+            return brokered
         result = subprocess.run(
             ["systemctl", "--user", *args, SERVICE_NAME],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         raise KoboldError(f"'systemctl --user {' '.join(args)} {SERVICE_NAME}' timed out") from exc
+    except backend_broker_client.BackendBrokerError:
+        raise
+    except FileNotFoundError as exc:
+        # The Docker app container has no systemd; the hearth host user's systemd units
+        # are out of reach from here. Surface a clear error instead of a raw 500 page.
+        raise KoboldError(
+            "KoboldCPP's systemd service cannot be managed from this environment. "
+            "The Docker app container has no systemd; start or stop the kobold service "
+            "on the host, or use the host Hearth installation."
+        ) from exc
+    except OSError as exc:
+        raise KoboldError(f"Could not run systemctl for {SERVICE_NAME}: {exc}") from exc
     if result.returncode != 0 and "is-active" not in args:
         raise KoboldError((result.stderr or result.stdout or "systemctl command failed").strip())
     return result.stdout

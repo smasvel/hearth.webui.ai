@@ -3,7 +3,7 @@
 set -euo pipefail
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
-  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image]'
+  echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image] [--skip-backend-broker] [--skip-lmstudio-server]'
   echo 'Additional options are passed to tools/first_time_setup.py (--help lists them).'
   exit 0
 fi
@@ -13,10 +13,16 @@ if [[ $EUID -eq 0 ]]; then
 fi
 install_browser=1
 install_service=1
+install_backend_broker=1
+install_lmstudio_server=1
 setup_args=()
 for argument in "$@"; do
   if [[ $argument == --skip-browser ]]; then
     install_browser=0
+  elif [[ $argument == --skip-backend-broker ]]; then
+    install_backend_broker=0
+  elif [[ $argument == --skip-lmstudio-server ]]; then
+    install_lmstudio_server=0
   else
     if [[ $argument == --no-service ]]; then install_service=0; fi
     setup_args+=("$argument")
@@ -31,7 +37,8 @@ command -v python3 >/dev/null || needs_host_dependencies=1
 command -v docker >/dev/null || needs_host_dependencies=1
 command -v ffmpeg >/dev/null || needs_host_dependencies=1
 command -v setfacl >/dev/null || needs_host_dependencies=1
-if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -qx 'install ok installed'; then
+# A usable .venv is enough; the apt python3-venv package is only needed to create one.
+if [[ ! -x .venv/bin/python ]] && ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -qx 'install ok installed'; then
   needs_host_dependencies=1
 fi
 if command -v docker >/dev/null && ! docker compose version >/dev/null 2>&1; then
@@ -63,7 +70,9 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1
   echo 'Python 3.12 or newer is required. Install a supported Python version, then retry.' >&2
   exit 1
 }
-python3 -m venv .venv
+if [[ ! -x .venv/bin/python ]]; then
+  python3 -m venv .venv
+fi
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -c 'import pypdf' || { echo 'PDF attachment support is unavailable: pypdf did not install.' >&2; exit 1; }
 if [[ $install_browser -eq 1 ]]; then
@@ -73,6 +82,26 @@ fi
 # legacy backend settings into PostgreSQL, and saves the encrypted application session
 # key before enabling service.
 .venv/bin/python tools/first_time_setup.py "${setup_args[@]}"
+# Install the Docker backend-control broker so a containerized Hearth install can load
+# and unload the shared host backends (vLLM / KoboldCPP / FastFlowLM). The unit is
+# idempotent; pass --skip-backend-broker to opt out.
+if [[ $install_service -eq 1 ]]; then
+  if [[ $install_backend_broker -eq 0 ]]; then
+    echo 'Skipping the Docker backend-control broker (--skip-backend-broker).'
+  elif [[ -d /run/systemd/system ]]; then
+    bash deploy/install-backend-broker.sh --skip-if-active
+  fi
+fi
+# Keep LM Studio's API server reachable too: inventory / load / unload go through the
+# shared `~/.lmstudio` CLI. When LM Studio is not installed the helper is a no-op, so
+# installing the unit is harmless either way.
+if [[ $install_service -eq 1 ]]; then
+  if [[ $install_lmstudio_server -eq 0 ]]; then
+    echo 'Skipping the LM Studio API bootstrap service (--skip-lmstudio-server).'
+  elif [[ -d /run/systemd/system ]]; then
+    bash deploy/install-lmstudio-server.sh --skip-if-active
+  fi
+fi
 # When Caddy is installed (the full backend setup), generate the gateway bearer tokens and
 # local CA too. The basic install does not install Caddy, so this is a no-op unless the
 # administrator already provided it. Existing tokens are preserved.

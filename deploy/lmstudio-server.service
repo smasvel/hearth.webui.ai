@@ -1,0 +1,19 @@
+[Unit]
+Description=LM Studio continuous API server
+# lmstudio.service is the existing (optional, user-installed) LM Studio headless
+# daemon unit. Only order after it when it is present; the helper itself is
+# idempotent and starts the daemon too when needed.
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The helper runs `lms server start --port 1234` and does nothing when the API is
+# already reachable, so this is safe on every login/start/restart.
+ExecStart=/bin/bash %h/hearth/ai-webui/deploy/ensure-lmstudio-server.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

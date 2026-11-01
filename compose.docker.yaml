@@ -29,11 +29,52 @@ services:
       HOST: 0.0.0.0
       PORT: ${HEARTH_PORT:-5444}
       HEARTH_AGENT_RUNTIME_DIR: ${HEARTH_DOCKER_STATE_DIR:?Run deploy/install-docker.sh first}/agent-runtime
+      HEARTH_LOCAL_MODELS_DIR: ${HEARTH_LOCAL_MODELS_DIR:?Run deploy/install-docker.sh first}
+      HF_HOME: ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.cache/huggingface
+      HUGGINGFACE_HUB_CACHE: ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.cache/huggingface/hub
+      # Optional host-side broker that Docker Hearth uses to reach host systemd units
+      # (vLLM / KoboldCPP / FastFlowLM load/unload). Both must be set together; leaving
+      # them empty keeps the previous host-managed-only behavior.
+      HEARTH_BACKEND_BROKER_URL: ${HEARTH_BACKEND_BROKER_URL:-}
+      HEARTH_BACKEND_BROKER_TOKEN: ${HEARTH_BACKEND_BROKER_TOKEN:-}
+      # The FastFlowLM state files (active / manually-unloaded) are shared with the host
+      # Hearth install, so point them at the host's absolute path inside the container.
+      HEARTH_FASTFLOWLM_STATE_DIR: ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/fastflowlm
+      # The container writes those shared state files as root; the host Hearth install
+      # runs as this user, so chown shared state to them before each touch.
+      HEARTH_HOST_UID: ${HEARTH_HOST_UID:-1000}
+      HEARTH_HOST_GID: ${HEARTH_HOST_GID:-1000}
     volumes:
       - app_data:/opt/hearth/data
       - certificates:/opt/hearth/certs
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HEARTH_DOCKER_STATE_DIR}/agent-runtime:${HEARTH_DOCKER_STATE_DIR}/agent-runtime
+      # Share LM Studio's CLI and model cache with the host so load/unload and downloads
+      # work from the Docker app, not just model listing over LM Studio's HTTP API. Two
+      # mounts: the CLI lives at Path.home()"/.lmstudio" inside the container, while
+      # registered model paths (KoboldCPP service.env, uploads) refer to the host's
+      # absolute path $HOME/.lmstudio — mount the same source at both targets so a path
+      # registered on the host resolves from the container too.
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.lmstudio:/root/.lmstudio
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.lmstudio:${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.lmstudio
+      # Keep Hugging Face downloads in the host cache used by host vLLM/KoboldCPP.
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.cache/huggingface:${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.cache/huggingface
+      # Local GGUF uploads must use a path the host Lemonade server can read. Mount the
+      # host path at the same absolute path so the registered path is valid on both sides.
+      - ${HEARTH_LOCAL_MODELS_DIR:?Run deploy/install-docker.sh first}:${HEARTH_LOCAL_MODELS_DIR:?Run deploy/install-docker.sh first}
+      # Share the host backend state/inventory directories inside the container at the
+      # path Hearth actually reads them from (Path.home()/".config"/<backend>), so
+      # load/unload can write/read the same registries the host Hearth install manages.
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/vllm:/root/.config/vllm
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/koboldcpp:/root/.config/koboldcpp
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/fastflowlm:/root/.config/fastflowlm
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/flm:/root/.config/flm
+      # FastFlowLM paused/active state is *written* by the Docker app and read by the host
+      # Hearth install, so mount it at the host's absolute path (not just under /root) and
+      # point the app's state dir there. With a real host user owning the ancestor, the
+      # shared state does not end up root-only.
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/fastflowlm:${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/fastflowlm
+      - ${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/flm:${HEARTH_HOST_HOME:?Run deploy/install-docker.sh first}/.config/flm
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent --insecure https://127.0.0.1:$$PORT/login > /dev/null"]
       interval: 15s

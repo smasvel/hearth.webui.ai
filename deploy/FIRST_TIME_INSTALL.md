@@ -13,9 +13,12 @@ The 9B variant and devices with larger GPU pools keep their default backend.
 Hearth checks other backends before switching reasoning models, including when
 loading a Lemonade model such as `Ornith-1.5-35B-A3B-GGUF`. If a load reports that
 LM Studio cannot be reached, start its configured API server (for a local
-installation, `lms server start --port 1234`) and retry from Models. On Linux,
-`lmstudio.service` can appear active while the API server has stopped. Confirm
-the configured endpoint responds instead of relying on service status alone.
+installation, `bash deploy/ensure-lmstudio-server.sh` or `lms server start --port 1234`)
+and retry from Models. On Linux, `lmstudio.service` can appear active while the API
+server has stopped; the system `lmstudio-server.service` user unit installed by Hearth
+keeps both processes healthy at boot, so only a manual LM Studio restart should ever put
+them out of sync. Confirm the configured endpoint responds instead of relying on
+service status alone.
 
 ## Windows, macOS, and Linux release bundles
 
@@ -65,8 +68,13 @@ file or converting it to a supported text-bearing format.
 Chat applies a final context-size guard after adding saved history, attachments, and
 web-research results. It uses the selected model's active/configured maximum context
 when the backend reports one, reserves space for the reply, and keeps system instructions
-and newest turns while omitting older turns when necessary. If model metadata is temporarily
-unavailable, it uses a conservative fallback. This avoids backend context-overflow errors.
+and newest turns while omitting older turns when necessary. When the requested output
+budget exceeds the available window, Hearth caps `max_tokens` to the space left after
+a prompt reserve; a vLLM model loaded at 2,048 tokens therefore no longer rejects the
+default 32,768-token request. vLLM's live `/v1/models` `max_model_len` is honored even
+when the model was started outside Hearth and is not yet in Hearth's registry. If model
+metadata is temporarily unavailable, it uses a conservative fallback. This avoids backend
+context-overflow errors.
 The local model proxies also preserve the blank-line delimiters required by streamed SSE
 responses, so OpenAI-compatible clients can receive tool and answer events reliably.
 No additional setup is required; start a new conversation when older context is essential.
@@ -128,9 +136,11 @@ bash deploy/install-first-time.sh
 ```
 
 The installer uses `sudo` to install missing Ubuntu host dependencies, starts
-Docker, and grants the current user access. It creates `.venv`, installs Python
-requirements and Chromium, builds the isolated agent image with Python,
-Java/Maven, Node.js/npm, and build tools, and then:
+Docker, and grants the current user access. It reuses an existing `.venv` when
+one is already present and only installs the `python3-venv` apt package when the
+project does not already have a usable venv. It creates `.venv` when missing,
+installs Python requirements and Chromium, builds the isolated agent image with
+Python, Java/Maven, Node.js/npm, and build tools, and then:
 
 The Python requirements include `pypdf` for PDF attachments. The installer checks
 that PDF reader imports successfully before continuing; DOCX, PPTX, XLSX, TXT, and
@@ -181,6 +191,7 @@ Useful options:
 
 ```bash
 bash deploy/install-first-time.sh --skip-browser --no-service
+bash deploy/install-first-time.sh --skip-backend-broker --skip-lmstudio-server
 .venv/bin/python tools/first_time_setup.py --help
 ```
 
@@ -385,8 +396,13 @@ persistent Docker containers to the host model bridge after an app restart.
 If OpenCode conversation compaction fails, Hearth retries in a fresh session from the
 saved project checkpoint without advancing the work-cycle counter.
 For project agents, Hearth also caps retained recent turns at one eighth of the
-selected model's context and starts compaction at least one eighth before the context
-limit, reducing the chance that a summary exceeds the model's output limit.
+selected model's context up to a 65K-token window; Lemonade/Muse-style 65K+ models
+keep their full 65K recent-context budget (`keep.tokens`: 65,536) with an 8K
+output reserve (`buffer`: 8,192). Smaller windows still scale to one eighth of
+their context. The selected model's own context is the floor, too: a smaller
+sibling in the shared config cannot leave a larger-window assignment with only
+a tiny retained history.
+This prevents the agent repeatedly re-reading the same large file after compaction.
 Completion markers attached to future plans or implementation placeholders are
 ignored; Hearth keeps the assignment running until the agent reports actual work.
 After reviewing a running, waiting, paused, blocked, or interrupted task, its owner can reset the cycle
@@ -438,7 +454,10 @@ With `--no-service`, scheduled runs happen only while you manually run `.venv/bi
 
 With `--no-service`, start the app manually using `.venv/bin/python app.py`.
 `--skip-browser` omits Chromium; web search can still fall back to snippets and
-ordinary HTTP requests. If Chromium needs OS libraries after installation, run:
+ordinary HTTP requests. The automatic detector skips live lookups for social/greeting
+messages aimed at Hearth itself ("How are you today?"); the reply comes from the model,
+not from scraped page copy. A topical follow-up in the same message still triggers the
+lookup, and a plain "search for X", "browse X", or a pasted URL keeps the earlier behavior. If Chromium needs OS libraries after installation, run:
 
 ```bash
 sudo .venv/bin/python -m playwright install-deps chromium
@@ -645,8 +664,13 @@ bash deploy/install-first-time.sh --skip-backend-install
 LM Studio installation uses the [official headless llmster installer](https://lmstudio.ai/docs/developer/core/headless)
 on Linux, macOS, and Windows, reuses an existing `lms` executable, and starts its
 API at `http://localhost:1234`. This installs the server runtime without the desktop
-app. Startup after reboot is not configured; run `lms daemon up` and
-`lms server start --port 1234` again or configure startup separately.
+app. On Linux with systemd, Hearth installs
+`~/.config/systemd/user/lmstudio-server.service` (backed by
+`deploy/ensure-lmstudio-server.sh`) so the daemon **and** its API server come up at
+boot; rerun `systemctl --user restart lmstudio-server.service` after restarting LM Studio
+manually. Systems without systemd still need `lms daemon up` and
+`lms server start --port 1234` at each login. Pass `--skip-lmstudio-server` to omit
+this bootstrap unit when you start the API server yourself.
 Lemonade automatic installation supports Ubuntu, uses its
 [official stable PPA](https://lemonade-server.ai/docs/guide/install/ubuntu/), and
 requires sudo for missing packages. Existing Lemonade CLI or snap installations
@@ -715,6 +739,47 @@ access for isolated coding agents, so use a trusted Linux host. Its agent runtim
 bind mount uses the same absolute path inside and outside the app container; do not
 move it while assignments are active. Missing agent images build on first use.
 
+The app container does not include systemd. Hearth cannot natively start or stop host
+services for systemd-managed backends (vLLM, KoboldCPP, and FastFlowLM) from the
+Docker instance, and their inventory checks fail soft instead of blocking another
+backend's load.
+
+An optional local broker bridges that. A fresh install now creates it
+automatically: both `deploy/install-first-time.sh` and `deploy/install-docker.sh`
+create and enable `~/.config/systemd/user/hearth-backend-broker.service`
+(implementation lives in `deploy/install-backend-broker.sh`); pass
+`--skip-backend-broker` to either installer to opt out of the broker.
+The Docker installer also creates `~/.config/systemd/user/lmstudio-server.service`
+through `deploy/install-lmstudio-server.sh`; pass `--skip-lmstudio-server`
+to skip that additional bootstrap.
+
+The broker runs `systemctl --user|--system` for a fixed allowlist of Hearth's units
+(`vllm.service`, `kobold.service`, `flm.service`) on 127.0.0.1:8765, auth by a random
+bearer token stored in `~/.config/hearth/backend-broker/token`. It also proxies a
+read-only subset of the FastFlowLM `flm` CLI (`list --filter installed|--filter all`,
+`pull <tag>`, `remove`, `--version`, and `pull-progress`) so Docker Hearth can download
+and delete NPU models on the host; the host Hearth install still runs everything else.
+The Docker app is built so the controls can be used from the browser; the UI reads the same
+commands the host Hearth install uses, and `~/.config/vllm`, `~/.config/koboldcpp`,
+`~/.config/fastflowlm`, and `~/.config/flm` are mounted at (`Path.home()`/".config") so
+load/unload sees the same inventory. Without the broker the previous behavior unchanged:
+the UI tells you to control those services from the host install.
+
+The Docker app shares model storage with the host rather than keeping a separate
+copy inside the container:
+
+- `~/.lmstudio` is mounted twice inside the container: at `~/.lmstudio` for the
+  `lms` CLI, and at the host's absolute `$HOME/.lmstudio` path so a model path
+  registered by KoboldCPP or LM Studio resolves identically from both sides.
+- `~/.cache/huggingface` is mounted at the same absolute path and `HF_HOME` /
+  `HUGGINGFACE_HUB_CACHE` point at it, so vLLM and KoboldCPP downloads use the host
+  Hugging Face cache.
+- Local GGUF uploads use `data/local-models` at the same absolute path inside and
+  outside the container, so the host Lemonade server can open the registered file.
+
+The installer writes these paths to `.env.docker` and adds missing values on reruns
+without changing existing ports, passwords, or user edits.
+
 ```bash
 # Status and logs:
 docker compose --env-file .env.docker -f compose.docker.yaml ps
@@ -740,7 +805,8 @@ container the host's Tailscale CLI and daemon socket. Help then shows the detect
 tailnet address, DNS name, and Serve route, and startup logs the tailnet URL.
 Installing or reconnecting Tailscale later requires rerunning the installer so the
 container picks it up. The container keeps the app's own Tailscale settings; it does
-not join or reconfigure the tailnet.
+not join or reconfigure the tailnet. Omitting `--tailscale-https-port` is normal when
+you do not need a persistent Serve route; only the flag attempts to configure one.
 
 On first creation of `.env.docker`, setup selects free ports starting at 5444
 for HTTPS and 55434 for PostgreSQL. It prints the actual app URL when ready.

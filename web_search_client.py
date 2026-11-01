@@ -1005,6 +1005,42 @@ _SCREENSHOT_KEYWORDS = (
 )
 
 
+# Social/greeting messages are addressed to Hearth itself rather than asking about the
+# world. They're kept as a fixed list of whole phrases and not substring keywords, so a
+# topical query that merely contains one of these words (for example a polished sentence
+# that includes the word "today") still gets the lookup it asked for.
+_SOCIAL_QUERY_EXACT = frozenset({
+    "hi", "hey", "hello", "hi there", "hey there", "hello there", "howdy",
+    "how are you", "how are you?", "how are you doing", "how are you doing?",
+    "how are you today", "how are you today?", "how is it going", "how is it going?",
+    "how's it going", "how's it going?", "how are things", "how are things?",
+    "how do you do", "how do you do?", "how have you been", "how have you been?",
+    "are you ok", "are you okay", "are you fine", "what's up", "whats up",
+    "good morning", "good afternoon", "good evening", "good night",
+    "how about you", "how about you?", "and you", "and you?",
+})
+_SOCIAL_QUERY_PREFIXES = tuple(
+    phrase + " " for phrase in _SOCIAL_QUERY_EXACT if not phrase.endswith("?")
+)
+
+
+def _is_social_query(query: str | None) -> tuple[bool, str]:
+    """Detect greeting/social messages and return the remaining topical text.
+
+    Returns ``(True, remainder)`` when the message greets Hearth ("How are you?",
+    "How's it going?") and the search detector should ignore the social phrase before
+    deciding if the rest of the message still needs a live lookup."""
+    if not query:
+        return False, ""
+    text = query.strip().lower().rstrip("!").rstrip(".")
+    if text in _SOCIAL_QUERY_EXACT:
+        return True, ""
+    for phrase in _SOCIAL_QUERY_EXACT:
+        if text.startswith(phrase + " "):
+            return True, text[len(phrase) + 1:]
+    return False, text
+
+
 def wants_screenshots(query: str | None) -> bool:
     if not query:
         return False
@@ -1072,21 +1108,42 @@ def should_search_web(query: str | None) -> bool:
     search. Deliberately broadened 2026-07-23 (user request: search should fire far more
     readily, erring toward searching) — but a plain timeless conceptual question ("what
     is recursion", "explain the French Revolution") still stays off, relying on the
-    model's own knowledge, since a live search adds nothing there but latency."""
+    model's own knowledge, since a live search adds nothing there but latency.
+    Social/greeting messages aimed at Hearth itself ("How are you today?", "How's it
+    going?") skip the lookup; a topical follow-up in the same message still triggers one
+    because the social phrase is stripped before the rest is evaluated."""
     if not query:
         return False
+    lowered = query.lower()
+    if looks_like_browse_request(query) or any(
+        keyword in lowered for keyword in _EXPLICIT_SEARCH_KEYWORDS
+    ):
+        return True
+    social, remainder = _is_social_query(query)
+    if social:
+        if (
+            not remainder
+            or (
+                not any(keyword in remainder for keyword in _EXPLICIT_SEARCH_KEYWORDS)
+                and not any(kw in remainder for kw in _RECENCY_KEYWORDS + _SHOPPING_SEARCH_TRIGGER_KEYWORDS)
+                and not bool(_RECENT_YEAR_RE.search(remainder))
+                and not looks_like_weather_query(remainder)
+                and not looks_like_time_query(remainder)
+                and not looks_like_currency_query(remainder)
+                and not looks_like_news_query(remainder)
+            )
+        ):
+            return False
     if (
         looks_like_weather_query(query)
         or looks_like_time_query(query)
         or looks_like_currency_query(query)
         or looks_like_news_query(query)
-        or looks_like_browse_request(query)
     ):
         return True
-    lowered = query.lower()
     if any(
         kw in lowered
-        for kw in _EXPLICIT_SEARCH_KEYWORDS + _RECENCY_KEYWORDS + _SHOPPING_SEARCH_TRIGGER_KEYWORDS
+        for kw in _RECENCY_KEYWORDS + _SHOPPING_SEARCH_TRIGGER_KEYWORDS
     ):
         return True
     return bool(_RECENT_YEAR_RE.search(query))

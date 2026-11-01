@@ -3576,7 +3576,7 @@ def api_upload_local_model():
     if request.content_length and request.content_length > 100 * 1024**3:
         return jsonify({"error": "Model uploads are limited to 100 GB."}), 413
 
-    models_dir = database.DATA_DIR / "local-models"
+    models_dir = Path(os.environ.get("HEARTH_LOCAL_MODELS_DIR", database.DATA_DIR / "local-models"))
     models_dir.mkdir(parents=True, exist_ok=True)
     target = models_dir / f"{uuid.uuid4().hex}-{filename}"
     try:
@@ -4495,6 +4495,37 @@ def _model_context_limit(backend, model: str) -> int | None:
     return None
 
 
+def _chat_finalize_reply(assistant_text: str, reasoning_text: str) -> tuple[str, str]:
+    """Promote a reasoning-only stream to a normal reply.
+
+    Some local backends (vLLM's reasoning parser is the common case) stream the entire
+    reply under the ``reasoning`` field and send no ``content`` for ordinary turns. The
+    UI's live bubble and thinking panel both stay empty in that case even though the
+    model produced a complete answer, so when no content was streamed at all, surface the
+    reasoning as the reply and leave nothing in the separate thinking panel. Models that
+    stream both fields are unaffected.
+    """
+    if not assistant_text and reasoning_text:
+        return reasoning_text, ""
+    return assistant_text, reasoning_text
+
+
+def _chat_token_budgets(context_limit: int, max_tokens: int) -> tuple[int, int]:
+    """Split a model window into an output cap and a prompt budget.
+
+    Small windows (a vLLM model loaded with ``--max-model-len 2048`` is the common
+    case) reject a request whose ``max_tokens`` exceeds the window before generation
+    starts. Keep at least a small prompt reserve and 256 tokens of template overhead,
+    then cap the caller's requested output budget to what remains.
+    """
+    prompt_reserve = min(1024, max(256, context_limit // 2))
+    max_output = max(1, context_limit - prompt_reserve - 256)
+    if max_tokens > max_output:
+        max_tokens = max_output
+    prompt_budget = max(1, context_limit - max_tokens - 256)
+    return max_tokens, prompt_budget
+
+
 @app.delete("/api/conversations/<conversation_id>")
 @login_required
 def api_delete_conversation(conversation_id):
@@ -5028,7 +5059,11 @@ def api_chat():
     if not image_request and not video_request:
         context_limit = _model_context_limit(backend, model)
         if context_limit:
-            prompt_budget = max(1024, context_limit - (max_tokens or 1024) - 256)
+            # A small-context model (for example a vLLM instance loaded at 2,048
+            # tokens) rejects max_tokens above its window before generation starts.
+            # Cap the requested output to the remaining space after a prompt reserve
+            # instead of sending the default 32,768-token request.
+            max_tokens, prompt_budget = _chat_token_budgets(context_limit, max_tokens)
         else:
             # Backend metadata can be unavailable while a runtime is starting.
             prompt_budget = 3500
@@ -5182,6 +5217,10 @@ def api_chat():
                                         assistant_parts.append(delta)
                                         live_requests.update(live_id, delta_chars=len(delta))
                                     reasoning_delta = delta_obj.get("reasoning_content")
+                                    # vLLM streams the reasoning tokens under "reasoning"
+                                    # instead of OpenAI's "reasoning_content" field.
+                                    if not reasoning_delta:
+                                        reasoning_delta = delta_obj.get("reasoning")
                                     if reasoning_delta:
                                         reasoning_parts.append(reasoning_delta)
                                         live_requests.update(live_id, delta_chars=len(reasoning_delta))
@@ -5266,6 +5305,7 @@ def api_chat():
                         f"\n\n> ⚠️ Reached the tool-call round limit ({max_tool_rounds}) while the model was still "
                         "requesting more tool calls. Ask it to continue or narrow the task."
                     )
+                assistant_text, reasoning_text = _chat_finalize_reply(assistant_text, reasoning_text)
                 if assistant_text and browse_screenshots:
                     # Appended server-side, never by the model (the system prompt
                     # explicitly forbids the model writing image markdown — see the
