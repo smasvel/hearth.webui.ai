@@ -28,6 +28,14 @@ remote access to your home setup.
 
 ## Architecture at a glance
 
+<img src="docs/architecture.png" alt="Hearth architecture: browser and LAN clients, the
+Flask core with chat, model lifecycle, tests, memory, research and voice, Caddy gateway,
+five inference backends plus ComfyUI, the agentic workflow with OpenCode containers and
+backend broker, and PostgreSQL plus local model storage" width="100%">
+
+<details>
+<summary>Diagram source (Mermaid)</summary>
+
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {
   'background': '#0f172a', 'primaryColor': '#1e293b', 'primaryTextColor': '#e2e8f0',
@@ -111,6 +119,8 @@ flowchart LR
     class TASKS,CONTAINER,BROKER,CHECK agents;
     class PG,STATE,MODELS_DIR data;
 ```
+
+</details>
 
 *Browser clients and LAN coding tools reach isolated parts of Hearth directly; everything
 running the models stays behind peer-reviewed host services, while agent containers and
