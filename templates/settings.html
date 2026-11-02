@@ -130,26 +130,7 @@
             </div>
           </div>
 
-          <div class="console-card span-all">
-            <h2>SGLang — GLM-5.2 (remote)</h2>
-            <p class="hint">
-              Connects Hearth to an externally managed SGLang OpenAI server. GLM-5.2 is a
-              multi-GPU-class model, so Hearth discovers and chats with the model already
-              running at this endpoint; download, load, unload, and deletion stay with the
-              SGLang host. Launch that host with a GLM-compatible reasoning and tool parser,
-              then enter its base URL here (normally port <code class="inline-code">30000</code>).
-            </p>
-            <div class="download-form">
-              <input id="settings-sglang-url" class="panel-input" type="text" placeholder="http://sglang-host:30000" autocomplete="off" />
-              <input id="settings-sglang-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
-              <div class="download-row">
-                <button id="settings-test-sglang" class="panel-btn" type="button">Test connection</button>
-              </div>
-              <p id="settings-test-sglang-result" class="hint"></p>
-            </div>
-          </div>
-
-          <div class="console-card span-all">
+          class="console-card span-all">
             <h2>opencode.ai (remote hosted models)</h2>
             <p class="hint">
               Connects Hearth to the opencode.ai hosted model catalog (GPT/Claude/Gemini/GLM and

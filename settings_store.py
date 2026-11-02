@@ -21,7 +21,6 @@ _LEGACY_ENV_SETTINGS = {
     'LMSTUDIO_BASE_URL': 'lmstudio_base_url', 'LMSTUDIO_API_KEY': 'lmstudio_api_key',
     'LEMONADE_BASE_URL': 'lemonade_base_url', 'LEMONADE_API_KEY': 'lemonade_api_key',
     'VLLM_BASE_URL': 'vllm_base_url', 'VLLM_API_KEY': 'vllm_api_key',
-    'SGLANG_BASE_URL': 'sglang_base_url', 'SGLANG_API_KEY': 'sglang_api_key',
     'KOBOLD_BASE_URL': 'kobold_base_url', 'KOBOLD_API_KEY': 'kobold_api_key',
     'FASTFLOWLM_BASE_URL': 'fastflowlm_base_url', 'FASTFLOWLM_API_KEY': 'fastflowlm_api_key',
     'OPENCODE_API_BASE_URL': 'opencode_api_base_url', 'OPENCODE_API_KEY': 'opencode_api_key',

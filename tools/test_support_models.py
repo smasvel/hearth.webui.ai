@@ -85,7 +85,7 @@ def run(after_job, output):
             client = session()
             # The API refuses changes during new agent assignments or model tests.
             for loaded in api(client, '/api/models')['models']:
-                if loaded.get('state') == 'loaded' and loaded.get('backend') != 'sglang':
+                if loaded.get('state') == 'loaded':
                     api(client, '/api/models/unload', {'model': loaded['id']})
             if model['type'] not in ('image', 'video'):
                 api(client, '/api/models/load', {'model': model['id']})

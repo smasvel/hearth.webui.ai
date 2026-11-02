@@ -1,6 +1,6 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", sglang: "SGLang", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
-  const BACKEND_ORDER = ["fastflowlm", "lemonade", "lmstudio", "kobold", "vllm", "sglang", "opencode"];
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
+  const BACKEND_ORDER = ["fastflowlm", "lemonade", "lmstudio", "kobold", "vllm", "opencode"];
 
   const settingsForm = document.getElementById("settings-form");
   const restartBackendsBtn = document.getElementById("restart-backends");
@@ -31,8 +31,6 @@
   const settingsLemonadeKeyEl = document.getElementById("settings-lemonade-key");
   const settingsVllmUrlEl = document.getElementById("settings-vllm-url");
   const settingsVllmKeyEl = document.getElementById("settings-vllm-key");
-  const settingsSglangUrlEl = document.getElementById("settings-sglang-url");
-  const settingsSglangKeyEl = document.getElementById("settings-sglang-key");
   const settingsOpencodeUrlEl = document.getElementById("settings-opencode-url");
   const settingsOpencodeKeyEl = document.getElementById("settings-opencode-key");
   const settingsKoboldUrlEl = document.getElementById("settings-kobold-url");
@@ -57,8 +55,6 @@
   const settingsTestLemonadeResultEl = document.getElementById("settings-test-lemonade-result");
   const settingsTestVllmBtn = document.getElementById("settings-test-vllm");
   const settingsTestVllmResultEl = document.getElementById("settings-test-vllm-result");
-  const settingsTestSglangBtn = document.getElementById("settings-test-sglang");
-  const settingsTestSglangResultEl = document.getElementById("settings-test-sglang-result");
   const settingsTestOpencodeBtn = document.getElementById("settings-test-opencode");
   const settingsTestOpencodeResultEl = document.getElementById("settings-test-opencode-result");
   const settingsTestKoboldBtn = document.getElementById("settings-test-kobold");
@@ -166,8 +162,6 @@
     settingsLemonadeKeyEl.value = data.lemonade_api_key || "";
     settingsVllmUrlEl.value = data.vllm_base_url || "";
     settingsVllmKeyEl.value = data.vllm_api_key || "";
-    settingsSglangUrlEl.value = data.sglang_base_url || "";
-    settingsSglangKeyEl.value = data.sglang_api_key || "";
     settingsOpencodeUrlEl.value = data.opencode_api_base_url || "";
     settingsOpencodeKeyEl.value = data.opencode_api_key || "";
     settingsKoboldUrlEl.value = data.kobold_base_url || "";
@@ -259,8 +253,6 @@
           lemonade_api_key: settingsLemonadeKeyEl.value.trim(),
           vllm_base_url: settingsVllmUrlEl.value.trim(),
           vllm_api_key: settingsVllmKeyEl.value.trim(),
-          sglang_base_url: settingsSglangUrlEl.value.trim(),
-          sglang_api_key: settingsSglangKeyEl.value.trim(),
           opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
           opencode_api_key: settingsOpencodeKeyEl.value.trim(),
           kobold_base_url: settingsKoboldUrlEl.value.trim(),
@@ -341,12 +333,6 @@
     runTest(settingsTestVllmBtn, settingsTestVllmResultEl, "vllm", {
       base_url: settingsVllmUrlEl.value.trim(),
       api_key: settingsVllmKeyEl.value.trim(),
-    })
-  );
-  settingsTestSglangBtn.addEventListener("click", () =>
-    runTest(settingsTestSglangBtn, settingsTestSglangResultEl, "sglang", {
-      base_url: settingsSglangUrlEl.value.trim(),
-      api_key: settingsSglangKeyEl.value.trim(),
     })
   );
   settingsTestOpencodeBtn.addEventListener("click", async () => {

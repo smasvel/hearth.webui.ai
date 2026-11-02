@@ -8,15 +8,15 @@ class ReleaseInstallerBackendTests(unittest.TestCase):
     def test_platform_backend_choices(self):
         self.assertEqual(
             {key for key, *unused in BACKENDS.items() if "Windows" in BACKENDS[key][2]},
-            {"lmstudio", "kobold", "vllm", "sglang"},
+            {"lmstudio", "kobold", "vllm"},
         )
         self.assertEqual(
             {key for key, *unused in BACKENDS.items() if "Darwin" in BACKENDS[key][2]},
-            {"lmstudio", "kobold", "vllm", "sglang"},
+            {"lmstudio", "kobold", "vllm"},
         )
 
     def test_linux_can_select_npu_backend(self):
-        answers = iter(["6", "http://127.0.0.1:52625"])
+        answers = iter(["5", "http://127.0.0.1:52625"])
         with patch("builtins.print"):
             selected = choose_backend("Linux", lambda _prompt: next(answers))
         self.assertEqual(selected, ("fastflowlm", "http://127.0.0.1:52625"))

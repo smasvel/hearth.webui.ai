@@ -18,7 +18,7 @@ with contextlib.ExitStack() as stack:
     stack.callback(app.users_store.delete_user, admin['id'])
     stack.enter_context(patch.dict(app.app.config, {'SESSION_COOKIE_SECURE': False}))
     stack.enter_context(patch.object(app, '_test_model_inventory', return_value=[]))
-    for backend in (app.lms, app.lemonade, app.vllm, app.sglang, app.kobold, app.fastflowlm):
+    for backend in (app.lms, app.lemonade, app.vllm, app.kobold, app.fastflowlm):
         stack.enter_context(patch.object(backend, 'list_models', return_value=[]))
     stack.enter_context(patch.object(app.comfyui, 'video_model_info', return_value={
         'id': 'fixture', 'backend': 'comfyui', 'type': 'video', 'size_gb': 0,

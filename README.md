@@ -732,7 +732,7 @@ and the agentic framework lists provider `opencode` models with their advertised
 context windows.
 
 Hearth chat can also call its configured Playwright browser and persistent Python MCP
-tools when using KoboldCPP, FastFlowLM, SGLang, opencode.ai, Lemonade, or LM Studio. Tool-enabled
+tools when using KoboldCPP, FastFlowLM, opencode.ai, Lemonade, or LM Studio. Tool-enabled
 requests pass through Hearth's backend compatibility shims; the browser MCP server
 starts on first use. Chat offers a focused set of Playwright navigation, inspection,
 and interaction tools to keep prompt overhead manageable on local models. FastFlowLM

@@ -25,7 +25,7 @@ with contextlib.ExitStack() as stack:
  stack.enter_context(patch.object(app,'_test_connection',return_value=('http://fixture','test-fixture',{})))
  stack.enter_context(patch.object(app,'_test_context',return_value=8192))
  stack.enter_context(patch.object(app.users_store,'get_user_by_id',return_value={'id':'ui-test','username':'ui-test','role':'admin'}))
- for client in (app.lms,app.lemonade,app.vllm,app.sglang,app.kobold):
+ for client in (app.lms,app.lemonade,app.vllm,app.kobold):
   stack.enter_context(patch.object(client,'list_models',side_effect=lambda:[]))
  stack.enter_context(patch.object(app.fastflowlm,'list_models',side_effect=lambda:[TARGET.copy()]))
  stack.enter_context(patch.object(app.comfyui,'video_model_info',return_value={'id':'media','backend':'comfyui','type':'video'}))

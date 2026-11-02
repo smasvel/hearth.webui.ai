@@ -255,7 +255,7 @@ and only sent to opencode.ai's inference endpoint. Deletion and download control
 with the opencode.ai console.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
-tools on KoboldCPP, FastFlowLM, SGLang, opencode.ai, Lemonade, and LM Studio. The MCP servers
+tools on KoboldCPP, FastFlowLM, opencode.ai, Lemonade, and LM Studio. The MCP servers
 start the first time chat needs them. Tool-enabled requests use Hearth's local
 backend compatibility shims; keep the `lemonade-guard-shim`, `lmstudio-shim`, and
 `flm-tool-shim` user services running for those backends. Ask the model to use the

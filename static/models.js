@@ -97,7 +97,6 @@
     { key: "lmstudio", label: "LM Studio" },
     { key: "lemonade", label: "Ryzen AI (NPU)" },
     { key: "vllm", label: "vLLM" },
-    { key: "sglang", label: "SGLang (remote)" },
     { key: "opencode", label: "opencode.ai (remote)" },
     { key: "kobold", label: "KoboldCPP" },
     { key: "fastflowlm", label: "FastFlowLM (NPU)" },
@@ -295,7 +294,6 @@
     if (externallyManaged) {
       const note = document.createElement("span");
       note.className = "hint";
-      note.textContent = "Managed by the external SGLang server";
       actions.appendChild(note);
     } else if (managedAutomatically) {
       const note = document.createElement("span");

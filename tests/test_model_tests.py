@@ -241,7 +241,6 @@ class ProfileTests(unittest.TestCase):
 
     def test_model_prefixes_share_the_same_profile(self):
         self.assertEqual(profiles.key('fastflowlm', 'flm/x'), profiles.key('fastflowlm', 'x'))
-        self.assertEqual(profiles.key('sglang', 'sglang/x'), profiles.key('sglang', 'x'))
 
 
 class ModelTestAPITests(unittest.TestCase):

@@ -29,7 +29,7 @@ class BackgroundChatTests(unittest.TestCase):
         self.stack.enter_context(patch.object(app.users_store, "get_user_by_id", side_effect=lambda uid: {
             "id": uid, "username": uid, "role": "admin",
         }))
-        for backend in [app.lemonade, app.vllm, app.sglang, app.kobold, app.fastflowlm]:
+        for backend in [app.lemonade, app.vllm, app.kobold, app.fastflowlm]:
             self.stack.enter_context(patch.object(backend, "owns_model", return_value=False))
         self.stack.enter_context(patch.object(app, "_recall_memory", return_value=None))
         self.stack.enter_context(patch.object(app, "_remember_exchange"))

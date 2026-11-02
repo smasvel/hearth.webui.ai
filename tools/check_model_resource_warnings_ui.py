@@ -20,7 +20,7 @@ with contextlib.ExitStack() as stack:
               for (backend, _), item in catalog.items()]
     models.append({'backend': 'lmstudio', 'id': 'qwen/qwen3.5-4b', 'state': 'not-loaded', 'type': 'llm'})
     for backend, client in {'lmstudio': app.lms, 'lemonade': app.lemonade, 'vllm': app.vllm,
-                            'kobold': app.kobold, 'fastflowlm': app.fastflowlm, 'sglang': app.sglang}.items():
+                            'kobold': app.kobold, 'fastflowlm': app.fastflowlm}.items():
         stack.enter_context(patch.object(client, 'list_models', side_effect=lambda key=backend:
                                         [dict(m) for m in models if m['backend'] == key]))
         stack.enter_context(patch.object(client, 'base_url', return_value='http://127.0.0.1:9999'))
