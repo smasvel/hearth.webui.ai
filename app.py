@@ -2824,7 +2824,7 @@ def api_model_tests_start():
     if not isinstance(body.get('auto_repair', False), bool):
         return jsonify({'error': 'auto_repair must be a boolean.'}), 400
     suite = body.get('suite', 'all')
-    if suite not in ('all', 'tools', 'iq', 'security'):
+    if suite not in model_tests.SUITES:
         return jsonify({'error': 'Choose a supported model test suite.'}), 400
     inventory = {(m.get('backend'), m.get('id')): m for m in _test_model_inventory()}
     targets = []

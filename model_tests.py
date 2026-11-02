@@ -13,6 +13,11 @@ import model_test_profiles as profiles
 from tools.test_flm_model import Cancelled, run_suite
 
 ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
+# Suites accepted by the API and offered by the Model tests page tabs. 'core'/'extra'
+# are slices of 'all' so slow long-running checks (workflows, context overflow) can be
+# skipped without rerunning chat+tool basics; each also maps into run_suite's repairable
+# set below.
+SUITES = ('all', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
 
 
 class Registry:

@@ -512,7 +512,8 @@ on the next request. Some models may ignore the thinking controls.
 OpenCode assignments send both LM Studio thinking controls. The LM Studio gateway
 forwards streamed reasoning before buffered tool arguments finish; restart Hearth
 and `lmstudio-shim.service` after updating to activate this behavior.
-The page has tabs for compatibility, tool calling, model reasoning, and model
+The page has tabs for the full compatibility run, core checks, the OpenCode coding
+workflows, extra tool-behavior checks, tool calling, model reasoning, and model
 security behavior. The reasoning tab asks 12 original questions one at a time and
 scores points correct; it is a comparison benchmark, not a human IQ score. The
 security tab runs 10 safe behavioral probes and reports how the model handles them;
@@ -621,7 +622,8 @@ behavior. Automatic compatibility repair is off by default, including when a
 test run starts from a model card. **Test Model** tests the model from that card.
 The Model tests dropdown also selects Ornith by default when available, and allows
 choosing another installed model. Select the repair option on the Model tests
-page to enable repairs for a run.
+page to enable repairs for a run; the option appears on the full run and on the
+core, coding-workflow, and extra-tool tabs, which all support the verified recipe.
 
 Administrators can open **Browse history** to search and page through browser visits.
 Delete individual entries from their rows or clear the entire history with **Delete all

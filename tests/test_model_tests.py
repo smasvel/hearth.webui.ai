@@ -262,6 +262,21 @@ class ModelTestAPITests(unittest.TestCase):
             session.update(logged_in=True, user_id=role, username=role, role=role,
                            login_csrf_token='test-token', last_activity=time.time())
 
+    def test_every_suite_tab_is_accepted_and_unknown_rejected(self):
+        """The Model tests page tabs (including the newer core/opencode/extra slices)
+        must all start a run; a suite not in the registry list is refused."""
+        self.login()
+        for suite in model_tests.SUITES:
+            with self.subTest(suite=suite), patch.object(self.registry, 'start', return_value={'id': 'x'}) as start:
+                response = self.client.post('/api/model-tests',
+                    json={'models': [TARGET], 'suite': suite}, headers=self.headers)
+                self.assertEqual(response.status_code, 202)
+                start.assert_called_once()
+                self.assertEqual(start.call_args.kwargs['suite'], suite)
+        response = self.client.post('/api/model-tests',
+            json={'models': [TARGET], 'suite': 'not-a-suite'}, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+
     def test_admin_and_csrf_are_required(self):
         self.assertEqual(self.client.get('/api/model-tests').status_code, 401)
         self.login('user')

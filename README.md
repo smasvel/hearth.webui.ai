@@ -337,8 +337,13 @@ LM Studio OpenCode assignments send both supported thinking controls. During a
 tool-enabled stream, Hearth forwards reasoning updates as they arrive while it
 buffers tool arguments for validation, so agent progress stays visible.
 
-The Model tests page groups four suites into tabs: compatibility tests, tool-calling
-tests, a 12-question reasoning benchmark, and 10 model security behavior probes.
+The Model tests page groups seven suites into tabs: the full compatibility run,
+core checks (chat, streaming, tool choice, typed arguments, file-tool contracts, and
+the large-code context input), the long OpenCode coding workflows as their own
+tab, extra tool-behavior checks (forced named choices, none-when-tool-requested,
+tool-error follow-up, the blocked-shell contract, and the context-overflow
+rejection), tool-calling tests, a 12-question reasoning benchmark, and 10 model
+security behavior probes.
 The reasoning benchmark presents each original question separately, checks it against
 a fixed answer key, and reports points correct. It is not a human IQ measurement:
 human IQ scores depend on standardized, normed psychological assessments and must not

@@ -6,10 +6,15 @@
   let job = null, running = false, starting = false, timer = null, selectedSuite = "all";
   const suiteDescriptions = {
     all: ["Run chat, streaming, tool choices, typed arguments, file-tool contracts, long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures, large-code input, and context-limit checks. Question answers and tool results are simulated. Dependent steps stop if an earlier step fails. Models are tested sequentially; local loads unload other local chat models and leave the final local model loaded. Returned tools are inspected; no generated shell commands or project changes are executed.", "Automatic repair applies a reversible per-model tool-instruction profile and keeps it only if results improve."],
+    core: ["Run the chat basics: plain chat and streaming, tool choice auto/required/named/none, parallel tool calls, tool results, typed arguments, no-argument calls, file read/edit request contracts, and the large-code context input. Tools are inspected, never executed.", "These are the fastest high-value checks; automatic repair applies the same reversible per-model profile when failures appear."],
+    opencode: ["Run the long OpenCode coding scenarios: plan/build workflows, multi-step source reads and edits, test failures and fix reruns, permission denial, task delegation, paged reads, checkpoint resume, and question prompt handling. Answers and tool results are simulated and nothing is executed.", "A failed workflow step stops its dependents; the partial results still appear in the report. Automatic repair applies the same reversible per-model profile."],
+    extra: ["Run the remaining tool-behavior checks: forced tool choice among alternatives, none-when-tool-requested, follow-up after a tool error, the blocked-shell contract on guarded backends, and the context-overflow rejection check.", "Automatic repair applies the same reversible per-model profile when failures appear."],
     tools: ["Checks tool selection, exact and parallel calls, typed arguments, simulated tool results, and file read/edit request contracts in normal and streaming responses. Returned calls are inspected and never executed.", "Tool compatibility checks use simulated schemas and data; automatic repair is not applied."],
     iq: ["Runs 12 original, individually presented reasoning questions covering patterns, deduction, arithmetic, spatial reasoning, and probability. Each question is sent separately and scored against a fixed answer key.", "This is a reasoning benchmark score (points correct), not a human IQ score. Human IQ requires standardized, normed tests; model results are not comparable to human IQ."],
     security: ["Runs 10 harmless behavioral probes covering prompt injection, secret disclosure, credential theft, unsafe requests, privacy, and unauthorized tool use. No tools are connected and generated actions are never executed.", "This evaluates responses to these probes only. It does not scan the host, runtime, model weights, or deployment, and passing does not establish security."]
   };
+  // Suites where an automatic compatibility repair is attempted after failures.
+  const repairableSuites = new Set(["all", "core", "opencode", "extra"]);
   function setSuite(suite) {
     selectedSuite = suite;
     document.querySelectorAll("[data-suite]").forEach(tab => {
@@ -18,7 +23,7 @@
     });
     el("suite-description").textContent = suiteDescriptions[suite][0];
     el("suite-note").textContent = suiteDescriptions[suite][1];
-    el("auto-repair-control").hidden = suite !== "all";
+    el("auto-repair-control").hidden = !repairableSuites.has(suite);
   }
   document.querySelectorAll("[data-suite]").forEach(tab => tab.addEventListener("click", () => setSuite(tab.dataset.suite)));
   async function api(path, body, method) {
@@ -170,7 +175,7 @@
     el("tests-run").disabled = true;
     try {
       job = await api("/api/model-tests", {models: models.map(m => ({backend: m.backend, id: m.id})),
-        suite, auto_repair: suite === "all" && el("tests-auto-repair").checked});
+        suite, auto_repair: repairableSuites.has(suite) && el("tests-auto-repair").checked});
       render(); schedule(); await history(job.id);
       el("model-tests").scrollIntoView({behavior: "smooth", block: "start"});
     } catch (error) { el("tests-status").textContent = error.message; el("tests-run").disabled = running || starting; }
