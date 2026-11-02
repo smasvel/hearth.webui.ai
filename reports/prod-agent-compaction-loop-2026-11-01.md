@@ -42,3 +42,14 @@ and README/install docs now document the reserve room.
   selected model) and the generated help-config tests all pass.
 - README and first-time install docs mention the new floor so a larger-window
   assignment does not inherit a smaller sibling's compaction settings.
+
+## Full automation (2026-11-02)
+
+The keep/buffer pair is no longer hand-edited anywhere. The formula lives in
+`help_data.compaction_for_window(window, output_reserve)` and both config
+generators consume it. `tools/sync_opencode_config.py` regenerates
+`~/.config/opencode/opencode.jsonc` from live backend state, preserving the
+selected default model and hand-added agents and re-deriving compaction from
+the selected model's current advertised window. The first-time installer now
+installs it as the `opencode-config-sync.timer` systemd user timer (every two
+minutes); the run is idempotent and leaves a timestamped `.bak` on real changes.

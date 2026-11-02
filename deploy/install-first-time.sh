@@ -102,6 +102,20 @@ if [[ $install_service -eq 1 ]]; then
     bash deploy/install-lmstudio-server.sh --skip-if-active
   fi
 fi
+# Keep the desktop OpenCode config aligned with live backends every two minutes:
+# model context limits and the compaction keep/buffer pair are re-derived from the
+# selected model's advertised window (help_data.compaction_for_window), so changing
+# where a model is loaded never leaves OpenCode with a stale budget. Idempotent and
+# only writes when the generated config differs from the current file.
+if [[ $install_service -eq 1 && -d /run/systemd/system ]]; then
+  mkdir -p "$HOME/.config/systemd/user"
+  sed "s|__HEARTH_DIR__|$project_dir|g" deploy/opencode-config-sync.service \
+    > "$HOME/.config/systemd/user/opencode-config-sync.service"
+  cp deploy/opencode-config-sync.timer "$HOME/.config/systemd/user/opencode-config-sync.timer"
+  systemctl --user daemon-reload
+  systemctl --user enable --now opencode-config-sync.timer
+  echo 'OpenCode config auto-sync timer installed (opencode-config-sync.timer).'
+fi
 # When Caddy is installed (the full backend setup), generate the gateway bearer tokens and
 # local CA too. The basic install does not install Caddy, so this is a no-op unless the
 # administrator already provided it. Existing tokens are preserved.

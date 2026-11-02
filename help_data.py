@@ -71,6 +71,25 @@ _NON_CHAT = ("embeddings", "transcription", "tts")
 DEFAULT_COMPACTION_KEEP_TOKENS = 15000
 
 
+def compaction_for_window(window: int, output_reserve: int | None = None) -> dict:
+    """keep/buffer for an OpenCode config, derived purely from a model's context window.
+
+    keep + buffer + the compaction prompt itself must fit inside the window: keep equal
+    to the whole window makes OpenCode's own summarization request impossible and the
+    session fails with "The compaction request cannot be reduced further without losing
+    the latest exchange or checkpoint". 65K+ windows keep a large recent-context budget
+    (up to 65,536) with the full output reserve; smaller windows scale to one eighth.
+    """
+    reserve = int(output_reserve) if output_reserve and output_reserve > 0 else 8192
+    if window >= 65536:
+        buffer = min(reserve, window // 4)
+        keep = min(65536, window - buffer - max(4096, window // 8))
+    else:
+        keep = max(1024, window // 8)
+        buffer = keep
+    return {"keep": keep, "buffer": buffer}
+
+
 def compaction_settings() -> dict:
     """Effective compaction settings, re-read on each config build so an admin's Settings change
     is picked up the next time the Help page regenerates the OpenCode config."""
@@ -507,17 +526,11 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
         if default_model in provider.keys() and model_id in provider.get(be_, {}).get('models', {}):
             default_window = provider[be_]['models'][model_id]['limit']['context']
         limit = default_window or min(windows)
-        # Lemonade/Muse-style 65K windows want a large recent-context budget, but
-        # keep + buffer + the compaction prompt itself must still fit inside the
-        # window — keep == window makes the summarization request impossible and the
-        # session fails with "cannot be reduced further without losing the latest
-        # exchange or checkpoint". Reserve room instead of pinning keep to the window.
-        if limit >= 65536:
-            buffer_budget = min(8192, limit // 8)
-            keep_budget = min(65536, limit - buffer_budget - max(4096, limit // 8))
-        else:
-            keep_budget = max(1024, limit // 8)
-            buffer_budget = keep_budget
+        # keep/buffer are derived from the selected model's window: keep + buffer +
+        # the compaction prompt must fit, so keep never equals the window.
+        budgets = compaction_for_window(limit)
+        keep_budget = max(1024, budgets['keep'])
+        buffer_budget = budgets['buffer']
         compaction_block["keep"]["tokens"] = min(compaction_block["keep"]["tokens"], keep_budget)
         compaction_block["buffer"] = min(max(compaction_block.get("buffer", 0), buffer_budget), limit // 4)
     return json.dumps(cfg, indent=2)

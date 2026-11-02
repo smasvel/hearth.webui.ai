@@ -1116,6 +1116,16 @@ exchange or checkpoint". The selected model's own context is the floor, too: a g
 from a smaller sibling model cannot leave a larger-window assignment with only a tiny
 retained history. This prevents the agent repeatedly re-reading the same large file after
 compaction.
+The formula lives in one place (`help_data.compaction_for_window`) and both config
+generators share it, so nothing is hand-tuned per model. The desktop
+`~/.config/opencode/opencode.jsonc` is kept aligned automatically by
+`tools/sync_opencode_config.py`, installed as the `opencode-config-sync.timer` systemd
+user timer (every two minutes): it regenerates provider model limits and re-derives
+`keep`/`buffer` from the selected model's *current* advertised window, preserves the
+chosen default model and hand-added agents, and only writes when the generated config
+differs (leaving a timestamped `.bak` backup). When a model loads with a different
+context size, OpenCode's budget follows it on the next sync tick without any manual
+editing.
 Hearth ignores completion markers when the response only describes future work or
 contains an implementation placeholder, and continues the assignment instead.
 
