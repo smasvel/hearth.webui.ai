@@ -258,6 +258,21 @@ key, an empty field never wipes the stored key, and the card's Remove stored key
 button removes it explicitly. Deletion and download controls stay
 with the opencode.ai console.
 
+### Hosted opencode.ai models (free tier or Go subscription)
+
+The opencode.ai hosted catalog works beside the local engines for chat, codebase-RAG
+answers, agentic assignments, and model tests. Plans: the free `-free` models (for
+example `glm-5.3-flash-free`) cost nothing, OpenCode Go is the $10/month subscription
+with curated coding models and generous per-model allowances (its requests use
+opencode.ai's dedicated `/inference/go` endpoint), and pay-as-you-go bills Console
+credits. Configure it from **Settings → opencode.ai**: paste the key, choose the plan,
+press **Test connection** (a successful test saves and verifies the key in one step).
+The key is stored encrypted in PostgreSQL; only an explicit **Remove stored key** clears
+it. Hearth sends a stable per-conversation `x-opencode-session` routing header as the Go
+gateway requires, agent relays forward the client's own session header with a stable
+per-task fallback, and both 402 (no credits on the selected plan) and 401/403 (key
+rejected) errors surface as plain guidance in chat.
+
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
 tools on KoboldCPP, FastFlowLM, opencode.ai, Lemonade, and LM Studio. The MCP servers
 start the first time chat needs them. Tool-enabled requests use Hearth's local

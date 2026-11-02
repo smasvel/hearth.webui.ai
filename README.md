@@ -169,7 +169,7 @@ preventing native tool parsers from rejecting ordinary answers.
 
 | Use case | Included capabilities |
 |---|---|
-| Local AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching, and supported reasoning displays |
+| Local and hosted AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching (local or hosted opencode.ai), and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
@@ -178,6 +178,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
+| Hosted models (opencode.ai) | Free `-free` tier models, the $10/month OpenCode Go subscription, or pay-as-you-go credits — usable for chat, codebase-RAG chat, and agentic tasks; plan selection and encrypted key storage in Settings | Settings → opencode.ai |
 | Performance monitoring | Request metrics, token usage, generation speed, and a dedicated live developer logs page |
 
 ## Hearth in action
@@ -591,12 +592,13 @@ configured separately. The first-time Hearth installer does not perform that set
 
 | Feature | What Hearth supports | Where to start |
 |---|---|---|
-| Local AI chat | Live answer and reasoning updates, saved conversations, model selection, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
+| Local and hosted AI chat | Live answer and reasoning updates, saved conversations, model selection across local backends and the hosted opencode.ai catalog, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
 | Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation, local GGUF upload to Lemonade | Downloads |
 | Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
 | Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
+| Hosted opencode.ai models | Free-tier and subscription (OpenCode Go) model access embedded in chat, agent assignments, and model tests; plan selector, connection test, encrypted key storage, and per-conversation session routing | Settings → opencode.ai |
 | Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
@@ -701,6 +703,67 @@ available context, runtime, and task; the saved reports document remaining failu
 On mobile, the Agents page keeps its workflow navigation visible while scrolling;
 the header also shows the full workspace navigation with Agents selected, reflowed
 into a grid so every page tab remains visible.
+
+## Hosted opencode.ai integration (free tier, Go subscription, agents, and RAG)
+
+Hearth treats the [opencode.ai](https://opencode.ai) hosted catalog as a first-class
+backend alongside the local engines, so the same features that run on local hardware —
+chat, codebase-RAG answers, and agentic coding tasks — can run on hosted models when
+local GPUs/NPUs are busy or unavailable.
+
+### Plans: free tier, Go, or pay-as-you-go
+
+| Plan | Cost | What it gives you |
+|---|---|---|
+| Free tier | $0 | The `-free` models in the catalog (for example `opencode/glm-5.3-flash-free`, `opencode/deepseek-v4.1-flash-free`, `opencode/big-pickle`) — usable immediately with any opencode.ai account key |
+| OpenCode Go | $10/month subscription | Curated coding models with generous per-model monthly/weekly/5-hour allowances (GLM 5.3, Kimi K3, Qwen3.8, DeepSeek V4, Grok 4.7, Claude Haiku 5.5, GPT 6 Luna, and more); requests route through opencode.ai's dedicated `/inference/go` endpoint |
+| Pay-as-you-go | Console credits | Every catalog model billed per million tokens from your credit balance |
+
+Choose the plan on the **Settings → opencode.ai** card (Hearth switches the request
+endpoints automatically); you can flip between plans without touching anything else.
+
+### Setup
+
+1. Create an account at [opencode.ai/console](https://opencode.ai/console) and copy your
+   API key (with Go, also make sure the subscription is active).
+2. In Hearth **Settings → opencode.ai (remote hosted models)**, paste the key, pick the
+   plan, and press **Test connection** — a successful test saves (and verifies) the key
+   in one step.
+3. The key is stored **encrypted in PostgreSQL** and only sent to opencode.ai. A re-save
+   from an empty field never wipes it; **Remove stored key** does, explicitly.
+
+The opencode.ai model group then appears in Chat's picker, on the **Models** page
+(marked "opencode.ai (remote)", with cards showing refusal-free remote metadata),
+inside the **agent assignment** model pickers, and in **Model tests**.
+
+### Where hosted models plug in
+
+- **Chat**: pick any `opencode/…` model — streaming, tools (browser MCP, Python REPL),
+  document attachments, memory-injected RAG context, and web research all work exactly
+  like local chat. Chat errors are translated to plain language (401/403 → check the key
+  in Settings; 402 → out of credits on the selected plan, or switch to a free model).
+- **Codebase/chat RAG**: retrieval-injected requests (cross-chat memory, document
+  attachments, project notes) go through the selected hosted model the same as from a
+  local one; embeddings stay local, generation can be hosted. Handy when the NPU/GPU is
+  busy or when you want a larger context window for summarizing retrieved chunks.
+- **Agentic coding tasks**: the agent workspace accepts hosted models (provider
+  `opencode`) — the 16K-context rule is evaluated from each model's *advertised* window,
+  the generated agent config carries correct context/output limits, and the container's
+  model relay adds the required `x-opencode-session` routing headers so long workflows
+  bill against your Go allowances. Mix freely: plan says *model A for assignments*,
+  *local NPU for quick chat* — both keep working side by side.
+- **Model tests**: run the full evaluation suite against a hosted model to compare
+  coding/tool quality before assigning it to a project task.
+
+### Session routing and reliability details
+
+Hearth sends a stable `x-opencode-session` per conversation (and per agent task) so the
+Go gateway routes and caches efficiently; missing headers are the documented cause of
+`HTTP 400 … cannot be routed`. Requests identify as `Hearth-local-webui/1.0` per the
+Go client guidelines. Remote models are externally managed: load/unload/download/delete
+don't apply, and usage/billing live in the opencode.ai console. Privacy and retention
+terms are described on opencode.ai's own pages (most providers are zero-retention; a
+few free models differ).
 
 ## A personal AI assistant on your own hardware
 
