@@ -51,6 +51,7 @@ import lemonade_client as lemonade
 import lmstudio_client as lms
 import vllm_client as vllm
 import sglang_client as sglang
+import opencode_client as zen
 import kobold_client as kobold
 import fastflowlm_client as fastflowlm
 import mcp_tools_client
@@ -1720,6 +1721,8 @@ def _collect_completion(messages: list[dict], model: str, temperature: float = 0
         backend = vllm
     elif sglang.owns_model(model):
         backend = sglang
+    elif zen.owns_model(model):
+        backend = zen
     elif kobold.owns_model(model):
         backend = kobold
     elif fastflowlm.owns_model(model):
@@ -1772,7 +1775,7 @@ def api_quiz_generate():
     messages = quiz_store.build_generation_messages(topic, count)
     try:
         text = _collect_completion(messages, model, temperature=0.5, max_tokens=2400)
-    except (lemonade.LemonadeError, vllm.VLLMError, sglang.SGLangError, lms.LMStudioError) as exc:
+    except (lemonade.LemonadeError, vllm.VLLMError, sglang.SGLangError, zen.OpenCodeError, lms.LMStudioError) as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 502
     questions = quiz_store.parse_generated(text, count)
     if not questions:
@@ -1867,6 +1870,14 @@ def api_list_models():
     for m in sglang_models:
         m["backend"] = "sglang"
     models += sglang_models
+    # opencode.ai — remote hosted gateway; no key configured is an empty group.
+    try:
+        zen_models = zen.list_models()
+    except zen.OpenCodeError:
+        zen_models = []
+    for m in zen_models:
+        m["backend"] = "opencode"
+    models += zen_models
     # KoboldCPP — same fail-soft contract; a stopped kobold.service just omits its models.
     try:
         kobold_models = kobold.list_models()
@@ -2125,6 +2136,12 @@ def _test_model_inventory():
 def _test_load_model(target):
     # Reuse the existing serialized load route and its memory/NPU eviction rules.
     # Authorization was checked on the HTTP start endpoint; this is internal work.
+    if target['backend'] == 'opencode':
+        # Remote opencode.ai models consume no local resources and acknowledge no
+        # load/unload: verify they are actually served, like SGLang, and skip
+        # the local handoff certification entirely.
+        zen.verify_model(target['id'])
+        return
     _model_test_context.active = True
     try:
         with app.test_request_context('/api/models/load', method='POST', json={'model': target['id']}):
@@ -2149,7 +2166,7 @@ def _test_load_model(target):
 def _test_connection(target):
     backend = target['backend']
     client = {'fastflowlm': fastflowlm, 'lmstudio': lms, 'lemonade': lemonade,
-              'vllm': vllm, 'sglang': sglang, 'kobold': kobold}[backend]
+              'vllm': vllm, 'sglang': sglang, 'kobold': kobold, 'opencode': zen}[backend]
     base = client.base_url().rstrip('/')
     local = urlsplit(base)
     proxy_ports = {'fastflowlm': (52625, 52626), 'lmstudio': (1234, 13307), 'lemonade': (13305, 13306)}
@@ -2160,6 +2177,12 @@ def _test_connection(target):
         model = fastflowlm.resolve_model(model)
     elif backend == 'sglang':
         model = sglang._served_id(model)
+    elif backend == 'opencode':
+        # opencode.ai's model-list endpoint sits one directory above the
+        # OpenAI base (…/inference/openai → …/inference/v1), so direct chat
+        # completions use the documented OpenAI-shaped path.
+        model = zen._served_id(model)
+        base = zen.base_url().rstrip('/')
     key = client.api_key()
     headers = {'X-Hearth-Client': 'model-tests'}
     if key:
@@ -2170,7 +2193,8 @@ def _test_connection(target):
 def _test_context(target):
     if target['backend'] == 'fastflowlm':
         return flm_context.context_limit(target['id'])
-    client = {'lmstudio': lms, 'lemonade': lemonade, 'vllm': vllm, 'sglang': sglang, 'kobold': kobold}[target['backend']]
+    client = {'lmstudio': lms, 'lemonade': lemonade, 'vllm': vllm,
+              'sglang': sglang, 'kobold': kobold, 'opencode': zen}[target['backend']]
     for model in client.list_models():
         if model.get('id') == target['id']:
             window = model.get('loaded_context_length')
@@ -2198,7 +2222,7 @@ def _prepare_agent_model(job):
         # target. For an agent continuing with a healthy model, that eviction is
         # unnecessary and can strand the task if a backend's unload call stalls.
         client = {'lemonade': lemonade, 'lmstudio': lms, 'vllm': vllm,
-                  'kobold': kobold, 'sglang': sglang}.get(model['providerID'])
+                  'kobold': kobold, 'sglang': sglang, 'opencode': zen}.get(model['providerID'])
         if client:
             try:
                 loaded = next((entry for entry in client.list_models()
@@ -2835,7 +2859,8 @@ def api_model_tests_start():
         pair = (item['backend'], item['id'])
         model = inventory.get(pair)
         if (not model or pair in seen or model.get('type') in _SUPPORT_MODEL_TYPES
-                or model.get('loadable') is False or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'sglang', 'kobold')):
+                or model.get('loadable') is False
+                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'sglang', 'opencode', 'kobold')):
             return jsonify({'error': 'Choose unique, installed, loadable chat models.'}), 400
         seen.add(pair)
         targets.append({'backend': pair[0], 'id': pair[1]})
@@ -3023,7 +3048,7 @@ def _track_model_load_status(view):
         if not isinstance(model_id, str) or not model_id:
             return view(*args, **kwargs)
         backend = next((name for name, client in (
-            ("sglang", sglang), ("fastflowlm", fastflowlm), ("vllm", vllm),
+            ("opencode", zen), ("sglang", sglang), ("fastflowlm", fastflowlm), ("vllm", vllm),
             ("kobold", kobold), ("lemonade", lemonade),
         ) if client.owns_model(model_id)), "lmstudio")
         key = (backend, model_id.casefold())
@@ -3077,6 +3102,12 @@ def api_load_model():
         try:
             sglang.verify_model(model_key)
         except sglang.SGLangError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True, "unloaded": [], "externally_managed": True})
+    if zen.owns_model(model_key):
+        try:
+            zen.verify_model(model_key)
+        except zen.OpenCodeError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True, "unloaded": [], "externally_managed": True})
     if fastflowlm.owns_model(model_key):
@@ -3304,7 +3335,7 @@ def api_delete_model():
         return jsonify({"error": "'identifier' is required"}), 400
 
     backend = next((name for name, client in (
-        ('sglang', sglang), ('vllm', vllm), ('kobold', kobold),
+        ('opencode', zen), ('sglang', sglang), ('vllm', vllm), ('kobold', kobold),
         ('fastflowlm', fastflowlm), ('lemonade', lemonade),
     ) if client.owns_model(identifier)), 'lmstudio')
     if not getattr(_model_test_context, 'active', False):
@@ -3323,6 +3354,8 @@ def api_delete_model():
         ):
             return jsonify({'error': 'This model is part of an active model test run. Cancel or wait for that run before deleting it.'}), 409
 
+    if backend == 'opencode':
+        return jsonify({"error": "opencode.ai models cannot be deleted from Hearth; they are managed by the opencode.ai account."}), 409
     if backend == 'sglang':
         return jsonify({"error": "SGLang models cannot be deleted from Hearth; manage the external deployment."}), 409
     if backend == 'vllm':
@@ -3858,6 +3891,36 @@ def _test_lemonade(base_url: str, api_key: str | None) -> tuple[bool, str]:
     return True, f"Connected — {'loaded: ' + loaded if loaded else 'no model currently loaded'}."
 
 
+def _test_opencode(base_url: str, api_key: str | None) -> tuple[bool, str]:
+    """Connection test for the opencode.ai backend: verify the key is accepted by
+    fetching the opencode.ai model list. The supplied (unsaved) values are tested first so
+    the admin sees the result of what they typed."""
+    if not api_key:
+        return False, ("Paste your opencode.ai API key first "
+                       "(get one at https://opencode.ai/console).")
+    models_url = base_url.rstrip("/")
+    marker = "/inference"
+    position = models_url.find(marker)
+    root = models_url if position < 0 else models_url[:position + len(marker)]
+    models_url = root + "/v1/models"
+    try:
+        response = requests.get(models_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
+        if response.status_code in (401, 403):
+            return False, "The API key was rejected by opencode.ai (check it in your opencode.ai console)."
+        if response.status_code >= 400:
+            return False, f"opencode.ai responded with HTTP {response.status_code}."
+        items = response.json().get("data", [])
+    except requests.RequestException as exc:
+        return False, f"Could not reach opencode.ai: {exc}"
+    except (ValueError, AttributeError):
+        return False, "opencode.ai returned an invalid model list."
+    if not isinstance(items, list) or not items:
+        return False, "opencode.ai returned no models for this key."
+    ids = [str((item or {}).get("id")) for item in items[:3] if isinstance(item, dict)]
+    return True, (f"Connected — key accepted, {len(items)} opencode.ai models available"
+                  + (f" ({', '.join(i for i in ids if i)}…)" if ids else ""))
+
+
 def _test_ondemand_openai(base_url: str, api_key: str | None, label: str, load_hint: str) -> tuple[bool, str]:
     """Connection test for the on-demand OpenAI-compatible backends (vLLM, KoboldCPP,
     FastFlowLM). Unlike LM Studio/Lemonade — which run always-on servers — these only run
@@ -3984,6 +4047,11 @@ def api_test_settings():
             (body.get("base_url") or "").strip() or sglang.base_url(),
             body.get("api_key") or sglang.api_key(),
         )
+    elif target == "opencode":
+        ok, message = _test_opencode(
+            (body.get("base_url") or "").strip() or zen.base_url(),
+            body.get("api_key") or zen.api_key(),
+        )
     elif target == "kobold":
         ok, message = _test_kobold(
             (body.get("base_url") or "").strip() or kobold.base_url(),
@@ -4024,7 +4092,7 @@ def api_test_settings():
         ok, message = _test_caddy(port, caddy["bearer_token"], path, host=ts_ip)
     else:
         return jsonify({
-            "error": "'target' must be lmstudio, lemonade, vllm, sglang, kobold, fastflowlm, "
+            "error": "'target' must be lmstudio, lemonade, vllm, sglang, opencode, kobold, fastflowlm, "
                      "or a caddy_*/tailscale_* variant",
         }), 400
     return jsonify({"ok": ok, "message": message})
@@ -4055,6 +4123,8 @@ def _settings_snapshot() -> dict:
         "vllm_api_key": vllm.api_key() or "",
         "sglang_base_url": sglang.base_url(),
         "sglang_api_key": sglang.api_key() or "",
+        "opencode_api_key": zen.api_key() or "",
+        "opencode_api_base_url": zen.base_url(),
         "kobold_base_url": kobold.base_url(),
         "kobold_api_key": kobold.api_key() or "",
         # GPU offload (Vulkan) + speculative decoding tuning (2026-07-27) - see
@@ -4120,6 +4190,7 @@ def api_update_settings():
         "lemonade_base_url", "lemonade_api_key",
         "vllm_base_url", "vllm_api_key",
         "sglang_base_url", "sglang_api_key",
+        "opencode_api_key", "opencode_api_base_url",
         "kobold_base_url", "kobold_api_key",
         "fastflowlm_base_url", "fastflowlm_api_key",
         "lan_default_model", "tailscale_ip_override",
@@ -5046,6 +5117,8 @@ def api_chat():
         backend, backend_error, backend_name = vllm, vllm.VLLMError, "vllm"
     elif sglang.owns_model(model):
         backend, backend_error, backend_name = sglang, sglang.SGLangError, "sglang"
+    elif zen.owns_model(model):
+        backend, backend_error, backend_name = zen, zen.OpenCodeError, "opencode"
     elif kobold.owns_model(model):
         backend, backend_error, backend_name = kobold, kobold.KoboldError, "kobold"
     elif fastflowlm.owns_model(model):
@@ -5141,7 +5214,7 @@ def api_chat():
             # are available on every chat backend. Each backend has a guarded tool-call path
             # where needed; withholding the tool schema makes the model claim it cannot browse
             # even though Hearth's Playwright MCP server is installed and configured.
-            use_tools = backend in (kobold, fastflowlm, sglang, lemonade, lms)
+            use_tools = backend in (kobold, fastflowlm, sglang, zen, lemonade, lms)
             tools_list = None
             if use_tools:
                 try:
@@ -5497,6 +5570,7 @@ def _restore_default_model() -> None:
         "lemonade": lemonade,
         "vllm": vllm,
         "sglang": sglang,
+        "opencode": zen,
         "kobold": kobold,
         "fastflowlm": fastflowlm,
     }
@@ -5526,6 +5600,11 @@ def _restore_default_model() -> None:
             # A remote SGLang deployment does not consume this machine's resources;
             # selecting it must not evict a useful local model during app startup.
             sglang.verify_model(model)
+            print(f"Startup model: verified {backend_name}/{model}", flush=True)
+            return
+        if backend is zen:
+            # Same remote contract as SGLang: opencode.ai models run off-host.
+            zen.verify_model(model)
             print(f"Startup model: verified {backend_name}/{model}", flush=True)
             return
         with _reasoning_model_load_lock:

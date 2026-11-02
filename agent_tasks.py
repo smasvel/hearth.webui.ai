@@ -520,7 +520,7 @@ class Manager:
             model == {'providerID': m['providerID'], 'id': m['id']}
             for m in self.client.models() if m.get('usable', True)
         )):
-            raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
+            raise ValueError('Choose a configured OpenCode model with at least 16K context for this worker (a hosted opencode.ai model works too).')
         model = {'providerID': model['providerID'], 'id': model['id']}
         cycles = values.get('max_cycles', 50)
         opencode_steps = values.get('opencode_steps', 40)
@@ -841,7 +841,7 @@ class Manager:
                     model == {'providerID': m['providerID'], 'id': m['id']}
                     for m in self.client.models() if m.get('usable', True)
                 ):
-                    raise ValueError('Choose a configured local OpenCode model with at least 16K context for this worker.')
+                    raise ValueError('Choose a configured OpenCode model with at least 16K context for this worker (a hosted opencode.ai model works too).')
                 if model == job.get('model'):
                     return copy.deepcopy(job)
                 old_model = job.get('model')

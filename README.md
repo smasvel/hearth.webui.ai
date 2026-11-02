@@ -723,8 +723,16 @@ Yes. Hearth provides browser-based assistant chat with local models, saved histo
 memory retrieval, and optional search, voice, and generation integrations. Feature
 availability depends on which supporting components you configure.
 
+Hearth can also use hosted models from opencode.ai: paste your opencode.ai API key in
+**Settings** and models are discovered from the account and served on a per-request,
+pay-as-you-go basis (loaded/unload state doesn't apply; download and deletion stay
+with the opencode.ai account). Key storage is encrypted in PostgreSQL. They behave
+like remote models elsewhere: chat, agent assignments, and model tests accept them,
+and the agentic framework lists provider `opencode` models with their advertised
+context windows.
+
 Hearth chat can also call its configured Playwright browser and persistent Python MCP
-tools when using KoboldCPP, FastFlowLM, SGLang, Lemonade, or LM Studio. Tool-enabled
+tools when using KoboldCPP, FastFlowLM, SGLang, opencode.ai, Lemonade, or LM Studio. Tool-enabled
 requests pass through Hearth's backend compatibility shims; the browser MCP server
 starts on first use. Chat offers a focused set of Playwright navigation, inspection,
 and interaction tools to keep prompt overhead manageable on local models. FastFlowLM
@@ -897,7 +905,9 @@ will need to sign in again.
 
 Administrators manage accounts and roles in **Users**, and backend URLs, credentials,
 connection tests, and context controls in **Settings**. Backend URLs and API keys are
-stored in PostgreSQL; API keys are encrypted at rest. Legacy backend entries in `.env`
+stored in PostgreSQL; API keys are encrypted at rest. The opencode.ai backend is configured
+with just the API key (and optional base-url override); the Settings panel's **Test
+connection** verifies the key against the opencode.ai model list. Legacy backend entries in `.env`
 are migrated at startup and removed from that file. Regular users can chat and
 select already-loaded models. Model management, downloads, evaluation, metrics,
 and agent supervision require an administrator.

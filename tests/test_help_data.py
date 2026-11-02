@@ -98,5 +98,43 @@ class HelpDataCacheTests(unittest.TestCase):
         self.assertEqual(help_data._help_cache.get("data"), cached)
 
 
+class OpenCodeConsoleConfigTests(unittest.TestCase):
+    @patch.object(help_data.settings_store, "get", return_value=None)
+    @patch.object(help_data.zen, "api_key", return_value="")
+    def test_console_providers_absent_without_a_key(self, _key, _setting):
+        cfg = json.loads(help_data.build_opencode_config(
+            "100.1.2.3", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["Muse"]}, {},
+            ctx_by_model={("lemonade", "Muse"): 65536}))
+        self.assertNotIn("opencode", cfg["provider"])
+
+    @patch.object(help_data.settings_store, "get", return_value=None)
+    @patch.object(help_data.zen, "list_models", return_value=[
+        {"id": "opencode/glm-5.3", "name": "GLM 5.3",
+         "configured_context_length": 200000, "output_tokens_limit": 32768}])
+    @patch.object(help_data.zen, "api_key", return_value="test-key")
+    def test_console_provider_embeds_key_windows_and_output(self, _key, _models, _setting):
+        cfg = json.loads(help_data.build_opencode_config(
+            "100.1.2.3", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": []}, {}))
+        provider = cfg["provider"]["opencode"]
+        self.assertEqual(provider["options"]["baseURL"],
+                         "https://opencode.ai/inference/openai/v1")
+        self.assertEqual(provider["options"]["apiKey"], "test-key")
+        self.assertEqual(provider["models"]["glm-5.3"]["limit"],
+                         {"context": 200000, "output": 32768})
+
+    @patch.object(help_data.settings_store, "get", return_value=None)
+    @patch.object(help_data.zen, "list_models",
+                  return_value=[{"id": "opencode/x", "configured_context_length": None}])
+    @patch.object(help_data.zen, "api_key", return_value="test-key")
+    def test_console_unknown_context_falls_back_to_safe_floor(self, _key, _models, _setting):
+        cfg = json.loads(help_data.build_opencode_config(
+            "100.1.2.3", "test-key", help_data._DEFAULT_PORTS, {}, {}))
+        entry = cfg["provider"]["opencode"]["models"]["x"]
+        self.assertEqual(entry["limit"]["context"], 65536)
+        self.assertLessEqual(entry["limit"]["output"], 65536 // 4)
+
+
 if __name__ == "__main__":
     unittest.main()

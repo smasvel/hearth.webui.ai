@@ -247,8 +247,15 @@ search index is deleted with the assignment or user. If embeddings are unavailab
 Hearth keeps notes available for exact-term search and retries semantic indexing later.
 No separate service or setup step is required.
 
+Hearth can also run models from opencode.ai: supply your opencode.ai API key from
+https://opencode.ai/console in Settings, then Test connection verifies it and the
+model inventory appears on the Models page, chat, agent assignments, and model tests.
+Models are remote and externally managed; the key is stored encrypted in PostgreSQL
+and only sent to opencode.ai's inference endpoint. Deletion and download controls stay
+with the opencode.ai console.
+
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
-tools on KoboldCPP, FastFlowLM, SGLang, Lemonade, and LM Studio. The MCP servers
+tools on KoboldCPP, FastFlowLM, SGLang, opencode.ai, Lemonade, and LM Studio. The MCP servers
 start the first time chat needs them. Tool-enabled requests use Hearth's local
 backend compatibility shims; keep the `lemonade-guard-shim`, `lmstudio-shim`, and
 `flm-tool-shim` user services running for those backends. Ask the model to use the

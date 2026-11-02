@@ -98,6 +98,7 @@
     { key: "lemonade", label: "Ryzen AI (NPU)" },
     { key: "vllm", label: "vLLM" },
     { key: "sglang", label: "SGLang (remote)" },
+    { key: "opencode", label: "opencode.ai (remote)" },
     { key: "kobold", label: "KoboldCPP" },
     { key: "fastflowlm", label: "FastFlowLM (NPU)" },
     { key: "comfyui", label: "ComfyUI — Image & Video" },

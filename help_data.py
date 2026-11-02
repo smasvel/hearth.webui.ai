@@ -32,6 +32,7 @@ import lemonade_client as lemonade
 import vllm_client as vllm
 import kobold_client as kobold
 import fastflowlm_client as fastflowlm
+import opencode_client as zen
 import settings_store
 import model_metadata_store
 import flm_context
@@ -354,7 +355,7 @@ def _all_models() -> list[dict]:
     # Broad excepts on purpose: this feeds a page render, so a backend being down (or a
     # client raising something unexpected) must degrade to "that backend's models are
     # absent", never a 500 on the whole page.
-    for client, name in ((lms, "lmstudio"), (lemonade, "lemonade"), (vllm, "vllm"), (kobold, "kobold"), (fastflowlm, "fastflowlm")):
+    for client, name in ((lms, "lmstudio"), (lemonade, "lemonade"), (vllm, "vllm"), (kobold, "kobold"), (fastflowlm, "fastflowlm"), (zen, "opencode")):
         try:
             for m in client.list_models():
                 m["backend"] = name
@@ -497,6 +498,36 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
             "options": options,
             "models": models,
         }
+    # OpenCode Console (opencode.ai) is remote and paid per request — it is deliberately
+    # NOT routed through Caddy like the LAN backends and never auto-selected as the
+    # default model. The admin's Console key goes directly into the provider block so a
+    # generated config works as-is on the desktop and inside agent containers; the agentic
+    # framework re-points the baseURL at its own per-task relay with the same key.
+    console_key = zen.api_key()
+    if console_key:
+        console_models = {}
+        for item in zen.list_models():
+            context = item.get("configured_context_length") or item.get("max_context_length")
+            if not (isinstance(context, int) and context > 0):
+                # Conservative floor: Console models are typically >>65K; the model-list
+                # endpoint normally advertises the real limit (used verbatim when present).
+                context = 65536
+            output = item.get("output_tokens_limit")
+            entry = {
+                "name": f"{item.get('name') or item['id']} (opencode.ai)",
+                "limit": {"context": context, "output": max(2048, min(output or 16384, context // 4))},
+            }
+            console_models[item["id"].removeprefix("opencode/")] = entry
+        if console_models:
+            provider["opencode"] = {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "opencode.ai (hosted models)",
+                "options": {
+                    "baseURL": zen.base_url().rstrip("/") + "/v1",
+                    "apiKey": console_key,
+                },
+                "models": console_models,
+            }
     # Bound the administrator's compaction settings to the configured model windows
     # below; OpenCode's default retained history can exceed an entire small window.
     compaction = compaction_settings()

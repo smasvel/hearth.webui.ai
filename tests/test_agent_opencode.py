@@ -75,6 +75,19 @@ class OpenCodeAdapterTests(unittest.TestCase):
             model=client.models()[0]
         self.assertFalse(model['usable']);self.assertEqual(model['context'],8192)
 
+    def test_opencode_console_models_are_valid_agent_models(self):
+        """A hosted opencode.ai provider in opencode.jsonc must appear in the agent model
+        picker with its own advertised context window."""
+        client = OpenCode()
+        data = {'data': [{'providerID': 'opencode', 'id': 'glm-5.3', 'name': 'GLM 5.3',
+                          'limit': {'context': 200000}}]}
+        with patch.object(client, 'call', return_value=data):
+            models = client.models()
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0]['providerID'], 'opencode')
+        self.assertTrue(models[0]['usable'])
+        self.assertEqual(models[0]['context'], 200000)
+
 
 class ContainerRecoveryTests(unittest.TestCase):
     def test_resume_restores_durable_workspace_to_existing_container(self):

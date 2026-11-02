@@ -150,6 +150,28 @@
           </div>
 
           <div class="console-card span-all">
+            <h2>opencode.ai (remote hosted models)</h2>
+            <p class="hint">
+              Connects Hearth to the opencode.ai hosted model catalog (GPT/Claude/Gemini/GLM and
+              more) through its OpenAI-compatible inference endpoint with your opencode.ai
+              API key. Models are discovered automatically; download and deletion stay
+              with the opencode.ai account. The key is stored encrypted in PostgreSQL and
+              only sent to opencode.ai. Get a key at
+              <code class="inline-code">https://opencode.ai/console</code>.
+            </p>
+            <div class="download-form">
+              <input id="settings-opencode-url" class="panel-input" type="text"
+                     placeholder="https://opencode.ai/inference/openai (optional override)" autocomplete="off" />
+              <input id="settings-opencode-key" class="panel-input" type="password"
+                     placeholder="Paste your opencode.ai API key" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-opencode" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-opencode-result" class="hint"></p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
             <h2>KoboldCPP</h2>
             <p class="hint">
               A llama.cpp GGUF server that serves one model at a time. Like vLLM it has no runtime

@@ -24,6 +24,7 @@ _LEGACY_ENV_SETTINGS = {
     'SGLANG_BASE_URL': 'sglang_base_url', 'SGLANG_API_KEY': 'sglang_api_key',
     'KOBOLD_BASE_URL': 'kobold_base_url', 'KOBOLD_API_KEY': 'kobold_api_key',
     'FASTFLOWLM_BASE_URL': 'fastflowlm_base_url', 'FASTFLOWLM_API_KEY': 'fastflowlm_api_key',
+    'OPENCODE_API_BASE_URL': 'opencode_api_base_url', 'OPENCODE_API_KEY': 'opencode_api_key',
 }
 _SECRET_KEYS = {key for key in _LEGACY_ENV_SETTINGS.values() if key.endswith('_api_key')}
 

@@ -1,5 +1,5 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", sglang: "SGLang", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
   const statCpuEl = document.getElementById("stat-cpu");
