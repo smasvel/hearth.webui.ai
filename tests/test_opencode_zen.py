@@ -89,6 +89,17 @@ class OpenCodeClientTests(unittest.TestCase):
         self.assertEqual(lines[-1], "data: [DONE]")
         self.assertEqual(post.return_value.chunk_size, 1)
 
+    @patch.object(zen.settings_store, "get", side_effect=lambda key: "go" if key == "opencode_api_plan" else None)
+    def test_go_plan_routes_to_dedicated_endpoints(self, _setting):
+        self.assertEqual(zen.plan(), "go")
+        self.assertEqual(zen.base_url(), "https://opencode.ai/inference/go/openai")
+        self.assertEqual(zen._models_url(), "https://opencode.ai/inference/go/v1/models")
+
+    @patch.object(zen.settings_store, "get", side_effect=lambda key:
+        "https://opencode.ai/inference/openai" if key == "opencode_api_base_url" else None)
+    def test_base_override_wins_over_plan(self, _setting):
+        self.assertEqual(zen.base_url(), "https://opencode.ai/inference/openai")
+
     def test_ownership_requires_namespace(self):
         self.assertTrue(zen.owns_model("opencode/glm-5.3"))
         self.assertFalse(zen.owns_model("glm-5.3"))
@@ -102,7 +113,8 @@ class OpenCodeClientTests(unittest.TestCase):
     def test_402_error_points_at_credits_and_free_models(self):
         response = Mock(status_code=402, text="", json=Mock(side_effect=ValueError()))
         message = zen._http_error(response)
-        self.assertIn("out of credits", message)
+        self.assertIn("no credit available", message)
+        self.assertIn("OpenCode Go", message)
         self.assertIn("https://opencode.ai/console", message)
         self.assertIn("-free", message)
 

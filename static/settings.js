@@ -32,6 +32,7 @@
   const settingsVllmUrlEl = document.getElementById("settings-vllm-url");
   const settingsVllmKeyEl = document.getElementById("settings-vllm-key");
   const settingsOpencodeUrlEl = document.getElementById("settings-opencode-url");
+  const settingsOpencodePlanEl = document.getElementById("settings-opencode-plan");
   const settingsOpencodeKeyEl = document.getElementById("settings-opencode-key");
   const settingsKoboldUrlEl = document.getElementById("settings-kobold-url");
   const settingsKoboldKeyEl = document.getElementById("settings-kobold-key");
@@ -164,6 +165,7 @@
     settingsVllmUrlEl.value = data.vllm_base_url || "";
     settingsVllmKeyEl.value = data.vllm_api_key || "";
     settingsOpencodeUrlEl.value = data.opencode_api_base_url || "";
+    settingsOpencodePlanEl.value = data.opencode_api_plan === "go" ? "go" : "payg";
     settingsOpencodeKeyEl.value = data.opencode_api_key || "";
     settingsKoboldUrlEl.value = data.kobold_base_url || "";
     settingsKoboldKeyEl.value = data.kobold_api_key || "";
@@ -254,6 +256,7 @@
           lemonade_api_key: settingsLemonadeKeyEl.value.trim(),
           vllm_base_url: settingsVllmUrlEl.value.trim(),
           vllm_api_key: settingsVllmKeyEl.value.trim(),
+          opencode_api_plan: settingsOpencodePlanEl.value,
           opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
           // only send a non-empty key; sending the empty field must not erase
           // a stored credential (explicit removal uses opencode_api_clear)
@@ -370,6 +373,7 @@
       await runTest(btn, settingsTestOpencodeResultEl, "opencode", {
         base_url: settingsOpencodeUrlEl.value.trim(),
         api_key: settingsOpencodeKeyEl.value.trim(),
+        plan: settingsOpencodePlanEl.value,
       });
     } finally {
       btn.disabled = false;

@@ -724,8 +724,10 @@ memory retrieval, and optional search, voice, and generation integrations. Featu
 availability depends on which supporting components you configure.
 
 Hearth can also use hosted models from opencode.ai: paste your opencode.ai API key in
-**Settings** and models are discovered from the account and served on a per-request,
-pay-as-you-go basis (loaded/unload state doesn't apply; download and deletion stay
+**Settings** and models are discovered from the account. Choose the card's account
+plan — Pay-as-you-go (Console credits) or OpenCode Go (subscription, which uses
+opencode.ai's dedicated /inference/go endpoint) — and models are served on an
+account-state basis (loaded/unload state doesn't apply; download and deletion stay
 with the opencode.ai account). Key storage is encrypted in PostgreSQL; **Test
 connection saves the key after verifying it**, a re-save from a blank field never
 wipes it, and removal is explicit via the card's **Remove stored key** button. They behave

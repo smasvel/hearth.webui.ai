@@ -24,22 +24,53 @@ class OpenCodeError(RuntimeError):
     pass
 
 
-_DEFAULT_BASE_URL = "https://opencode.ai/inference/openai"
+_DEFAULT_ROOT_URL = "https://opencode.ai/inference"
+_DEFAULT_BASE_URL = _DEFAULT_ROOT_URL + "/openai"
 _PREFIX = "opencode/"
+_USER_AGENT = "Hearth-local-webui/1.0 (OpenCode Console client)"
+
+
+def plan() -> str:
+    """Which billing surface requests hit: 'payg' (per-credit pay-as-you-go Console,
+    base …/inference/openai) or 'go' (OpenCode Go subscription, base …/inference/go/openai).
+    With the wrong plan selected, Go subscribers see HTTP 402 because pay-as-you-go
+    falls back to their unused credit balance."""
+    value = (settings_store.get("opencode_api_plan") or "payg").strip().lower()
+    return "go" if value == "go" else "payg"
+
+
+def _root_url() -> str:
+    """The …/inference root. An admin's explicit base-URL override wins and is
+    honored as-is (advanced use only); otherwise plan chooses the product path."""
+    override = (settings_store.get("opencode_api_base_url") or "").rstrip("/")
+    if override:
+        return override
+    default_root = _DEFAULT_ROOT_URL
+    if plan() == "go":
+        return default_root + "/go/openai"
+    return default_root + "/openai"
 
 
 def base_url() -> str:
-    return (settings_store.get("opencode_api_base_url") or _DEFAULT_BASE_URL).rstrip("/")
+    override = (settings_store.get("opencode_api_base_url") or "").rstrip("/")
+    if override:
+        return override
+    return _root_url()
 
 
 def _models_url() -> str:
     """Model-list endpoint derived from the base: opencode.ai/inference/openai ->
-    opencode.ai/inference/v1/models (the documented discovery endpoint)."""
-    base = base_url()
-    marker = "/inference"
-    position = base.find(marker)
-    root = base if position < 0 else base[:position + len(marker)]
-    return root + "/v1/models"
+    opencode.ai/inference/v1/models, or with the Go plan …/inference/go/v1/models
+    (the documented discovery endpoints)."""
+    override = (settings_store.get("opencode_api_base_url") or "").rstrip("/")
+    if override:
+        base = override
+        marker = "/inference"
+        position = base.find(marker)
+        root = base if position < 0 else base[:position + len(marker)]
+        return root + "/v1/models"
+    root = _DEFAULT_ROOT_URL
+    return root + ("/go/v1/models" if plan() == "go" else "/v1/models")
 
 
 def api_key() -> str:
@@ -48,7 +79,10 @@ def api_key() -> str:
 
 def _headers() -> dict[str, str]:
     key = api_key()
-    return {"Authorization": f"Bearer {key}"} if key else {}
+    headers = {"User-Agent": _USER_AGENT}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def _served_id(model: str) -> str:
@@ -201,7 +235,9 @@ def _http_error(response) -> str:
         return (f"opencode.ai rejected the request with HTTP {response.status_code} "
                 f"(check the API key in Settings){suffix}")
     if response.status_code == 402:
-        return ("This opencode.ai account is out of credits (HTTP 402). Add credits at "
-                "https://opencode.ai/console, or pick a free opencode.ai model "
+        return ("This opencode.ai account has no credit available (HTTP 402). If you are "
+                "subscribed to OpenCode Go, set the account plan to OpenCode Go in "
+                "Settings (Go traffic uses a dedicated endpoint); otherwise add credits "
+                "at https://opencode.ai/console or pick a free opencode.ai model "
                 "(the ids ending in -free).")
     return f"opencode.ai request failed with HTTP {response.status_code}{suffix}"

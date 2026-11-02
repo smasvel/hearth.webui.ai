@@ -143,8 +143,15 @@
               <code class="inline-code">https://opencode.ai/console</code>.
             </p>
             <div class="download-form">
+              <label style="display:flex;flex-direction:column;gap:4px">
+                <span class="hint">Account plan</span>
+                <select id="settings-opencode-plan" class="panel-input" aria-label="opencode.ai account plan">
+                  <option value="payg">Pay-as-you-go (Console credits)</option>
+                  <option value="go">OpenCode Go (subscription)</option>
+                </select>
+              </label>
               <input id="settings-opencode-url" class="panel-input" type="text"
-                     placeholder="https://opencode.ai/inference/openai (optional override)" autocomplete="off" />
+                     placeholder="https://opencode.ai/inference/openai (base-URL override, advanced)" autocomplete="off" />
               <input id="settings-opencode-key" class="panel-input" type="password"
                      placeholder="Paste your opencode.ai API key" autocomplete="off" spellcheck="false" />
               <div class="download-row">

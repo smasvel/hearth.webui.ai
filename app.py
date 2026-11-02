@@ -3866,7 +3866,7 @@ def _test_lemonade(base_url: str, api_key: str | None) -> tuple[bool, str]:
     return True, f"Connected — {'loaded: ' + loaded if loaded else 'no model currently loaded'}."
 
 
-def _test_opencode(base_url: str, api_key: str | None) -> tuple[bool, str]:
+def _test_opencode(base_url: str, api_key: str | None, plan: str = "payg") -> tuple[bool, str]:
     """Connection test for the opencode.ai backend: verify the key is accepted by
     fetching the opencode.ai model list. The supplied (unsaved) values are tested first so
     the admin sees the result of what they typed."""
@@ -3877,7 +3877,7 @@ def _test_opencode(base_url: str, api_key: str | None) -> tuple[bool, str]:
     marker = "/inference"
     position = models_url.find(marker)
     root = models_url if position < 0 else models_url[:position + len(marker)]
-    models_url = root + "/v1/models"
+    models_url = root + ("/go/v1/models" if plan == "go" else "/v1/models")
     try:
         response = requests.get(models_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
         if response.status_code in (401, 403):
@@ -4005,9 +4005,13 @@ def api_test_settings():
             body.get("api_key") or vllm.api_key(),
         )
     elif target == "opencode":
+        requested_plan = (body.get("plan") or "").strip().lower()
+        if requested_plan not in ("", "payg", "go"):
+            return jsonify({"error": "opencode.ai plan must be 'payg' or 'go'"}), 400
         ok, message = _test_opencode(
             (body.get("base_url") or "").strip() or zen.base_url(),
             body.get("api_key") or zen.api_key(),
+            requested_plan or zen.plan(),
         )
     elif target == "kobold":
         ok, message = _test_kobold(
@@ -4079,7 +4083,8 @@ def _settings_snapshot() -> dict:
         "vllm_base_url": vllm.base_url(),
         "vllm_api_key": vllm.api_key() or "",
         "opencode_api_key": zen.api_key() or "",
-        "opencode_api_base_url": zen.base_url(),
+        "opencode_api_base_url": (settings_store.get("opencode_api_base_url") or ""),
+        "opencode_api_plan": zen.plan(),
         "kobold_base_url": kobold.base_url(),
         "kobold_api_key": kobold.api_key() or "",
         # GPU offload (Vulkan) + speculative decoding tuning (2026-07-27) - see
@@ -4144,7 +4149,7 @@ def api_update_settings():
         "lmstudio_base_url", "lmstudio_api_key",
         "lemonade_base_url", "lemonade_api_key",
         "vllm_base_url", "vllm_api_key",
-        "opencode_api_key", "opencode_api_base_url",
+        "opencode_api_key", "opencode_api_base_url", "opencode_api_plan",
         "kobold_base_url", "kobold_api_key",
         "fastflowlm_base_url", "fastflowlm_api_key",
         "lan_default_model", "tailscale_ip_override",

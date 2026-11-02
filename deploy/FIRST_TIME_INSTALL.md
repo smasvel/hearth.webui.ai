@@ -248,7 +248,9 @@ Hearth keeps notes available for exact-term search and retries semantic indexing
 No separate service or setup step is required.
 
 Hearth can also run models from opencode.ai: supply your opencode.ai API key from
-https://opencode.ai/console in Settings, then Test connection verifies it and the
+https://opencode.ai/console in Settings, pick the account plan (Pay-as-you-go, or
+OpenCode Go when you have that subscription — it uses opencode.ai's dedicated
+/inference/go endpoint), then Test connection verifies it and the
 model inventory appears on the Models page, chat, agent assignments, and model tests.
 Models are remote and externally managed; the key is stored encrypted in PostgreSQL
 and only sent to opencode.ai's inference endpoint. Test connection saves a verified
