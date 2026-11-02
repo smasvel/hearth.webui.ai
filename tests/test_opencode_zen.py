@@ -99,6 +99,17 @@ class OpenCodeClientTests(unittest.TestCase):
             zen.verify_model("opencode/glm-5.3")
         self.assertIn("API key", str(ctx.exception))
 
+    def test_402_error_points_at_credits_and_free_models(self):
+        response = Mock(status_code=402, text="", json=Mock(side_effect=ValueError()))
+        message = zen._http_error(response)
+        self.assertIn("out of credits", message)
+        self.assertIn("https://opencode.ai/console", message)
+        self.assertIn("-free", message)
+
+    def test_401_error_points_at_the_key(self):
+        response = Mock(status_code=401, text="", json=Mock(side_effect=ValueError()))
+        self.assertIn("check the API key in Settings", zen._http_error(response))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,7 +34,7 @@ def base_url() -> str:
 
 def _models_url() -> str:
     """Model-list endpoint derived from the base: opencode.ai/inference/openai ->
-    opencode.ai/inference/v1/models (the documented Console discovery endpoint)."""
+    opencode.ai/inference/v1/models (the documented discovery endpoint)."""
     base = base_url()
     marker = "/inference"
     position = base.find(marker)
@@ -60,7 +60,7 @@ def owns_model(model: str) -> bool:
 
 
 def _context_chain(item: dict):
-    """Console model entries carry a limit block ({context, output}); fall back to
+    """opencode.ai model entries carry a limit block ({context, output}); fall back to
     the flat keys OpenAI-compatible deployments return."""
     if not isinstance(item, dict):
         return None, None
@@ -133,11 +133,11 @@ def list_models() -> list[dict]:
 
 def verify_model(model: str) -> None:
     if not owns_model(model):
-        raise OpenCodeError(f"Not an OpenCode Console model id: {model}")
+        raise OpenCodeError(f"Not an opencode.ai model id: {model}")
     if not api_key():
         raise OpenCodeError(
-            "No OpenCode Console API key is configured. "
-            "Set it in Settings before selecting a Console model.")
+            "No opencode.ai API key is configured. "
+            "Set it in Settings before selecting an opencode.ai model.")
     if model not in {item["id"] for item in list_models()}:
         raise OpenCodeError(
             f"{model} is not currently served by opencode.ai. "
@@ -175,7 +175,7 @@ def chat_stream(
             json=model_test_profiles.apply(payload, "opencode"),
             headers=_headers(),
             stream=True,
-            # Console is a cloud gateway far beyond the LAN; a slow first token
+            # opencode.ai is a cloud gateway far beyond the LAN; a slow first token
             # from a distant provider must survive long enough to stream at all.
             timeout=(15, 1800),
         ) as response:
@@ -200,4 +200,8 @@ def _http_error(response) -> str:
     if response.status_code in (401, 403):
         return (f"opencode.ai rejected the request with HTTP {response.status_code} "
                 f"(check the API key in Settings){suffix}")
+    if response.status_code == 402:
+        return ("This opencode.ai account is out of credits (HTTP 402). Add credits at "
+                "https://opencode.ai/console, or pick a free opencode.ai model "
+                "(the ids ending in -free).")
     return f"opencode.ai request failed with HTTP {response.status_code}{suffix}"
