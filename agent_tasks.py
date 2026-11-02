@@ -504,7 +504,22 @@ class Manager:
         output.seek(0)
         return output, 'project'
 
-    def _normalize_assignment(self, values, existing_model=None):
+    def _normalize_skills(self, values, owner):
+        """Validate the assignment's selected skill names against the owner's library."""
+        skills = values.get('skills', [])
+        if not isinstance(skills, list) or any(not isinstance(item, str) for item in skills):
+            raise ValueError('Skills must be a list of skill names.')
+        skills = [item.strip() for item in skills if item.strip()]
+        if len(skills) > 20:
+            raise ValueError('An assignment can use at most 20 skills.')
+        if skills:
+            known = {skill['name'] for skill in agent_store.list_skills(owner)}
+            missing = [name for name in skills if name not in known]
+            if missing:
+                raise ValueError('Choose skills from your Skills library; not found: '+', '.join(missing[:5]))
+        return list(dict.fromkeys(skills))
+
+    def _normalize_assignment(self, values, existing_model=None, owner=None):
         title, goal = str(values.get('title', '')).strip(), str(values.get('goal', '')).strip()
         if 'project' in values or 'create_project' in values:
             raise ValueError('Project path is managed by the server and cannot be supplied.')
@@ -553,6 +568,7 @@ class Manager:
         enable_thinking = values.get('enable_thinking', True)
         if type(enable_thinking) is not bool:
             raise ValueError('Choose whether model thinking is enabled.')
+        skills = self._normalize_skills(values, owner) if owner is not None else []
         return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
                 'opencode_steps': opencode_steps,
                 'verification_timeout': timeout, 'criteria': criteria,
@@ -560,10 +576,10 @@ class Manager:
                 'memory_notes': memory_notes, 'html_requirements': html_requirements,
                 'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode,
                 'enable_thinking': enable_thinking, 'result_label': result_label,
-                'result_platform': result_platform}
+                'result_platform': result_platform, 'skills': skills}
 
     def create(self, values, owner):
-        assignment = self._normalize_assignment(values)
+        assignment = self._normalize_assignment(values, owner=owner)
         self.client.ensure_agent()
         with self.lock:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
@@ -927,7 +943,8 @@ class Manager:
         """Save edited task settings without starting another run."""
         with self.lock:
             existing_model = self.jobs[key].get('model')
-        assignment = self._normalize_assignment(values, existing_model=existing_model)
+            owner = self.jobs[key].get('owner')
+        assignment = self._normalize_assignment(values, existing_model=existing_model, owner=owner)
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]

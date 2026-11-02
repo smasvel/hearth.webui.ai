@@ -173,6 +173,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
+| Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
 | Web research | Web search and page retrieval, optional Chromium scraping, Playwright browser actions, and searchable AI browser history |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
@@ -600,6 +601,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
 | Hosted opencode.ai models | Free-tier and subscription (OpenCode Go) model access embedded in chat, agent assignments, and model tests; plan selector, connection test, encrypted key storage, and per-conversation session routing | Settings → opencode.ai |
 | Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Agent skills | Per-user skill library with add/edit/delete, file upload, URL import, and SKILL.md export; selected skills install into the agent's container and are surfaced to the agent | Agents → Skills |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
 | Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
@@ -655,7 +657,20 @@ for that model, backend configuration, and run. See
 ## Agentic AI and local coding agents
 
 Hearth's **Agents** workspace supervises real OpenCode sessions against a local
-project directory. Pausing or stopping an assignment closes the agent container's
+project directory. The **Skills** tab in the same workspace manages a private,
+per-account skill library for those agents: create a skill with a name, a short
+description, and Markdown instructions; upload a `.md`/`.txt` file or a `.zip`
+archive of `SKILL.md` packs; or download a skill from an `http(s)` URL. Skills can
+be edited, exported back out as `SKILL.md` files, and deleted. When creating or
+editing an assignment, select skills under **More options** to install them into
+that agent's container as OpenCode skills; the generated agent configuration also
+reminds the model to read the matching `SKILL.md` when the work is relevant.
+Changing an assignment's skill selection starts a fresh container on its next run
+so the installed skills always match the saved selection. Skill imports honor the
+file's own frontmatter `name`/`description` when present, are capped at 5 MB per
+import and 20 skills per zip, and colliding names are imported under a numbered
+suffix. Skills are stored in PostgreSQL and are private to each account.
+Pausing or stopping an assignment closes the agent container's
 active model response, including a response still buffered for tool parsing.
 After a model request finishes, Hearth starts the OpenCode handoff timer from the
 request's completion time. A stale pending tool cannot keep an assignment waiting

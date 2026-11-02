@@ -18,7 +18,7 @@
 </nav>
 <span class="hint" style="margin-left:auto">{{ username }}</span></header>
 <div class="console-body agent-app" data-page="{{ page }}" data-task-id="{{ initial_task_id }}">
-<nav class="agent-nav" aria-label="Agent pages"><a class="agent-nav-link {{ 'active' if page == 'list' else '' }}" href="{{ url_for('agents_page') }}"><span>◷</span>Assignments</a><a class="agent-nav-link {{ 'active' if page == 'new' else '' }}" href="{{ url_for('agents_new_page') }}"><span>＋</span>New agent</a><a class="agent-nav-link {{ 'active' if page == 'schedules' else '' }}" href="{{ url_for('agents_schedules_page') }}"><span>↻</span>Schedules</a></nav>
+<nav class="agent-nav" aria-label="Agent pages"><a class="agent-nav-link {{ 'active' if page == 'list' else '' }}" href="{{ url_for('agents_page') }}"><span>◷</span>Assignments</a><a class="agent-nav-link {{ 'active' if page == 'new' else '' }}" href="{{ url_for('agents_new_page') }}"><span>＋</span>New agent</a><a class="agent-nav-link {{ 'active' if page == 'skills' else '' }}" href="{{ url_for('agents_skills_page') }}"><span>◈</span>Skills</a><a class="agent-nav-link {{ 'active' if page == 'schedules' else '' }}" href="{{ url_for('agents_schedules_page') }}"><span>↻</span>Schedules</a></nav>
 {% if page == 'list' %}<header class="agent-page-heading"><div><p class="agent-eyebrow">MY AGENTS</p><h1>What are you working on?</h1><p class="hint">Your agents keep working and report back here.</p></div><a class="panel-btn agent-primary-link" href="{{ url_for('agents_new_page') }}">＋ Start a task</a></header>
 <section class="agent-list-card"><div class="agent-list-heading"><h2>Recent tasks</h2><span class="hint" id="agent-count"></span></div><div id="agent-list" class="agent-task-list"></div></section>
 {% elif page == 'new' %}<header class="agent-page-heading"><div><p class="agent-eyebrow">LET’S GET STARTED</p><h1>What should your agent do?</h1><p class="hint">Start with the result you want. You can give more guidance as the work progresses.</p></div></header>
@@ -31,6 +31,7 @@
 <label>AI model<select id="agent-model" class="panel-input" required></select></label>
 <label class="agent-checkbox"><input name="enable_thinking" type="checkbox" checked /> Enable model thinking (extra reasoning)</label>
 <label>How should we know it’s done?<textarea name="criteria" class="panel-input" rows="3" maxlength="10000" placeholder="Observable checks the agent must satisfy."></textarea></label>
+<fieldset class="agent-skill-fieldset"><legend class="hint">Skills to install (from your Skills library)</legend><div id="agent-skill-picker" class="model-test-controls"></div></fieldset>
 <label>Result label<input name="result_label" class="panel-input" maxlength="120" placeholder="For example: Project preview" /></label>
 <label>Platform / output type<select name="result_platform" class="panel-input"><option value="web" selected>Web page (HTML)</option><option value="report">JSON results (HTML view)</option><option value="document">Document</option><option value="general">General result</option></select></label>
 <label>Check the result with a command (optional)<input name="verification_command" class="panel-input" placeholder="For example: npm test" maxlength="4000" /></label>
@@ -40,6 +41,22 @@
 <p class="hint agent-privacy-note">Your task and project files are private to your account. You can share a completed task later.</p>
 <button class="panel-btn agent-submit" type="submit" id="agent-assign">Start agent</button></form>
 <p id="agent-create-status" role="status"></p></section>
+{% elif page == 'skills' %}<header class="agent-page-heading"><div><p class="agent-eyebrow">SKILL LIBRARY</p><h1>Agent skills</h1><p class="hint">Reusable instruction packs installed into your agents’ containers as SKILL.md files. Add one below, upload a file, or download one from a URL.</p></div></header>
+<section class="console-card agent-form-card"><details class="agent-schedule-create" id="agent-skill-create"><summary class="panel-btn">＋ Add a skill</summary>
+<form id="agent-skill-form" class="agent-form">
+<label>Skill name<input name="name" class="panel-input" required maxlength="80" placeholder="Code review checklist" /></label>
+<label>Short description<input name="description" class="panel-input" maxlength="300" placeholder="What this skill helps the agent do" /></label>
+<label>Skill instructions (Markdown)<textarea name="body" class="panel-input" rows="10" required maxlength="200000" placeholder="Describe the workflow, steps, and conventions the agent must follow when this skill applies."></textarea></label>
+<div class="agent-controls"><button class="panel-btn" type="submit" id="agent-skill-save">Add skill</button><button class="panel-btn" type="button" id="agent-skill-cancel" hidden>Cancel edit</button></div></form>
+<p id="agent-skill-status" role="status"></p></details>
+<div class="agent-form-grid">
+<form id="agent-skill-upload" class="agent-form"><label>Upload a skill file (.md, .txt, or a .zip with SKILL.md files)<input type="file" name="file" accept=".md,.markdown,.txt,.zip" required /></label><button class="panel-btn" type="submit">Upload skill</button></form>
+<form id="agent-skill-import" class="agent-form"><label>Download a skill from a URL<input name="url" class="panel-input" type="url" required placeholder="https://example.com/skills/review/SKILL.md" /></label><button class="panel-btn" type="submit">Download skill</button></form>
+</div>
+<p id="agent-skill-import-status" role="status"></p>
+<p class="hint">Uploaded and downloaded skills become SKILL.md files using the file’s own frontmatter name and description when present. Select skills when creating or editing an assignment to install them in that agent’s container.</p>
+</section>
+<section class="agent-list-card"><div class="agent-list-heading"><h2>Your skills</h2><span class="hint" id="agent-skill-count"></span></div><div id="agent-skill-list" class="agent-task-list"></div></section>
 {% elif page == 'schedules' %}<header class="agent-page-heading"><div><p class="agent-eyebrow">AUTOMATION</p><h1>Recurring schedules</h1><p class="hint">Run a saved agent task on a repeating schedule.</p></div></header>
 <section class="console-card agent-form-card"><details class="agent-schedule-create"><summary class="panel-btn">＋ Create a schedule</summary>
 <p class="hint">Choose an existing assignment. Each scheduled occurrence reruns that same agent with its saved goal, model, settings, and project files. The first run starts after one interval. A run is skipped if the assignment is still active or needs review.</p>
@@ -62,6 +79,7 @@
 <label>AI model<select name="model" id="agent-edit-model" class="panel-input" required></select></label>
 <label class="agent-checkbox"><input name="enable_thinking" type="checkbox" /> Enable model thinking (extra reasoning)</label>
 <label>Acceptance criteria<textarea name="criteria" class="panel-input" rows="3" maxlength="10000"></textarea></label>
+<fieldset class="agent-skill-fieldset"><legend class="hint">Skills to install (from your Skills library)</legend><div id="agent-edit-skill-picker" class="model-test-controls"></div></fieldset>
 <label>Result label<input name="result_label" class="panel-input" maxlength="120" /></label>
 <label>Platform / output type<select name="result_platform" class="panel-input"><option value="web">Web page (HTML)</option><option value="report">JSON results (HTML view)</option><option value="document">Document</option><option value="general">General result</option></select></label>
 <label>Verification command<input name="verification_command" class="panel-input" maxlength="4000" /></label>

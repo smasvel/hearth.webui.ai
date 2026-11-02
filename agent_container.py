@@ -580,7 +580,16 @@ class ContainerOpenCode(OpenCode):
         provider['options'] = provider_options
         return config, provider, proxy_info
 
-    def _agent_config(self, original, provider_id, model_id, provider, opencode_steps=40):
+    def _agent_config(self, original, provider_id, model_id, provider, opencode_steps=40, skills=None):
+        system = SYSTEM
+        if skills:
+            # OpenCode discovers skills in its global skill directory; the reminder
+            # makes small models aware of them without depending on the skill tool
+            # being auto-listed in every model's tool schema.
+            system += ('\nThis assignment has these skills installed in the OpenCode skill '
+                       'directory: '+', '.join(skills)+'. When a skill covers the work at hand, '
+                       'read its SKILL.md instructions and follow them.')
+
         # This provider option is understood by compatible chat-template providers
         # such as Lemonade. Preserve other provider options and custom extraBody keys.
         extra_body = provider['options'].get('extraBody')
@@ -631,7 +640,7 @@ class ContainerOpenCode(OpenCode):
         return {'$schema': 'https://opencode.ai/config.json', 'model': f'{provider_id}/{model_id}',
                 'provider': {provider_id: provider},
                 'agents': {AGENT: {'description': 'Isolated persistent Hearth project worker',
-                    'mode': 'primary', 'system': SYSTEM,
+                    'mode': 'primary', 'system': system,
                     'steps': opencode_steps}},
                 'compaction': comp}
 
@@ -739,7 +748,7 @@ class ContainerOpenCode(OpenCode):
             job.get('assignee') or 'Project agent')
         config = self._agent_config({**original, 'enable_thinking': job.get('enable_thinking', True)},
                                     job['model']['providerID'], job['model']['id'], provider,
-                                    job.get('opencode_steps', 40))
+                                    job.get('opencode_steps', 40), skills=job.get('skills') or [])
         existing = agent_store.get_runtime(task_id)
         if existing:
             can_reuse = self._can_reuse_container(existing, job, config, proxy_info)
@@ -766,6 +775,7 @@ class ContainerOpenCode(OpenCode):
                              f'chown {os.getuid()}:{os.getgid()} /home/node/agents/project && '
                              'chmod 700 /home/node/agents/project')
                 self._sync_to_container(name, job['owner'], workspace_id=task_id)
+                self._sync_skills_to_container(name, job)
                 existing.update(last_sync=0, tool_policy_version=TOOL_POLICY_VERSION)
                 self._write_runtime(name, existing)
                 self._report(job, 'Saved project workspace synced into the reused container.')
@@ -789,6 +799,7 @@ class ContainerOpenCode(OpenCode):
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
         self._sync_to_container(name, job['owner'], workspace_id=job['id'])
+        self._sync_skills_to_container(name, job)
         self._report(job, 'Project synced. The agent is ready to start its first work cycle.')
         return name+SESSION_SEPARATOR+result
 
@@ -854,6 +865,7 @@ class ContainerOpenCode(OpenCode):
             # blocked or interrupted assignment reconnects so edits made while
             # the container was parked are visible to the resumed agent.
             self._sync_to_container(_name, job['owner'], workspace_id=job['id'])
+            self._sync_skills_to_container(_name, job)
             return session_id
         except Exception as exc:
             if 'container is missing' not in str(exc):
@@ -994,6 +1006,38 @@ class ContainerOpenCode(OpenCode):
             code = process.wait(timeout=300)
             error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
             if code: raise RuntimeError('Could not copy the project into the isolated container: '+error)
+        except Exception:
+            process.kill(); process.wait(timeout=5)
+            raise
+
+    def _sync_skills_to_container(self, name, job):
+        """Install the assignment's selected skills as SKILL.md files in the container."""
+        skills = agent_store.get_skills_by_names(job.get('owner'), job.get('skills') or [])
+        if not skills:
+            # Skill-less assignments keep the container's skill directory untouched,
+            # so syncing them costs no extra Docker calls.
+            return
+        root = '/home/node/.config/opencode/skill'
+        self._docker('exec', name, 'sh', '-lc', f'rm -rf {root} && mkdir -p {root}', timeout=60)
+        process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', root, '-xf', '-'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with tarfile.open(fileobj=process.stdin, mode='w|') as tar:
+                for skill in skills:
+                    folder = agent_store.skill_folder(skill['name'])
+                    info = tarfile.TarInfo(folder)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    tar.addfile(info)
+                    content = agent_store.compose_skill_markdown(skill).encode('utf-8')
+                    info = tarfile.TarInfo(folder+'/SKILL.md')
+                    info.size = len(content)
+                    info.mode = 0o644
+                    tar.addfile(info, io.BytesIO(content))
+            process.stdin.close()
+            code = process.wait(timeout=60)
+            error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
+            if code: raise RuntimeError('Could not install agent skills in the container: '+error)
         except Exception:
             process.kill(); process.wait(timeout=5)
             raise

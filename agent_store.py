@@ -1,8 +1,10 @@
 """PostgreSQL persistence for agent assignments and private project workspaces."""
 import json
 from pathlib import Path, PurePosixPath
+import re
 import tarfile
 import time
+import uuid
 
 import numpy as np
 
@@ -11,6 +13,26 @@ import database
 MAX_PROJECT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 512 * 1024 * 1024
 SKIP_PARTS = {'.git', 'node_modules', '.venv', 'venv', '__pycache__'}
+MAX_SKILL_BODY_CHARS = 200_000
+
+
+def skill_folder(name):
+    """Folder identifier OpenCode uses for a skill inside its skill directory."""
+    folder = re.sub(r'[^a-z0-9]+', '-', str(name or '').casefold()).strip('-')
+    if not folder:
+        raise ValueError('A skill name needs at least one letter or number.')
+    return folder[:64]
+
+
+def compose_skill_markdown(skill):
+    """Render a stored skill as the SKILL.md file installed into agent containers."""
+    name = str(skill.get('name') or '').strip().replace('"', '\\"')
+    description = str(skill.get('description') or '').strip().replace('"', '\\"')
+    body = str(skill.get('body') or '').strip()
+    if body.startswith('---'):
+        return body
+    return (f'---\nname: "{name}"\ndescription: "{description}"\n---\n\n'
+            + body + '\n')
 
 
 def init_db():
@@ -93,6 +115,18 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_schedules_due ON agent_schedules(enabled, next_run_at)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_skills (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                UNIQUE (owner_id, name)
+            )
+        """)
 
 
 def save_task(job):
@@ -340,6 +374,83 @@ def delete_schedule(schedule_id, owner_id):
         return conn.execute(
             "DELETE FROM agent_schedules WHERE id = %s AND owner_id = %s RETURNING id",
             (schedule_id, owner_id),
+        ).fetchone() is not None
+
+
+def save_skill(skill):
+    """Insert or update one of a user's skills; returns the stored record."""
+    name = str(skill['name']).strip()
+    skill_folder(name)
+    description = str(skill.get('description') or '').strip()
+    body = str(skill.get('body') or '').strip()
+    if not body or len(body) > MAX_SKILL_BODY_CHARS:
+        raise ValueError('Enter skill instructions (up to 200,000 characters).')
+    if len(description) > 300:
+        raise ValueError('Skill descriptions must be at most 300 characters.')
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT id, created_at FROM agent_skills WHERE owner_id = %s AND name = %s",
+            (skill['owner'], name),
+        ).fetchone()
+        skill_id = skill.get('id') or (row['id'] if row else None) or uuid.uuid4().hex
+        now = time.time()
+        created_at = row['created_at'] if row else (skill.get('created_at') or now)
+        conn.execute(
+            "INSERT INTO agent_skills (id, owner_id, name, description, body, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET "
+            "owner_id = EXCLUDED.owner_id, name = EXCLUDED.name, description = EXCLUDED.description, "
+            "body = EXCLUDED.body, updated_at = EXCLUDED.updated_at",
+            (skill_id, skill['owner'], name, description, body, created_at, now),
+        )
+    return get_skill(skill['owner'], skill_id)
+
+
+def uuid_skill_id():
+    import uuid
+    return uuid.uuid4().hex
+
+
+def list_skills(owner_id):
+    with database.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, description, body, created_at, updated_at FROM agent_skills "
+            "WHERE owner_id = %s ORDER BY lower(name)", (owner_id,),
+        ).fetchall()
+    return [dict(row, owner=owner_id) for row in rows]
+
+
+def get_skill(owner_id, skill_id):
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, description, body, created_at, updated_at FROM agent_skills "
+            "WHERE owner_id = %s AND id = %s", (owner_id, skill_id),
+        ).fetchone()
+    return dict(row, owner=owner_id) if row else None
+
+
+def get_skill_by_name(owner_id, name):
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, description, body, created_at, updated_at FROM agent_skills "
+            "WHERE owner_id = %s AND name = %s", (owner_id, str(name).strip()),
+        ).fetchone()
+    return dict(row, owner=owner_id) if row else None
+
+
+def get_skills_by_names(owner_id, names):
+    wanted = [str(name).strip() for name in names if str(name).strip()]
+    if not wanted:
+        return []
+    skills = list_skills(owner_id)
+    by_name = {skill['name']: skill for skill in skills}
+    return [by_name[name] for name in dict.fromkeys(wanted) if name in by_name]
+
+
+def delete_skill(owner_id, skill_id):
+    with database.connect() as conn:
+        return conn.execute(
+            "DELETE FROM agent_skills WHERE owner_id = %s AND id = %s RETURNING id",
+            (owner_id, skill_id),
         ).fetchone() is not None
 
 

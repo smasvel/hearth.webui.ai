@@ -17,8 +17,8 @@ import io
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
-from pathlib import Path
-from urllib.parse import urlsplit
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 import psutil
 import requests
@@ -2253,6 +2253,12 @@ def agents_schedules_page():
     return render_template('agents.html', username=session.get('username'), page='schedules', initial_task_id='')
 
 
+@app.get('/agents/skills')
+@agent_workflow_required
+def agents_skills_page():
+    return render_template('agents.html', username=session.get('username'), page='skills', initial_task_id='')
+
+
 @app.get('/agents/<task_id>')
 @agent_workflow_required
 def agent_task_page(task_id):
@@ -2316,7 +2322,7 @@ def api_agent_models():
 @app.get('/api/agent-tasks')
 @agent_workflow_required
 def api_agent_tasks_list():
-    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error', 'schedule_id', 'scheduled_run_at')
+    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error', 'schedule_id', 'scheduled_run_at', 'skills')
     tasks = []
     for job in _agent_tasks.list():
         if not _agent_task_visible_to_current_user(job):
@@ -2823,6 +2829,231 @@ def api_agent_schedules_delete(schedule_id):
     if not visible or not _agent_tasks.delete_schedule(schedule_id, visible['owner']):
         return jsonify({'error': 'Schedule not found.'}), 404
     return jsonify({'deleted': True})
+
+
+# --- Agent skills: add, edit, upload, download, and import skills for agents ---
+
+_SKILL_IMPORT_BYTES = 5 * 1024 * 1024
+_SKILL_ZIP_ENTRY_BYTES = 512 * 1024
+_SKILL_ZIP_MAX_ENTRIES = 20
+
+
+def _normalize_skill_payload(body):
+    name = str(body.get('name', '')).strip()
+    description = str(body.get('description', '')).strip()
+    text = str(body.get('body', '')).strip()
+    if not name or len(name) > 80 or any(ord(char) < 32 for char in name):
+        raise ValueError('Enter a skill name (up to 80 characters).')
+    agent_store.skill_folder(name)
+    if len(description) > 300:
+        raise ValueError('Skill descriptions must be at most 300 characters.')
+    if not text or len(text) > agent_store.MAX_SKILL_BODY_CHARS:
+        raise ValueError('Enter skill instructions (up to 200,000 characters).')
+    return name, description, text
+
+
+def _parse_skill_frontmatter(text):
+    """Split optional YAML frontmatter into metadata and instruction body."""
+    if not text.startswith('---'):
+        return {}, text
+    lines = text.splitlines()
+    end = next((index for index in range(1, len(lines)) if lines[index].strip() == '---'), None)
+    if end is None:
+        return {}, text
+    meta = {}
+    for line in lines[1:end]:
+        key, separator, value = line.partition(':')
+        if separator:
+            meta[key.strip().casefold()] = value.strip().strip('"').strip("'")
+    return meta, '\n'.join(lines[end + 1:]).strip()
+
+
+def _unique_skill_name(owner, name):
+    """Adjust an imported skill name so it does not collide with the owner's library."""
+    base = name[:80]
+    candidate, counter = base, 2
+    while agent_store.get_skill_by_name(owner, candidate):
+        candidate = f"{base[:76]} ({counter})"
+        counter += 1
+    return candidate
+
+
+def _import_skill(owner, name, description, body):
+    meta, instructions = _parse_skill_frontmatter(body)
+    name = str(meta.get('name') or name or '').strip() or 'Imported skill'
+    description = str(meta.get('description') or description or '').strip()
+    name, description, instructions = _normalize_skill_payload(
+        {'name': name[:80], 'description': description[:300], 'body': instructions})
+    return agent_store.save_skill({'owner': owner, 'name': _unique_skill_name(owner, name),
+                                   'description': description, 'body': instructions})
+
+
+def _skills_from_zip(owner, data, fallback_name):
+    """Create one skill per SKILL.md entry in an uploaded or downloaded zip."""
+    entries = []
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for info in archive.infolist():
+            if info.is_dir() or info.file_size > _SKILL_ZIP_ENTRY_BYTES:
+                continue
+            path = PurePosixPath(unquote(info.filename))
+            if path.is_absolute() or any(part in ('', '.', '..') for part in path.parts):
+                continue
+            if path.name != 'SKILL.md':
+                continue
+            entries.append((path, info))
+    if not entries:
+        raise ValueError('The zip file does not contain a SKILL.md file.')
+    if len(entries) > _SKILL_ZIP_MAX_ENTRIES:
+        raise ValueError('A skill zip can contain at most 20 SKILL.md files.')
+    created = []
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for path, info in entries:
+            body = archive.read(info).decode('utf-8', 'replace').strip()
+            folder_name = path.parent.name if len(path.parts) > 1 else ''
+            created.append(_import_skill(owner, folder_name or fallback_name, '', body))
+    return created
+
+
+def _skill_payload(skill):
+    return {key: skill.get(key) for key in ('id', 'name', 'description', 'body', 'created_at', 'updated_at')}
+
+
+@app.get('/api/agent-skills')
+@agent_workflow_required
+def api_agent_skills_list():
+    return jsonify({'skills': [_skill_payload(skill) for skill in agent_store.list_skills(session['user_id'])]})
+
+
+@app.post('/api/agent-skills')
+@agent_workflow_required
+def api_agent_skills_create():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'A skill object is required.'}), 400
+    try:
+        name, description, text = _normalize_skill_payload(body)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    if agent_store.get_skill_by_name(session['user_id'], name):
+        return jsonify({'error': f'A skill named “{name}” already exists in your library.'}), 409
+    try:
+        skill = agent_store.save_skill({'owner': session['user_id'], 'name': name,
+                                        'description': description, 'body': text})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(_skill_payload(skill)), 201
+
+
+@app.patch('/api/agent-skills/<skill_id>')
+@agent_workflow_required
+def api_agent_skills_update(skill_id):
+    skill = agent_store.get_skill(session['user_id'], skill_id)
+    if not skill:
+        return jsonify({'error': 'Skill not found.'}), 404
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'Updated skill details are required.'}), 400
+    try:
+        name, description, text = _normalize_skill_payload(body)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    clash = agent_store.get_skill_by_name(session['user_id'], name)
+    if clash and clash['id'] != skill_id:
+        return jsonify({'error': f'A skill named “{name}” already exists in your library.'}), 409
+    try:
+        updated = agent_store.save_skill({'id': skill_id, 'owner': session['user_id'], 'name': name,
+                                          'description': description, 'body': text,
+                                          'created_at': skill.get('created_at')})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(_skill_payload(updated))
+
+
+@app.delete('/api/agent-skills/<skill_id>')
+@agent_workflow_required
+def api_agent_skills_delete(skill_id):
+    if not agent_store.delete_skill(session['user_id'], skill_id):
+        return jsonify({'error': 'Skill not found.'}), 404
+    return jsonify({'deleted': True})
+
+
+@app.get('/api/agent-skills/<skill_id>/download')
+@agent_workflow_required
+def api_agent_skills_download(skill_id):
+    skill = agent_store.get_skill(session['user_id'], skill_id)
+    if not skill:
+        return jsonify({'error': 'Skill not found.'}), 404
+    markdown = agent_store.compose_skill_markdown(skill)
+    filename = agent_store.skill_folder(skill['name'])+'-SKILL.md'
+    return send_file(io.BytesIO(markdown.encode('utf-8')), mimetype='text/markdown',
+                     as_attachment=True, download_name=filename)
+
+
+@app.post('/api/agent-skills/upload')
+@agent_workflow_required
+def api_agent_skills_upload():
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'error': 'Choose a skill file (.md, .txt, or .zip).'}), 400
+    data = upload.read(_SKILL_IMPORT_BYTES + 1)
+    if len(data) > _SKILL_IMPORT_BYTES:
+        return jsonify({'error': 'Skill files must be at most 5 MB.'}), 400
+    if not data:
+        return jsonify({'error': 'The uploaded skill file is empty.'}), 400
+    fallback_name = Path(secure_filename(upload.filename)).stem or 'Uploaded skill'
+    try:
+        if zipfile.is_zipfile(io.BytesIO(data)):
+            created = _skills_from_zip(session['user_id'], data, fallback_name)
+        else:
+            body = data.decode('utf-8', 'replace').strip()
+            created = [_import_skill(session['user_id'],
+                                     request.form.get('name', '').strip() or fallback_name,
+                                     request.form.get('description', '').strip(), body)]
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception('Could not import an uploaded skill file')
+        return jsonify({'error': f'Could not import the skill file: {exc}'}), 400
+    return jsonify({'skills': [_skill_payload(skill) for skill in created],
+                    'message': f"Imported {len(created)} skill{'s' if len(created) != 1 else ''}."}), 201
+
+
+@app.post('/api/agent-skills/import-url')
+@agent_workflow_required
+def api_agent_skills_import_url():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'A skill URL is required.'}), 400
+    url = str(body.get('url', '')).strip()
+    parsed = urlsplit(url)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password:
+        return jsonify({'error': 'Enter a public http(s) URL for the skill file.'}), 400
+    try:
+        response = requests.get(url, timeout=(10, 30), stream=True,
+                                headers={'User-Agent': 'Hearth-local-webui/1.0'})
+        response.raise_for_status()
+        data = response.raw.read(_SKILL_IMPORT_BYTES + 1, decode_content=True)
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Could not download the skill: {exc}'}), 502
+    if len(data) > _SKILL_IMPORT_BYTES:
+        return jsonify({'error': 'Downloaded skill files must be at most 5 MB.'}), 400
+    if not data:
+        return jsonify({'error': 'The downloaded skill file is empty.'}), 400
+    fallback_name = str(body.get('name', '')).strip() or Path(parsed.path).stem or 'Downloaded skill'
+    description = str(body.get('description', '')).strip()
+    try:
+        if zipfile.is_zipfile(io.BytesIO(data)):
+            created = _skills_from_zip(session['user_id'], data, fallback_name)
+        else:
+            created = [_import_skill(session['user_id'], fallback_name, description,
+                                     data.decode('utf-8', 'replace').strip())]
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception('Could not import a downloaded skill file')
+        return jsonify({'error': f'Could not import the downloaded skill: {exc}'}), 400
+    return jsonify({'skills': [_skill_payload(skill) for skill in created],
+                    'message': f"Imported {len(created)} skill{'s' if len(created) != 1 else ''}."}), 201
 
 
 @app.get('/api/model-tests')

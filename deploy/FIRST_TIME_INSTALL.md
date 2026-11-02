@@ -293,6 +293,16 @@ optional. **More options** lets you set the OpenCode step limit before launch
 edit this limit on a paused, blocked, stopped, completed, or interrupted task; continuing a
 blocked or interrupted task with a changed limit starts a fresh OpenCode session from
 its saved project files.
+The **Skills** tab on the Agents page manages your private agent skill library. Add a
+skill with a name, short description, and Markdown instructions; upload a `.md`/`.txt`
+skill file or a `.zip` containing `SKILL.md` files; or download a skill directly from an
+`http(s)` URL. Each saved skill can be edited, downloaded back out as a `SKILL.md` file,
+or deleted. Select skills under **More options** when creating (or editing) an assignment
+to install them into that agent's container as OpenCode skills; the agent is reminded to
+read the matching `SKILL.md` when the work is relevant. Skill changes take effect on the
+assignment's next run, and skills are stored per account in the `agent_skills` table
+created automatically by Hearth's migrations. Restart Hearth after updating so the table
+is created before first use.
 Hearth project agents use OpenCode's direct file and shell tools. Shell commands still
 follow the task's **Ask me first** or **Allow automatically** approval mode.
 Pausing or stopping an assignment closes that container's active model response,

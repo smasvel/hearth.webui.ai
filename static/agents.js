@@ -7,6 +7,7 @@
   let rerunAcceptedAt = 0;
   let editingScheduleId = null;
   let cloneDraft = null;
+  let cloneSkills = null;
   let agentEventSource=null, agentEventTaskId=null;
   const selectedShareUsers = new Map();
   let shareTaskId = null, shareSearchTimer;
@@ -113,6 +114,7 @@
         if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,opencode_steps:40,verification_timeout:300}[name] ?? '');
       }
       editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
+      setSelectedSkills(el('agent-edit-skill-picker'), task.skills);
       editForm.dataset.loadedTask=task.id;
     }
     const editModel=el('agent-edit-model');
@@ -379,6 +381,7 @@
         max_cycles:source.max_cycles || 50, opencode_steps:source.opencode_steps || 40,
         verification_timeout:source.verification_timeout || 300,
         enable_thinking:source.enable_thinking !== false, model:source.model,
+        skills:source.skills || [],
       };
       sessionStorage.setItem('hearth-agent-clone-draft',JSON.stringify(draft));
       window.location.assign('/agents/new?clone=1');
@@ -486,6 +489,7 @@
     e.preventDefault();const form=e.currentTarget;const values=Object.fromEntries(new FormData(form));
     values.enable_thinking=form.elements.enable_thinking.checked;
     values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.opencode_steps=Number(values.opencode_steps);values.verification_timeout=Number(values.verification_timeout);values.shell_mode=form.elements.shell_mode.value;
+    values.skills=selectedSkills(el('agent-skill-picker'));
     el('agent-assign').disabled=true;
     try { const created=await api('/api/agent-tasks',values);window.location.assign(`/agents/${created.id}`); }
     catch(error){el('agent-create-status').textContent=error.message;}
@@ -501,6 +505,7 @@
           if(form.elements[name] && cloneDraft[name] != null)form.elements[name].value=cloneDraft[name];
         }
         form.elements.enable_thinking.checked=cloneDraft.enable_thinking !== false;
+        cloneSkills = cloneDraft.skills || [];
         if(el('agent-create-status'))el('agent-create-status').textContent='Copied task settings into a new assignment. Review them before starting; the new task will have a separate project workspace.';
       }
     } catch(error) {
@@ -596,6 +601,7 @@
     values.opencode_steps=Number(values.opencode_steps);
     values.verification_timeout=Number(values.verification_timeout);
     values.enable_thinking=form.elements.enable_thinking.checked;
+    values.skills=selectedSkills(el('agent-edit-skill-picker'));
     return values;
   }
   async function saveEditedTask(resubmit) {
@@ -674,4 +680,128 @@
   }
   if(el('agent-schedule-list')) { loadScheduleProjects(); refreshSchedules(); setInterval(refreshSchedules,30000); }
   if(el('agent-list') || page==='execution') refresh();
+
+  // --- Agent skills: library management and assignment pickers ---
+  let editingSkillId = null;
+  const skillCache = [];
+
+  async function refreshSkills() {
+    const list = el('agent-skill-list');
+    if (!list) return;
+    let skills = [];
+    try { ({skills} = await api('/api/agent-skills')); }
+    catch(error) { el('agent-skill-status').textContent = error.message; return; }
+    skillCache.length = 0; skillCache.push(...skills);
+    if(el('agent-skill-count')) el('agent-skill-count').textContent = skills.length ? `${skills.length} saved` : '';
+    list.replaceChildren();
+    if(!skills.length) { node('p','No skills yet. Add one above, upload a file, or download one from a URL.',list); return; }
+    for(const skill of skills) list.append(skillCard(skill));
+  }
+
+  function skillCard(skill) {
+    const card = node('article','',null); card.className='agent-task-card agent-skill-row'; card.dataset.skillId=skill.id;
+    const top = node('div','',card); top.className='agent-skill-row-top';
+    node('strong',skill.name,top);
+    if(skill.description) node('span',skill.description,top).className='hint';
+    node('span',`Updated ${localDate(skill.updated_at)}`,top).className='hint';
+    const controls = node('div','',card); controls.className='agent-controls';
+    button('Edit',controls,()=>beginSkillEdit(skill));
+    button('Download',controls,()=>{ window.location.assign(`/api/agent-skills/${encodeURIComponent(skill.id)}/download`); });
+    button('Delete',controls,async()=>{
+      if(!window.confirm(`Delete the skill “${skill.name}”? Assignments using it will no longer install it on their next run.`))return;
+      try { await api(`/api/agent-skills/${encodeURIComponent(skill.id)}`,{},'DELETE'); await refreshSkills(); }
+      catch(error) { el('agent-skill-status').textContent=error.message; }
+    });
+    return card;
+  }
+
+  function beginSkillEdit(skill) {
+    const form = el('agent-skill-form');
+    if(!form) return;
+    editingSkillId = skill.id;
+    const details = el('agent-skill-create'); if(details) details.open = true;
+    form.elements.name.value = skill.name;
+    form.elements.description.value = skill.description || '';
+    form.elements.body.value = skill.body || '';
+    if(el('agent-skill-save')) el('agent-skill-save').textContent = 'Save changes';
+    if(el('agent-skill-cancel')) el('agent-skill-cancel').hidden = false;
+    form.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  function resetSkillForm() {
+    const form = el('agent-skill-form');
+    if(!form) return;
+    editingSkillId = null;
+    form.reset();
+    if(el('agent-skill-save')) el('agent-skill-save').textContent = 'Add skill';
+    if(el('agent-skill-cancel')) el('agent-skill-cancel').hidden = true;
+  }
+
+  el('agent-skill-form')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    const form = event.currentTarget, status = el('agent-skill-status');
+    const payload = Object.fromEntries(new FormData(form));
+    const save = el('agent-skill-save'); save.disabled = true;
+    try {
+      const saved = editingSkillId
+        ? await api(`/api/agent-skills/${encodeURIComponent(editingSkillId)}`,payload,'PATCH')
+        : await api('/api/agent-skills',payload);
+      status.textContent = editingSkillId ? `Skill “${saved.name}” updated.` : `Skill “${saved.name}” added.`;
+      resetSkillForm(); await refreshSkills();
+    } catch(error) { status.textContent = error.message; }
+    finally { save.disabled = false; }
+  });
+  el('agent-skill-cancel')?.addEventListener('click',()=>{ resetSkillForm(); if(el('agent-skill-status'))el('agent-skill-status').textContent=''; });
+  el('agent-skill-upload')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    const form = event.currentTarget, status = el('agent-skill-import-status');
+    const submit = form.querySelector('button[type=submit]'); submit.disabled = true;
+    try {
+      const result = await fetch('/api/agent-skills/upload',{method:'POST',body:new FormData(form)}).then(async r=>{
+        const data = await r.json(); if(!r.ok) throw new Error(data.error || 'Upload failed'); return data;
+      });
+      status.textContent = result.message; await refreshSkills(); form.reset();
+    } catch(error) { status.textContent = error.message; }
+    finally { submit.disabled = false; }
+  });
+  el('agent-skill-import')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    const form = event.currentTarget, status = el('agent-skill-import-status');
+    const submit = form.querySelector('button[type=submit]'); submit.disabled = true; status.textContent='Downloading skill…';
+    try {
+      const result = await api('/api/agent-skills/import-url',{url:form.elements.url.value.trim()});
+      status.textContent = result.message; form.reset(); await refreshSkills();
+    } catch(error) { status.textContent = error.message; }
+    finally { submit.disabled = false; }
+  });
+  if(el('agent-skill-list')) refreshSkills();
+
+  async function loadSkillOptions() {
+    if(!skillCache.length) {
+      try { const {skills} = await api('/api/agent-skills'); skillCache.length = 0; skillCache.push(...skills); }
+      catch(error) { return; }
+    }
+    for(const container of [el('agent-skill-picker'), el('agent-edit-skill-picker')].filter(Boolean)) {
+      container.replaceChildren();
+      if(!skillCache.length) { node('span','No skills yet — add them on the Skills page.',container); continue; }
+      for(const skill of skillCache) {
+        const label = node('label','',container); label.className='agent-checkbox';
+        const box = document.createElement('input'); box.type='checkbox'; box.value=skill.name;
+        box.dataset.skillName=skill.name; label.append(box);
+        label.append(document.createTextNode(` ${skill.name}${skill.description ? ' — '+skill.description : ''}`));
+      }
+    }
+  }
+  function setSelectedSkills(container, names) {
+    if(!container) return;
+    const selected = new Set(names || []);
+    for(const box of container.querySelectorAll('input[type=checkbox]')) box.checked = selected.has(box.value);
+  }
+  function selectedSkills(container) {
+    return container ? [...container.querySelectorAll('input[type=checkbox]:checked')].map(box=>box.value) : [];
+  }
+  if(el('agent-skill-picker') || el('agent-edit-skill-picker')) loadSkillOptions().then(()=>{
+    if(el('agent-skill-picker') && cloneSkills) setSelectedSkills(el('agent-skill-picker'), cloneSkills);
+    if(el('agent-edit-skill-picker') && task?.skills) setSelectedSkills(el('agent-edit-skill-picker'), task.skills);
+  });
 })();
