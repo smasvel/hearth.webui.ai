@@ -1717,7 +1717,7 @@ def api_quiz_log():
 
 
 def _collect_completion(messages: list[dict], model: str, temperature: float = 0.4,
-                        max_tokens: int | None = 2048) -> str:
+                        max_tokens: int | None = 2048, session_id: str | None = None) -> str:
     """Run a non-streaming chat completion by draining the selected backend's SSE stream
     and concatenating the content deltas. Backend is chosen the same way /api/chat does."""
     if lemonade.owns_model(model):
@@ -1736,7 +1736,8 @@ def _collect_completion(messages: list[dict], model: str, temperature: float = 0
     npu_handle = _claim_selected_npu(backend, model) if is_npu else None
     parts: list[str] = []
     try:
-        for line in backend.chat_stream(messages, model, temperature=temperature, max_tokens=max_tokens):
+        for line in backend.chat_stream(messages, model, temperature=temperature,
+                                        max_tokens=max_tokens, session_id=session_id):
             if not line.startswith("data:"):
                 continue
             payload = line[len("data:"):].strip()
@@ -1777,7 +1778,8 @@ def api_quiz_generate():
 
     messages = quiz_store.build_generation_messages(topic, count)
     try:
-        text = _collect_completion(messages, model, temperature=0.5, max_tokens=2400)
+        text = _collect_completion(messages, model, temperature=0.5, max_tokens=2400,
+                                   session_id='quiz:' + conversation_id)
     except (lemonade.LemonadeError, vllm.VLLMError, zen.OpenCodeError, lms.LMStudioError) as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 502
     questions = quiz_store.parse_generated(text, count)
@@ -2176,6 +2178,9 @@ def _test_connection(target):
         base = zen.base_url().rstrip('/')
     key = client.api_key()
     headers = {'X-Hearth-Client': 'model-tests'}
+    if backend == 'opencode':
+        # Go requires a stable per-session routing header even for test traffic.
+        headers['x-opencode-session'] = 'hearth-model-tests'
     if key:
         headers['Authorization'] = 'Bearer ' + key
     return base + '/v1/chat/completions', model, headers

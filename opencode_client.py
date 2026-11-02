@@ -11,6 +11,7 @@ generated config without a special case.
 """
 
 import copy
+import uuid
 import requests
 import threading
 import time
@@ -189,6 +190,7 @@ def chat_stream(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     tools: list[dict] | None = None,
+    session_id: str | None = None,
 ):
     payload = {
         "model": _served_id(model),
@@ -203,11 +205,15 @@ def chat_stream(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    headers = _headers()
+    # The Go surface requires a stable per-conversation routing header; without it
+    # requests fail with HTTP 400 "missing x-opencode-session and cannot be routed".
+    headers['x-opencode-session'] = (session_id or uuid.uuid4().hex)[:120]
     try:
         with requests.post(
             f"{_v1_url()}/chat/completions",
             json=model_test_profiles.apply(payload, "opencode"),
-            headers=_headers(),
+            headers=headers,
             stream=True,
             # opencode.ai is a cloud gateway far beyond the LAN; a slow first token
             # from a distant provider must survive long enough to stream at all.

@@ -7,6 +7,7 @@ never receives a host project bind mount, Docker socket, or app credentials.
 import copy
 from concurrent.futures import ThreadPoolExecutor
 import errno
+import hashlib
 import io
 import json
 import logging
@@ -114,6 +115,11 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
         for key in ('accept', 'content-type', 'openai-organization', 'openai-project'):
             if self.headers.get(key): headers[key] = self.headers[key]
         headers.update(proxy.get('headers') or {})
+        session_header = self.headers.get('x-opencode-session')
+        fallback = (proxy.get('headers') or {}).get('X-Hearth-Agent-Session')
+        routed = session_header or fallback
+        if routed:
+            headers['x-opencode-session'] = routed[:120]
         cancel_id = None
         if self.command == 'POST' and request_path == '/v1/chat/completions' and proxy.get('provider_id') == 'lmstudio':
             cancel_id = secrets.token_hex(24)
@@ -549,10 +555,17 @@ class ContainerOpenCode(OpenCode):
         if parsed.scheme not in ('http', 'https') or not parsed.netloc or not parsed.path.endswith('/v1'):
             raise ValueError('The selected model provider has an unsupported API endpoint.')
         headers = dict(options.get('headers') or {})
+
         agent_name = str(agent_name or '').strip()
         if not agent_name or len(agent_name) > 120 or any(ord(char) < 32 for char in agent_name):
             agent_name = 'Project agent'
         headers['X-Hearth-Agent-Name'] = agent_name
+        # opencode.ai's Go routes requests efficiently by a stable session id.
+        # Forward the client's own header when present (added per-request by the
+        # relay); fall back to a task-scoped stable id derived from the socket path
+        # and agent name, so a rebuilt container keeps the same identifier.
+        headers['X-Hearth-Agent-Session'] = hashlib.sha256(
+            f'{socket_path}:{agent_name}'.encode()).hexdigest()[:40]
         if provider_id in ('lemonade', 'fastflowlm', 'lmstudio'):
             headers['X-Hearth-Agent-Relay'] = '1'
         proxy_info = {'base_url': base_url, 'api_key': options.get('apiKey'),

@@ -89,6 +89,19 @@ class OpenCodeClientTests(unittest.TestCase):
         self.assertEqual(lines[-1], "data: [DONE]")
         self.assertEqual(post.return_value.chunk_size, 1)
 
+    @patch.object(zen.settings_store, "get", return_value=None)
+    @patch.object(zen, "api_key", return_value="test-key")
+    @patch.object(zen.requests, "post")
+    def test_chat_sends_the_requested_stable_session_header(self, post, _key, _setting):
+        post.return_value = _StreamingResponse([b"data: [DONE]"])
+        list(zen.chat_stream([{"role": "user", "content": "hi"}], "opencode/glm-5.3",
+                             session_id="conv-42"))
+        self.assertEqual(post.call_args.kwargs["headers"]["x-opencode-session"], "conv-42")
+        # anonymous aux calls still carry a session (the endpoint rejects missing ones)
+        list(zen.chat_stream([{"role": "user", "content": "hi"}], "opencode/glm-5.3"))
+        header = post.call_args.kwargs["headers"]["x-opencode-session"]
+        self.assertTrue(header)
+
     @patch.object(zen.settings_store, "get", side_effect=lambda key: "go" if key == "opencode_api_plan" else None)
     def test_go_plan_routes_to_dedicated_endpoints(self, _setting):
         self.assertEqual(zen.plan(), "go")
