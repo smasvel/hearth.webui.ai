@@ -28,6 +28,13 @@ def response_for(step, stream, serial):
 
 
 class WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        # run_suite records live-request bookkeeping through live_report, whose
+        # requests calls would otherwise be swept up in the requests.post patches
+        # these tests make. Replace the whole module with a Mock per test.
+        self._live = patch('tools.test_flm_model.live_report', Mock()).start()
+        self.addCleanup(patch.stopall)
+
     def test_verified_test_count_accepts_wording_but_rejects_wrong_or_negated_counts(self):
         for text in ('4 passed', '4 tests passed', '4 tests passing (exit code 0)', 'Passed 4 tests.',
                      'All tests passed: **4 tests, exit code 0**.'):

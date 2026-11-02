@@ -63,5 +63,40 @@ class TailscaleHelpTests(unittest.TestCase):
         self.assertIsNone(help_data.tailscale_app_url("machine.example.ts.net", 5443))
 
 
+class HelpDataCacheTests(unittest.TestCase):
+    def setUp(self):
+        help_data._help_cache.clear()
+        self.addCallback = self.addCleanup(help_data._help_cache.clear)
+
+    @patch.object(help_data, "_build_uncached")
+    def test_fresh_cache_returned_without_rebuild(self, build_mock):
+        build_mock.return_value = {"lan_ip": "10.0.0.1"}
+        first = help_data.build()
+        second = help_data.build()
+        self.assertEqual(build_mock.call_count, 1)
+        self.assertIs(first, second)
+
+    @patch.object(help_data, "_build_uncached")
+    @patch.object(help_data.threading, "Thread")
+    def test_stale_data_returned_while_background_refresh_runs(self, thread_mock, build_mock):
+        cached = {"lan_ip": "10.0.0.1"}
+        help_data._help_cache["data"] = cached
+        help_data._help_cache["ts"] = __import__("time").monotonic() - help_data.HELP_DATA_TTL - 1
+        result = help_data.build()
+        self.assertIs(result, cached)  # served instantly, never blocking on a rebuild
+        self.assertTrue(help_data._help_cache.get("refreshing"))
+        self.assertTrue(thread_mock.return_value.start.called)
+
+    @patch.object(help_data, "_build_uncached")
+    def test_rebuild_failure_leaves_previous_snapshot_served(self, build_mock):
+        cached = {"lan_ip": "10.0.0.1"}
+        help_data._help_cache["data"] = cached
+        help_data._help_cache["ts"] = __import__("time").monotonic() - help_data.HELP_DATA_TTL - 1
+        build_mock.side_effect = RuntimeError("tailscake down")
+        help_data._refresh(5443)  # _build_uncached raises
+        self.assertFalse(help_data._help_cache.get("refreshing"))
+        self.assertEqual(help_data._help_cache.get("data"), cached)
+
+
 if __name__ == "__main__":
     unittest.main()

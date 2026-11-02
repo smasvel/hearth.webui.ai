@@ -1,4 +1,5 @@
 """Live FLM contract checks. Returned tool calls are inspected, never executed."""
+import argparse
 import json
 import re
 from pathlib import Path
@@ -19,6 +20,15 @@ def function(name, properties, required=None):
 
 
 WEATHER = function('get_weather', {'city': {'type': 'string'}})
+
+
+def _quiet(call):
+    """Run a live-report call, discarding any failure: recording a live request is
+    best-effort bookkeeping and must never fail (or slow) the actual model test."""
+    try:
+        return call()
+    except Exception:
+        return None
 
 
 def decode(response, stream):
@@ -133,12 +143,15 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         started = time.monotonic()
         result = {'name': name, 'stream': stream, **metadata}
         calls, text = [], ''
-        live_id = live_report.start(
-            source=source, backend=backend, model=args.model,
-            max_tokens=body.get('max_tokens'),
-            request_content='' if stream else body['messages'][0].get('content'),
-        )
+        usage, response = None, None
         try:
+            # Live-report bookkeeping must never fail a model test: the app's
+            # internal /api/internal/live endpoints being down is not the model's fault.
+            live_id = _quiet(lambda: live_report.start(
+                source=source, backend=backend, model=args.model,
+                max_tokens=body.get('max_tokens'),
+                request_content='' if stream else body['messages'][0].get('content'),
+            ))
             if metadata.get('blocked_by'):
                 result['skipped'] = True
                 raise AssertionError('Dependent step skipped after ' + metadata['blocked_by'])
@@ -149,10 +162,10 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             read_timeout = 900 if name == 'large-code-input' else 300
             response = requests.post(args.url, json=body, headers=headers, timeout=(10, read_timeout))
             calls, text, finishes, usage = decode(response, stream)
-            live_report.update(
+            _quiet(lambda: live_report.update(
                 live_id, delta_chars=len(text),
                 delta_content=text if not stream else None,
-            )
+            ))
             result.update(usage=usage, finish_reasons=finishes)
             if expected is not None:
                 observed = [(c['name'], c['arguments']) for c in calls]
@@ -186,14 +199,14 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             result.update(passed=False, error=detail[:1500])
         result['seconds'] = round(time.monotonic() - started, 2)
         results.append(result)
-        live_report.finish(
+        _quiet(lambda: live_report.finish(
             live_id,
             status='done' if result['passed'] else 'error',
             total_tokens=(usage or {}).get('completion_tokens'),
-            status_code=response.status_code if 'response' in locals() else None,
+            status_code=response.status_code if response is not None else None,
             error_detail=result.get('error'),
-        )
-        live_report.record_metric(
+        ))
+        _quiet(lambda: live_report.record_metric(
             source=source, backend=backend, model=args.model,
             request_type='model-test', ask_category=result.get('ask_category') or 'chat',
             duration_ms=result['seconds']*1000,
@@ -201,7 +214,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             completion_tokens=(result.get('usage') or {}).get('completion_tokens'),
             total_tokens=(result.get('usage') or {}).get('total_tokens'),
             status=200 if result.get('passed') else 500,
-        )
+        ))
         print(('PASS' if result['passed'] else 'FAIL'), name, stream, result['seconds'],
               result.get('error', ''), flush=True)
         if on_result:

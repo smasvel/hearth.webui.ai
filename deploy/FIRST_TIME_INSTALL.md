@@ -109,7 +109,10 @@ running in the background. In Chat, **Copy chat** copies all user messages and a
 responses in the current conversation as plain text. Each user message and assistant response
 also has its own copy control. Opening the site root (`/`) sends signed-out visitors to
 `/login`, then returns signed-in users to the workspace; chat navigation links return to
-that root workspace route. The sign-in and initial
+that root workspace route. The post-sign-in redirect stays instant even when a backend is
+slow: the workspace page's help and network data is served from a server-side snapshot
+warmed at startup and refreshed in the background, rather than rebuilt from live
+backend, Tailscale, and Caddy probes on every sign-in. The sign-in and initial
 administrator setup screens use a responsive AI workspace design with the credentials
 form centered in the viewport on desktop and mobile, framed by six animated robot
 minions with blinking faces, waving arms, glowing thrusters, task labels, moving route

@@ -821,7 +821,11 @@ cookie name, so users sign in once again. In Chat, use **Copy chat** to copy eve
 current conversation as plain text. Each user message and assistant response also has its own
 copy control.
 Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same
-address opens the workspace. Chat navigation links throughout the app return to this root
+address opens the workspace. Sign-in stays fast even when a backend is slow: the Help-panel
+and network-configuration data rendered on the workspace page is built from a
+stale-but-refreshed server-side snapshot (warmed at startup and refreshed in the background), so the
+post-sign-in redirect is instant instead of waiting on live model-list probes of LM Studio,
+Lemonade, vLLM, KoboldCPP, FastFlowLM, the Tailscale CLI, and Caddy's admin API. Chat navigation links throughout the app return to this root
 workspace route. The sign-in and first administrator setup screens use a responsive AI
 workspace design with the credentials form centered on desktop and mobile. The login card
 includes a **Watch the 25-second demo** button. Selecting it opens a centered player and

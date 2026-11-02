@@ -370,6 +370,12 @@ class ModelHandoffTests(unittest.TestCase):
 
 
 class SuiteTests(unittest.TestCase):
+    # run_suite's live-report bookkeeping goes through requests too; Mock the whole
+    # live_report module so the requests.post assertions below only see chat calls.
+    def setUp(self):
+        patch('tools.test_flm_model.live_report', Mock()).start()
+        self.addCleanup(patch.stopall)
+
     def test_tool_check_budget_and_truncation_diagnostics(self):
         response = Mock()
         response.json.return_value = {'choices': [{'message': {'tool_calls': [

@@ -21,6 +21,8 @@ import json
 import re
 import socket
 import subprocess
+import threading
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -537,7 +539,63 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
 
 
 def build(app_port: int = 5443) -> dict:
-    """Assemble all runtime help data for the template / the /api/help endpoint."""
+    """Assemble all runtime help data for the template / the /api/help endpoint.
+
+    Wrapped in a stale-while-revalidate cache: every live source here has a cost (the
+    Tailscale CLI, the Caddy admin API, and five backends' model lists — each with a
+    multi-second timeout), so building this synchronously on `/` right after a sign-in
+    made the post-login page sit blank for seconds — and indefinitely when a backend or
+    the Tailscale CLI stalled ("signed in, clicked the button, nothing happens").
+    Returning the last-good snapshot immediately and refreshing it in the background keeps
+    the login->index redirect instant; the cache is warmed at startup (see warm_cache).
+    """
+    now = time.monotonic()
+    stale = None
+    with _help_cache_lock:
+        cached, ts = _help_cache.get("data"), _help_cache.get("ts", 0)
+        if cached is not None and now - ts < HELP_DATA_TTL:
+            return cached
+        if cached is not None:
+            stale = cached
+            if _help_cache.get("refreshing"):
+                return stale  # a background refresh is already running from stale data
+            _help_cache["refreshing"] = True
+    if stale is not None:
+        threading.Thread(target=_refresh, args=(app_port,), daemon=True).start()
+        return stale
+    data = _build_uncached(app_port)
+    with _help_cache_lock:
+        _help_cache["data"], _help_cache["ts"] = data, time.monotonic()
+    return data
+
+
+HELP_DATA_TTL = 12.0  # seconds a snapshot is served before a background rebuild starts
+_help_cache: dict = {}
+_help_cache_lock = threading.Lock()
+
+
+def _refresh(app_port: int) -> None:
+    """Background helper for stale-while-revalidate and startup warm-up; never raises
+    and always clears the refreshing flag under the lock."""
+    try:
+        data = _build_uncached(app_port)
+    except Exception:
+        with _help_cache_lock:
+            _help_cache["refreshing"] = False
+        return
+    with _help_cache_lock:
+        _help_cache["data"] = data
+        _help_cache["ts"] = time.monotonic()
+        _help_cache["refreshing"] = False
+
+
+def warm_cache(app_port: int = 5443) -> None:
+    """Build the help snapshot in a background thread at startup, so the very first
+    post-login render of `/` never pays the multi-second live-build cost."""
+    threading.Thread(target=_refresh, args=(app_port,), daemon=True).start()
+
+
+def _build_uncached(app_port: int = 5443) -> dict:
     ip = lan_ip()
     caddy = parse_caddyfile()
     # Each client tool gets its own dedicated token embedded in its generated config, rather

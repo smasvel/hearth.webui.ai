@@ -152,6 +152,8 @@ class QuestionCompatTests(unittest.TestCase):
         response = Mock()
         response.json.return_value = {'choices': [{'message': {'content': 'incomplete'}, 'finish_reason': 'length'}],
                                      'usage': {'completion_tokens': 1024}}
+        patcher = patch('tools.test_flm_model.live_report', Mock())
+        patcher.start(); self.addCleanup(patcher.stop)
         with patch('tools.test_flm_model.requests.post', return_value=response) as post:
             results = run_suite('GLM-4.7-Flash-GGUF', 'http://fixture', suite='core', only={('large-code-input', False)})
         body = post.call_args.kwargs['json']

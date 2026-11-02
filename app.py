@@ -5118,6 +5118,25 @@ def api_chat():
                 max_tokens=max_tokens, is_npu=is_npu,
             )
             cancel_event = live_requests.cancel_event(live_id)
+            if job is not None:
+                # The conversation Stop button sets job.cancel, but the metrics page's
+                # live-request stop sets the registry event above; stopping must work
+                # from either side. Without combining both, the live-request lookout
+                # at this line replaced job.cancel outright and a Stop from the chat
+                # UI kept the streamed generation running to completion.
+                job_stop_event, live_stop_event = job.cancel, cancel_event
+
+                class _CancelEither:
+                    @staticmethod
+                    def is_set() -> bool:
+                        return job_stop_event.is_set() or live_stop_event.is_set()
+
+                    @staticmethod
+                    def set() -> None:
+                        job_stop_event.set()
+                        live_stop_event.set()
+
+                cancel_event = _CancelEither()
             # MCP tools (browser automation, persistent Python REPL - see mcp_tools_client.py)
             # are available on every chat backend. Each backend has a guarded tool-call path
             # where needed; withholding the tool schema makes the model claim it cannot browse
@@ -5570,5 +5589,8 @@ if __name__ == "__main__":
     if ts_url:
         print(f"Tailscale access: {ts_url}")
     threading.Thread(target=_warm_up_startup_models, daemon=True).start()
+    # Pre-build the Help-panel snapshot so the first post-sign-in redirect to `/` is
+    # instant even when a backend or the Tailscale CLI is slow (see help_data.build).
+    help_data.warm_cache(port)
     _agent_tasks.start_worker(lambda: not any(j["status"] in model_tests.ACTIVE for j in _model_test_registry.list()))
     app.run(host=host, port=port, ssl_context=ssl_context, threaded=True)
