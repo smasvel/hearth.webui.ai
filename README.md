@@ -726,7 +726,9 @@ availability depends on which supporting components you configure.
 Hearth can also use hosted models from opencode.ai: paste your opencode.ai API key in
 **Settings** and models are discovered from the account and served on a per-request,
 pay-as-you-go basis (loaded/unload state doesn't apply; download and deletion stay
-with the opencode.ai account). Key storage is encrypted in PostgreSQL. They behave
+with the opencode.ai account). Key storage is encrypted in PostgreSQL; **Test
+connection saves the key after verifying it**, a re-save from a blank field never
+wipes it, and removal is explicit via the card's **Remove stored key** button. They behave
 like remote models elsewhere: chat, agent assignments, and model tests accept them,
 and the agentic framework lists provider `opencode` models with their advertised
 context windows.

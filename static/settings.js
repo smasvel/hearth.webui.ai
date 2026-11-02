@@ -57,6 +57,7 @@
   const settingsTestVllmResultEl = document.getElementById("settings-test-vllm-result");
   const settingsTestOpencodeBtn = document.getElementById("settings-test-opencode");
   const settingsTestOpencodeResultEl = document.getElementById("settings-test-opencode-result");
+  const opencodeClearKeyBtn = document.getElementById("opencode-clear-key");
   const settingsTestKoboldBtn = document.getElementById("settings-test-kobold");
   const settingsTestKoboldResultEl = document.getElementById("settings-test-kobold-result");
   const settingsTestFastflowlmBtn = document.getElementById("settings-test-fastflowlm");
@@ -254,7 +255,9 @@
           vllm_base_url: settingsVllmUrlEl.value.trim(),
           vllm_api_key: settingsVllmKeyEl.value.trim(),
           opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
-          opencode_api_key: settingsOpencodeKeyEl.value.trim(),
+          // only send a non-empty key; sending the empty field must not erase
+          // a stored credential (explicit removal uses opencode_api_clear)
+          ...(settingsOpencodeKeyEl.value.trim() ? {opencode_api_key: settingsOpencodeKeyEl.value.trim()} : {}),
           kobold_base_url: settingsKoboldUrlEl.value.trim(),
           kobold_api_key: settingsKoboldKeyEl.value.trim(),
           kobold_gpu_layers: settingsKoboldGpuLayersEl.value.trim(),
@@ -370,6 +373,28 @@
       });
     } finally {
       btn.disabled = false;
+    }
+  });
+  opencodeClearKeyBtn.addEventListener("click", async () => {
+    opencodeClearKeyBtn.disabled = true;
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opencode_api_clear: true }),
+      });
+      if (!res.ok) {
+        const fail = await res.json().catch(() => ({}));
+        throw new Error(fail.error || `Removal failed (${res.status})`);
+      }
+      settingsOpencodeKeyEl.value = "";
+      settingsTestOpencodeResultEl.textContent = "Stored opencode.ai key removed; opencode.ai models disappear immediately.";
+      settingsTestOpencodeResultEl.className = "hint";
+    } catch (err) {
+      settingsTestOpencodeResultEl.textContent = err.message;
+      settingsTestOpencodeResultEl.className = "hint test-result-fail";
+    } finally {
+      opencodeClearKeyBtn.disabled = false;
     }
   });
   settingsTestKoboldBtn.addEventListener("click", () =>

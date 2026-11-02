@@ -251,7 +251,9 @@ Hearth can also run models from opencode.ai: supply your opencode.ai API key fro
 https://opencode.ai/console in Settings, then Test connection verifies it and the
 model inventory appears on the Models page, chat, agent assignments, and model tests.
 Models are remote and externally managed; the key is stored encrypted in PostgreSQL
-and only sent to opencode.ai's inference endpoint. Deletion and download controls stay
+and only sent to opencode.ai's inference endpoint. Test connection saves a verified
+key, an empty field never wipes the stored key, and the card's Remove stored key
+button removes it explicitly. Deletion and download controls stay
 with the opencode.ai console.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP

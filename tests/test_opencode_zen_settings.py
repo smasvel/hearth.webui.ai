@@ -62,8 +62,17 @@ class OpenCodeKeyStorageTests(unittest.TestCase):
     def test_clearing_the_key_removes_it(self):
         self._submit({'opencode_api_key': 'sk-live-zen-key'})
         self.assertTrue(self._raw_db_value())
-        self._submit({'opencode_api_key': ''})
+        self._submit({'opencode_api_clear': True})
         self.assertIsNone(self._raw_db_value())
+
+    def test_empty_key_field_save_does_not_wipe_the_stored_key(self):
+        """A Save from a tab whose key field never populated must not erase the
+        credential — wiping keys requires the explicit opencode_api_clear."""
+        self._submit({'opencode_api_key': 'sk-live-zen-key'})
+        self._submit({'opencode_api_key': '', 'opencode_api_base_url': ''})
+        self.assertTrue(self._raw_db_value())
+        self.assertEqual(settings_store.get('opencode_api_key'), 'sk-live-zen-key')
+        self.assertIsNone(settings_store.get('opencode_api_base_url'))
 
     def test_unknown_test_target_is_rejected(self):
         import app

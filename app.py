@@ -4150,8 +4150,18 @@ def api_update_settings():
         "lan_default_model", "tailscale_ip_override",
         "kobold_gpu_layers", "kobold_draft_model", "kobold_draft_amount",
     ):
+        if key == "opencode_api_key":
+            # An empty value here must be a no-op: the panel loads the key back
+            # out of the database, but a page that failed to populate it (or a
+            # submit from a tab opened before the key existed) must not silently
+            # erase a stored credential. Removal is explicit via opencode_api_clear.
+            if (body.get(key) or "").strip():
+                settings_store.set(key, (body.get(key) or "").strip())
+            continue
         if key in body:
             settings_store.set(key, (body.get(key) or "").strip())
+    if body.get("opencode_api_clear") is True:
+        settings_store.set("opencode_api_key", None)
 
     # Checkbox-backed boolean arrives as JSON true/false, not a string — stored as "true"/
     # "false" text (settings_store is a plain string key/value store) so _settings_snapshot's
