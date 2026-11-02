@@ -71,7 +71,8 @@ flowchart LR
 
     subgraph DATA["💾 Persistence"]
         PG[("🐘 PostgreSQL<br/>chats · users · metrics<br/>agent tasks · memory")]
-        STATE["📁 Local state<br/>.env · certs · model dirs"]
+        STATE["📁 Local state<br/>.env · certs · runtime config"]
+        MODELS_DIR[("📼 Local model storage<br/>⬇️ Hugging Face & catalog downloads<br/>⬆️ local GGUF uploads")]
     end
 
     USERS ==>|"HTTPS / SSE"| CORE
@@ -83,6 +84,9 @@ flowchart LR
     LAN ==>|"OpenAI-compatible API"| CADDY
     CADDY ==> BACKENDS
     CORE ==>|"server-manager / REST"| BACKENDS
+    MODELS -->|"⬇️ search & download"| MODELS_DIR
+    MODELS -->|"⬆️ upload local GGUF"| MODELS_DIR
+    MODELS_DIR -.->|"load weights from disk"| BACKENDS
     TASKS --> CONTAINER
     CONTAINER -->|"model bridge socket"| CADDY
     CONTAINER -->|"localhost HTTP"| BROKER
@@ -105,7 +109,7 @@ flowchart LR
     class CADDY gateway;
     class LM,LEM,VLLM,KO,FLM,COMFY backends;
     class TASKS,CONTAINER,BROKER,CHECK agents;
-    class PG,STATE data;
+    class PG,STATE,MODELS_DIR data;
 ```
 
 *Browser clients and LAN coding tools reach isolated parts of Hearth directly; everything
