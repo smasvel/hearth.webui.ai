@@ -349,12 +349,43 @@
       api_key: settingsSglangKeyEl.value.trim(),
     })
   );
-  settingsTestOpencodeBtn.addEventListener("click", () =>
-    runTest(settingsTestOpencodeBtn, settingsTestOpencodeResultEl, "opencode", {
-      base_url: settingsOpencodeUrlEl.value.trim(),
-      api_key: settingsOpencodeKeyEl.value.trim(),
-    })
-  );
+  settingsTestOpencodeBtn.addEventListener("click", async () => {
+    // opencode.ai is configured by the key alone, so testing is configuring:
+    // persist what the admin typed (the backend stores it encrypted) and then
+    // verify against the live model list. Without this, a successful test left
+    // the key unsaved and every picker silently stayed Console-empty.
+    const btn = settingsTestOpencodeBtn;
+    btn.disabled = true;
+    settingsTestOpencodeResultEl.textContent = "Saving key…";
+    settingsTestOpencodeResultEl.className = "hint";
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
+          opencode_api_key: settingsOpencodeKeyEl.value.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const fail = await res.json().catch(() => ({}));
+        throw new Error(fail.error || `Saving failed (${res.status})`);
+      }
+    } catch (err) {
+      settingsTestOpencodeResultEl.textContent = err.message;
+      settingsTestOpencodeResultEl.className = "hint test-result-fail";
+      btn.disabled = false;
+      return;
+    }
+    try {
+      await runTest(btn, settingsTestOpencodeResultEl, "opencode", {
+        base_url: settingsOpencodeUrlEl.value.trim(),
+        api_key: settingsOpencodeKeyEl.value.trim(),
+      });
+    } finally {
+      btn.disabled = false;
+    }
+  });
   settingsTestKoboldBtn.addEventListener("click", () =>
     runTest(settingsTestKoboldBtn, settingsTestKoboldResultEl, "kobold", {
       base_url: settingsKoboldUrlEl.value.trim(),
