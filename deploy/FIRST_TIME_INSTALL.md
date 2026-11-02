@@ -397,11 +397,15 @@ If OpenCode conversation compaction fails, Hearth retries in a fresh session fro
 saved project checkpoint without advancing the work-cycle counter.
 For project agents, Hearth also caps retained recent turns at one eighth of the
 selected model's context up to a 65K-token window; Lemonade/Muse-style 65K+ models
-keep their full 65K recent-context budget (`keep.tokens`: 65,536) with an 8K
-output reserve (`buffer`: 8,192). Smaller windows still scale to one eighth of
-their context. The selected model's own context is the floor, too: a smaller
-sibling in the shared config cannot leave a larger-window assignment with only
-a tiny retained history.
+get a large recent-context budget (`keep.tokens` capped at 65,536) with an 8K
+output reserve (`buffer`: 8,192). On a 65,536-token window `keep` is 49,152 —
+`keep` never equals the window, because OpenCode's own compaction must fit a
+summarization request (`keep` + `buffer` + prompt overhead) inside it; `keep`
+equal to the whole window fails with "The compaction request cannot be reduced
+further without losing the latest exchange or checkpoint". Smaller windows still
+scale to one eighth of their context. The selected model's own context is the
+floor, too: a smaller sibling in the shared config cannot leave a larger-window
+assignment with only a tiny retained history.
 This prevents the agent repeatedly re-reading the same large file after compaction.
 Completion markers attached to future plans or implementation placeholders are
 ignored; Hearth keeps the assignment running until the agent reports actual work.

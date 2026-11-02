@@ -26,6 +26,93 @@ remote access to your home setup.
 > and configures the app to start automatically after reboot. See the
 > [installation guide](deploy/FIRST_TIME_INSTALL.md) for setup details.
 
+## Architecture at a glance
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'background': '#0f172a', 'primaryColor': '#1e293b', 'primaryTextColor': '#e2e8f0',
+  'primaryBorderColor': '#475569', 'lineColor': '#38bdf8', 'fontSize': '14px'
+}, 'themeCSS': '.cluster rect { rx: 14; fill-opacity: .85; }'}}%%
+flowchart LR
+    subgraph USERS["🌐 Browser & LAN Clients"]
+        UI["🖥️ Hearth Web UI<br/>chat · models · metrics"]
+        AGENTS_UI["🤖 Agent workspace<br/>assignments · live activity"]
+        LAN["🛠️ LAN coding tools<br/>OpenCode · Continue · VS Code"]
+    end
+
+    subgraph CORE["⚡ Hearth Core (Flask app.py)"]
+        CHAT["💬 Chat SSE engine<br/>streaming · tokens · thinking"]
+        MODELS["📦 Model lifecycle<br/>search · download · load / unload"]
+        TESTS["🧪 Model tests & IQ suites<br/>tool-contract validation"]
+        MEMORY["🧠 Cross-chat memory (RAG)<br/>local embeddings"]
+        RESEARCH["🔎 Web research<br/>search · scrape · browser history"]
+        VOICE["🎙️ Voice & creative<br/>STT / TTS · images · video"]
+    end
+
+    subgraph GATEWAY["🔐 Secure Auth Gateway (Caddy)"]
+        CADDY["🎟️ Per-tool bearer tokens<br/>per-backend ports · TLS"]
+    end
+
+    subgraph BACKENDS["🧮 Inference Backends (host services)"]
+        LM["🟢 LM Studio"]
+        LEM["🟠 Lemonade<br/>Ryzen AI NPU"]
+        VLLM["🔵 vLLM"]
+        KO["🟣 KoboldCPP"]
+        FLM["🔴 FastFlowLM"]
+        COMFY["🎨 ComfyUI"]
+    end
+
+    subgraph AGENT_LAYER["🤖 Agentic Workflow"]
+        TASKS["📋 Agent tasks manager<br/>work cycles · schedules"]
+        CONTAINER["🐳 OpenCode containers<br/>model relays · proxies"]
+        BROKER["🔌 Backend broker<br/>Docker → host systemctl"]
+        CHECK["✅ Checkpoints & recovery<br/>compaction-safe restarts"]
+    end
+
+    subgraph DATA["💾 Persistence"]
+        PG[("🐘 PostgreSQL<br/>chats · users · metrics<br/>agent tasks · memory")]
+        STATE["📁 Local state<br/>.env · certs · model dirs"]
+    end
+
+    USERS ==>|"HTTPS / SSE"| CORE
+    UI --> MEMORY
+    UI --> RESEARCH
+    UI --> VOICE
+    UI --> TESTS
+    AGENTS_UI --> TASKS
+    LAN ==>|"OpenAI-compatible API"| CADDY
+    CADDY ==> BACKENDS
+    CORE ==>|"server-manager / REST"| BACKENDS
+    TASKS --> CONTAINER
+    CONTAINER -->|"model bridge socket"| CADDY
+    CONTAINER -->|"localhost HTTP"| BROKER
+    TASKS --> CHECK
+    TASKS --> CONTAINER
+    BROKER -.->|"systemd verbs"| BACKENDS
+    CORE ==> PG
+    TASKS ==> PG
+    TESTS ==> PG
+    STATE -.-> CORE
+
+    classDef users fill:#0ea5e9,stroke:#0284c7,color:#082f49,stroke-width:2px;
+    classDef core fill:#8b5cf6,stroke:#7c3aed,color:#f5f3ff,stroke-width:2px;
+    classDef gateway fill:#f59e0b,stroke:#d97706,color:#451a03,stroke-width:2px;
+    classDef backends fill:#10b981,stroke:#059669,color:#042f2e,stroke-width:2px;
+    classDef agents fill:#ec4899,stroke:#db2777,color:#500724,stroke-width:2px;
+    classDef data fill:#64748b,stroke:#475569,color:#f8fafc,stroke-width:2px;
+    class UI,AGENTS_UI,LAN users;
+    class CHAT,MODELS,TESTS,MEMORY,RESEARCH,VOICE core;
+    class CADDY gateway;
+    class LM,LEM,VLLM,KO,FLM,COMFY backends;
+    class TASKS,CONTAINER,BROKER,CHECK agents;
+    class PG,STATE data;
+```
+
+*Browser clients and LAN coding tools reach isolated parts of Hearth directly; everything
+running the models stays behind peer-reviewed host services, while agent containers and
+their model relays bridge Docker-isolated OpenCode workers back to your local hardware.*
+
+
 A small Flask web UI for chatting with local models, with sidebar controls to load/unload
 models and switch which loaded model you're chatting with. Hearth started as an LM Studio
 front-end and now drives **five** local inference backends behind one chat UI — [LM Studio](https://lmstudio.ai), [Lemonade / Ryzen AI NPU](https://github.com/lemonade-sdk/lemonade),
@@ -1019,11 +1106,15 @@ interrupts the old runner, forces a current checkpoint before retiring its conta
 and includes the original goal, acceptance criteria, and refinements in the new session.
 Agent compaction settings are bounded by the selected model's actual context window:
 the retained recent-turn budget is capped at one eighth of context up to a 65K-token
-window, and Lemonade/Muse-style 65K+ models keep their full 65K recent-context
-budget (`keep.tokens`: 65,536) with an 8K output reserve (`buffer`: 8,192). The
-selected model's own context is the floor, too: a global config from a smaller
-sibling model cannot leave a larger-window assignment with only a tiny retained
-history. This prevents the agent repeatedly re-reading the same large file after
+window. Lemonade/Muse-style 65K+ models get a large recent-context budget (`keep.tokens`
+capped at 65,536) with an 8K output reserve (`buffer`: 8,192), but `keep` never equals the
+window: OpenCode's own compaction sends a summarization request over the retained history,
+so `keep` + `buffer` + prompt overhead must fit inside the window. On a 65,536-token window
+`keep` is 49,152 and `buffer` 8,192; a `keep` equal to the whole window reproducibly fails
+compaction with "The compaction request cannot be reduced further without losing the latest
+exchange or checkpoint". The selected model's own context is the floor, too: a global config
+from a smaller sibling model cannot leave a larger-window assignment with only a tiny
+retained history. This prevents the agent repeatedly re-reading the same large file after
 compaction.
 Hearth ignores completion markers when the response only describes future work or
 contains an implementation placeholder, and continues the assignment instead.

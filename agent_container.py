@@ -610,12 +610,19 @@ class ContainerOpenCode(OpenCode):
             if not isinstance(current_buffer, int) or isinstance(current_buffer, bool) or current_buffer < 0:
                 current_buffer = 0
             if context_limit >= 65536:
-                keep_budget = min(context_limit, 65536)
-                keep['tokens'] = min(max(current_keep, keep_budget), context_limit)
+                # keep must stay below the window: OpenCode's compaction itself sends a
+                # summarization request over the retained history, so keep + buffer +
+                # prompt overhead must fit. keep == window reproducibly fails with
+                # "The compaction request cannot be reduced further without losing the
+                # latest exchange or checkpoint" once the session fills the window.
                 output_reserve = model_limit.get('output')
                 if not isinstance(output_reserve, int) or isinstance(output_reserve, bool) or output_reserve <= 0:
                     output_reserve = 8192
-                comp['buffer'] = min(max(current_buffer, output_reserve), context_limit // 4)
+                buffer_budget = min(output_reserve, context_limit // 4)
+                safe_keep_max = context_limit - buffer_budget - max(4096, context_limit // 8)
+                keep_budget = min(65536, safe_keep_max)
+                keep['tokens'] = min(max(current_keep, keep_budget), safe_keep_max)
+                comp['buffer'] = min(max(current_buffer, buffer_budget), context_limit // 4)
             else:
                 safe_budget = max(1024, context_limit // 8)
                 keep['tokens'] = min(max(current_keep, safe_budget), context_limit)

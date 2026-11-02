@@ -120,7 +120,7 @@ class ContainerRecoveryTests(unittest.TestCase):
             {'compaction': {'auto': True, 'keep': {'tokens': 65536}, 'buffer': 1024}},
             'lemonade', 'model', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 65536}, 'buffer': 8192,
+            'auto': True, 'keep': {'tokens': 49152}, 'buffer': 8192,
         })
 
     def test_agent_config_does_not_narrow_a_large_muse_window_when_smaller_siblings_exist(self):
@@ -134,13 +134,13 @@ class ContainerRecoveryTests(unittest.TestCase):
             {'compaction': {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024}},
             'lemonade', 'Muse-Glimmer-30B-GGUF', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 65536}, 'buffer': 8192,
+            'auto': True, 'keep': {'tokens': 49152}, 'buffer': 8192,
         })
 
     def test_agent_config_scales_compaction_for_a_muse_style_lemonade_window(self):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         for model, context, expected_keep, expected_buffer in (
-            ('Muse-Glimmer-30B-GGUF', 65536, 65536, 8192),
+            ('Muse-Glimmer-30B-GGUF', 65536, 49152, 8192),
             ('Muse-Sibri-3.6B-GGUF', 131072, 65536, 8192),
             ('GLM-4.7-Flash-GGUF', 32768, 4096, 4096),
             ('qwen3.8-2b-distill', 8192, 1024, 1024),
@@ -161,7 +161,7 @@ class ContainerRecoveryTests(unittest.TestCase):
             {'compaction': {'auto': True, 'keep': {'tokens': 65536}, 'buffer': 32768}},
             'lemonade', 'Muse-Glimmer-30B-GGUF', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 65536}, 'buffer': 16384,
+            'auto': True, 'keep': {'tokens': 49152}, 'buffer': 16384,
         })
 
     def test_live_model_relay_socket_is_reused_instead_of_unlinked(self):

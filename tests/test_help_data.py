@@ -17,7 +17,7 @@ class TailscaleHelpTests(unittest.TestCase):
                 self.assertEqual(cfg['provider']['lemonade']['models'][model]['limit'],
                                  {'context': 4096, 'output': 2048})
                 self.assertEqual(cfg['compaction'],
-                                 {'auto': True, 'keep': {'tokens': 512}, 'buffer': 512})
+                                 {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
 
     @patch.object(help_data.settings_store, "get", side_effect=lambda key:
                   '32768' if key == 'opencode_compaction_buffer' else None)
@@ -27,7 +27,7 @@ class TailscaleHelpTests(unittest.TestCase):
             {'lemonade': ['Muse'], 'lmstudio': ['small']}, {},
             ctx_by_model={('lemonade', 'Muse'): 65536, ('lmstudio', 'small'): 4096}))
         self.assertEqual(cfg['compaction'],
-                         {'auto': True, 'keep': {'tokens': 512}, 'buffer': 1024})
+                         {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
 
     @patch.object(help_data.flm_context, "context_limit", side_effect=lambda model=None: 262144 if model and "minicpm" in model else 8192)
     def test_continue_uses_model_specific_flm_limits(self, _limit):

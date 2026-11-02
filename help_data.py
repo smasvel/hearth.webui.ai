@@ -501,9 +501,25 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
                for mid, item in p['models'].items()
                if not (be == 'fastflowlm' and '-flash' in mid.lower())]
     if windows:
-        limit = min(windows)
-        compaction_block["keep"]["tokens"] = min(compaction_block["keep"]["tokens"], limit // 8)
-        compaction_block["buffer"] = min(max(compaction_block.get("buffer", 0), limit // 8), limit // 4)
+        default_model = _pick_default(chat_by_be, loaded_by_be, default_override) or ""
+        be_, model_id = default_model.partition("/")[0], default_model.partition("/")[2]
+        default_window = None
+        if default_model in provider.keys() and model_id in provider.get(be_, {}).get('models', {}):
+            default_window = provider[be_]['models'][model_id]['limit']['context']
+        limit = default_window or min(windows)
+        # Lemonade/Muse-style 65K windows want a large recent-context budget, but
+        # keep + buffer + the compaction prompt itself must still fit inside the
+        # window — keep == window makes the summarization request impossible and the
+        # session fails with "cannot be reduced further without losing the latest
+        # exchange or checkpoint". Reserve room instead of pinning keep to the window.
+        if limit >= 65536:
+            buffer_budget = min(8192, limit // 8)
+            keep_budget = min(65536, limit - buffer_budget - max(4096, limit // 8))
+        else:
+            keep_budget = max(1024, limit // 8)
+            buffer_budget = keep_budget
+        compaction_block["keep"]["tokens"] = min(compaction_block["keep"]["tokens"], keep_budget)
+        compaction_block["buffer"] = min(max(compaction_block.get("buffer", 0), buffer_budget), limit // 4)
     return json.dumps(cfg, indent=2)
 
 
