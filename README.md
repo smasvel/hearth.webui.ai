@@ -30,8 +30,19 @@ remote access to your home setup.
 
 <img src="docs/architecture.png" alt="Hearth architecture: browser and LAN clients, the
 Flask core with chat, model lifecycle, tests, memory, research and voice, Caddy gateway,
-five inference backends plus ComfyUI, the agentic workflow with OpenCode containers and
-backend broker, and PostgreSQL plus local model storage" width="100%">
+five inference backends plus ComfyUI, hosted opencode.ai models with plan-selected
+session-routed access, the agentic workflow with OpenCode containers and backend broker,
+and PostgreSQL plus local model storage" width="100%">
+
+<p><img src="docs/architecture.svg" alt="Animated Hearth architecture overview: client nodes,
+the Flask core with chat, model lifecycle, tests, memory, research and voice, five local inference
+backends, the Caddy gateway, persistence stores, the agentic workflow layer, and the opencode.ai
+hosted-models column with encrypted key storage, session routing, and usage allowances. Dashed
+flow lines and traveling packets animate the chat, inference, hosted-model, and model-storage
+paths; node glows pulse to highlight each layer." width="100%"></p>
+
+<p align="center"><em>Animated SVG overview — flows and packets move; falls back to a static
+picture where animation is unavailable.</em></p>
 
 <details>
 <summary>Diagram source (Mermaid)</summary>
@@ -70,6 +81,10 @@ flowchart LR
         COMFY["🎨 ComfyUI"]
     end
 
+    subgraph CLOUD["☁️ Hosted Models (opencode.ai)"]
+        OC["🌐 opencode.ai models<br/>OpenCode Go plan / pay-as-you-go<br/>session-routed per conversation"]
+    end
+
     subgraph AGENT_LAYER["🤖 Agentic Workflow"]
         TASKS["📋 Agent tasks manager<br/>work cycles · schedules"]
         CONTAINER["🐳 OpenCode containers<br/>model relays · proxies"]
@@ -84,6 +99,8 @@ flowchart LR
     end
 
     USERS ==>|"HTTPS / SSE"| CORE
+    CORE ==>|"opencode.ai API<br/>plan-selected Go / payg<br/>session + API key"| OC
+    CONTAINER -.->|"relayed session header"| OC
     UI --> MEMORY
     UI --> RESEARCH
     UI --> VOICE
@@ -116,15 +133,19 @@ flowchart LR
     class CHAT,MODELS,TESTS,MEMORY,RESEARCH,VOICE core;
     class CADDY gateway;
     class LM,LEM,VLLM,KO,FLM,COMFY backends;
+    class OC cloud;
     class TASKS,CONTAINER,BROKER,CHECK agents;
     class PG,STATE,MODELS_DIR data;
+    classDef cloud fill:#38bdf8,stroke:#0284c7,color:#082f49,stroke-width:2px;
 ```
 
 </details>
 
 *Browser clients and LAN coding tools reach isolated parts of Hearth directly; everything
 running the models stays behind peer-reviewed host services, while agent containers and
-their model relays bridge Docker-isolated OpenCode workers back to your local hardware.*
+their model relays bridge Docker-isolated OpenCode workers back to your local hardware —
+and hosted opencode.ai models (with the account plan, encrypted API key, and per-conversation
+routing session configured in Settings) are one more backend away.*
 
 
 A small Flask web UI for chatting with local models, with sidebar controls to load/unload
@@ -132,8 +153,10 @@ models and switch which loaded model you're chatting with. Hearth started as an 
 front-end and now drives **five** local inference backends behind one chat UI — [LM Studio](https://lmstudio.ai), [Lemonade / Ryzen AI NPU](https://github.com/lemonade-sdk/lemonade),
 [vLLM](https://github.com/vllm-project/vllm), [KoboldCPP](https://github.com/LostRuins/koboldcpp),
 and [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) (the Ryzen AI NPU runtime run
-standalone) — plus ComfyUI for image generation. Each backend is exposed to LAN coding tools
-(Continue, OpenCode) over its own authenticated Caddy reverse-proxy port (see **Help**), and
+standalone) — plus ComfyUI for image generation — and the opencode.ai hosted catalog
+(OpenCode Go subscription or pay-as-you-go) routed per conversation through its
+OpenAI-compatible endpoint. Local backends are exposed to LAN coding tools
+(Continue, OpenCode) over their own authenticated Caddy reverse-proxy ports (see **Help**), and
 every one has the same Search / Download / Load / Unload / Delete lifecycle from the Models and
 Downloads pages. Beyond chat it also does cross-chat memory (RAG), auto-detected web search,
 voice in/out, a performance-metrics board, and an in-chat practice-test/quiz platform —
