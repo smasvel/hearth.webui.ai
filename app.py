@@ -51,6 +51,12 @@ import lemonade_client as lemonade
 import lmstudio_client as lms
 import vllm_client as vllm
 import opencode_client as zen
+# opencode.ai plan-derived default bases; re-saving one of these as the override
+# must be treated as 'not an override'.
+_OPENCODE_DEFAULT_BASE_URLS = {
+    "https://opencode.ai/inference/openai",
+    "https://opencode.ai/inference/go/openai",
+}
 import kobold_client as kobold
 import fastflowlm_client as fastflowlm
 import mcp_tools_client
@@ -4008,8 +4014,12 @@ def api_test_settings():
         requested_plan = (body.get("plan") or "").strip().lower()
         if requested_plan not in ("", "payg", "go"):
             return jsonify({"error": "opencode.ai plan must be 'payg' or 'go'"}), 400
+        requested_base = (body.get("base_url") or "").strip()
+        if requested_base in _OPENCODE_DEFAULT_BASE_URLS:
+            # A plan-derived default is not an override; let the plan decide.
+            requested_base = ""
         ok, message = _test_opencode(
-            (body.get("base_url") or "").strip() or zen.base_url(),
+            requested_base or zen.base_url(),
             body.get("api_key") or zen.api_key(),
             requested_plan or zen.plan(),
         )
@@ -4155,6 +4165,14 @@ def api_update_settings():
         "lan_default_model", "tailscale_ip_override",
         "kobold_gpu_layers", "kobold_draft_model", "kobold_draft_amount",
     ):
+        if key == "opencode_api_base_url":
+            # Never persist a plan-derived default as an override: the panel
+            # prefills the field from a derived URL, so an unconscious re-save
+            # would pin one product endpoint (e.g. pay-as-you-go) permanently
+            # and silently override an OpenCode Go subscription.
+            candidate = (body.get(key) or "").strip()
+            if candidate in _OPENCODE_DEFAULT_BASE_URLS:
+                continue
         if key == "opencode_api_key":
             # An empty value here must be a no-op: the panel loads the key back
             # out of the database, but a page that failed to populate it (or a

@@ -56,7 +56,19 @@
   const settingsTestLemonadeResultEl = document.getElementById("settings-test-lemonade-result");
   const settingsTestVllmBtn = document.getElementById("settings-test-vllm");
   const settingsTestVllmResultEl = document.getElementById("settings-test-vllm-result");
-  const settingsTestOpencodeBtn = document.getElementById("settings-test-opencode");
+  const opencodePlanDefaults = {
+    payg: "https://opencode.ai/inference/openai",
+    go: "https://opencode.ai/inference/go/openai",
+  };
+  function opencodeOverrideToSend() {
+    // A prefilled plan-derived default is not an override — sending it back would
+    // pin that single product endpoint forever (observed: a Go subscriber's plan
+    // select was silently neutralized by the auto-filled URL). Only a genuinely
+    // custom (advanced) base URL is sent.
+    const value = settingsOpencodeUrlEl.value.trim();
+    const known = Object.values(opencodePlanDefaults);
+    return value && !known.includes(value) ? value : "";
+  }
   const settingsTestOpencodeResultEl = document.getElementById("settings-test-opencode-result");
   const opencodeClearKeyBtn = document.getElementById("opencode-clear-key");
   const settingsTestKoboldBtn = document.getElementById("settings-test-kobold");
@@ -257,7 +269,7 @@
           vllm_base_url: settingsVllmUrlEl.value.trim(),
           vllm_api_key: settingsVllmKeyEl.value.trim(),
           opencode_api_plan: settingsOpencodePlanEl.value,
-          opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
+          opencode_api_base_url: opencodeOverrideToSend(),
           // only send a non-empty key; sending the empty field must not erase
           // a stored credential (explicit removal uses opencode_api_clear)
           ...(settingsOpencodeKeyEl.value.trim() ? {opencode_api_key: settingsOpencodeKeyEl.value.trim()} : {}),
@@ -371,9 +383,9 @@
     }
     try {
       await runTest(btn, settingsTestOpencodeResultEl, "opencode", {
-        base_url: settingsOpencodeUrlEl.value.trim(),
-        api_key: settingsOpencodeKeyEl.value.trim(),
+        base_url: opencodeOverrideToSend(),
         plan: settingsOpencodePlanEl.value,
+        api_key: settingsOpencodeKeyEl.value.trim(),
       });
     } finally {
       btn.disabled = false;
