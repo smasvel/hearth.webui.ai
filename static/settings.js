@@ -56,6 +56,7 @@
   const settingsTestLemonadeResultEl = document.getElementById("settings-test-lemonade-result");
   const settingsTestVllmBtn = document.getElementById("settings-test-vllm");
   const settingsTestVllmResultEl = document.getElementById("settings-test-vllm-result");
+  const settingsTestOpencodeBtn = document.getElementById("settings-test-opencode");
   const opencodePlanDefaults = {
     payg: "https://opencode.ai/inference/openai",
     go: "https://opencode.ai/inference/go/openai",
@@ -176,8 +177,8 @@
     settingsLemonadeKeyEl.value = data.lemonade_api_key || "";
     settingsVllmUrlEl.value = data.vllm_base_url || "";
     settingsVllmKeyEl.value = data.vllm_api_key || "";
-    settingsOpencodeUrlEl.value = data.opencode_api_base_url || "";
-    settingsOpencodePlanEl.value = data.opencode_api_plan === "go" ? "go" : "payg";
+    settingsOpencodePlanEl.value = data.opencode_api_plan === "payg" ? "payg" : "go";
+    settingsOpencodeUrlEl.value = data.opencode_api_base_url || opencodePlanDefaults[settingsOpencodePlanEl.value];
     settingsOpencodeKeyEl.value = data.opencode_api_key || "";
     settingsKoboldUrlEl.value = data.kobold_base_url || "";
     settingsKoboldKeyEl.value = data.kobold_api_key || "";
@@ -360,7 +361,7 @@
     // the key unsaved and every picker silently stayed Console-empty.
     const btn = settingsTestOpencodeBtn;
     btn.disabled = true;
-    settingsTestOpencodeResultEl.textContent = "Saving key…";
+    settingsTestOpencodeResultEl.textContent = "Saving plan and key…";
     settingsTestOpencodeResultEl.className = "hint";
     try {
       const res = await fetch("/api/settings", {
@@ -368,6 +369,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           opencode_api_base_url: settingsOpencodeUrlEl.value.trim(),
+          opencode_api_plan: settingsOpencodePlanEl.value,
           opencode_api_key: settingsOpencodeKeyEl.value.trim(),
         }),
       });

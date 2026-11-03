@@ -250,8 +250,10 @@ No separate service or setup step is required.
 Hearth can also run models from opencode.ai: supply your opencode.ai API key from
 https://opencode.ai/console in Settings, pick the account plan (Pay-as-you-go, or
 OpenCode Go when you have that subscription — it uses opencode.ai's dedicated
-/inference/go endpoint), then Test connection verifies it and the
-model inventory appears on the Models page, chat, agent assignments, and model tests.
+/inference/go endpoint), then Test connection saves the selected plan and key and
+verifies the key against that plan's model list. The model inventory appears on the
+Models page, chat, agent assignments, and model tests. Failed checks display the
+response body returned by opencode.ai.
 Models are remote and externally managed; the key is stored encrypted in PostgreSQL
 and only sent to opencode.ai's inference endpoint. Test connection saves a verified
 key, an empty field never wipes the stored key, and the card's Remove stored key
@@ -272,6 +274,14 @@ it. Hearth sends a stable per-conversation `x-opencode-session` routing header a
 gateway requires, agent relays forward the client's own session header with a stable
 per-task fallback, and both 402 (no credits on the selected plan) and 401/403 (key
 rejected) errors surface as plain guidance in chat.
+
+Hosted agent assignments check model availability without loading or unloading local
+models. After updating Hearth and restarting `ai-webui.service`, use **Resume** on any
+assignment previously blocked by `Not an opencode.ai model id`; it retries with the
+selected hosted model and the saved workspace. No API key change is needed for this fix.
+The agent picker and new hosted relays use the current catalog, account plan, and key
+without requiring a desktop OpenCode reload. If a saved model is absent from the current
+plan's catalog, select an available model before resuming the assignment.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
 tools on KoboldCPP, FastFlowLM, opencode.ai, Lemonade, and LM Studio. The MCP servers

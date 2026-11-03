@@ -90,6 +90,34 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
 
 class ContainerRecoveryTests(unittest.TestCase):
+    def test_hosted_picker_replaces_stale_desktop_catalog(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        stale = [{'providerID': 'opencode', 'id': 'retired-free'},
+                 {'providerID': 'lmstudio', 'id': 'local-model'}]
+        config = {'provider': {'opencode': {'models': {
+            'current-model': {'limit': {'context': 65536}},
+        }}}}
+        with patch.object(OpenCode, 'models', return_value=stale), \
+             patch('agent_container._generated_model_config', return_value=config):
+            models = client.models()
+        self.assertEqual([(m['providerID'], m['id']) for m in models],
+                         [('lmstudio', 'local-model'), ('opencode', 'current-model')])
+
+    def test_hosted_relay_uses_current_plan_and_key(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        old = {'provider': {'opencode': {'models': {'model': {}}, 'options': {
+            'baseURL': 'https://example.com/previous/v1', 'apiKey': 'old-key',
+        }}}}
+        current = copy.deepcopy(old)
+        current['provider']['opencode']['options'] = {
+            'baseURL': 'https://example.com/current/v1', 'apiKey': 'current-key',
+        }
+        with patch('agent_container.parse_jsonc', return_value=old), \
+             patch('agent_container._generated_model_config', return_value=current):
+            _, _, relay = client._host_provider('opencode', 'model', '/tmp/test.sock', 'Test')
+        self.assertEqual(relay['base_url'], 'https://example.com/current/v1')
+        self.assertEqual(relay['api_key'], 'current-key')
+
     def test_resume_restores_durable_workspace_to_existing_container(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)

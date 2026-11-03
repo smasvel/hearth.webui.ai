@@ -742,8 +742,9 @@ endpoints automatically); you can flip between plans without touching anything e
 1. Create an account at [opencode.ai/console](https://opencode.ai/console) and copy your
    API key (with Go, also make sure the subscription is active).
 2. In Hearth **Settings → opencode.ai (remote hosted models)**, paste the key, pick the
-   plan, and press **Test connection** — a successful test saves (and verifies) the key
-   in one step.
+   plan, and press **Test connection** — this saves the selected plan and key, then
+   verifies the key against that plan's model list. If the check fails, Hearth shows
+   opencode.ai's response body to help diagnose the issue.
 3. The key is stored **encrypted in PostgreSQL** and only sent to opencode.ai. A re-save
    from an empty field never wipes it; **Remove stored key** does, explicitly.
 
@@ -769,6 +770,14 @@ inside the **agent assignment** model pickers, and in **Model tests**.
   *local NPU for quick chat* — both keep working side by side.
 - **Model tests**: run the full evaluation suite against a hosted model to compare
   coding/tool quality before assigning it to a project task.
+
+Hosted agent assignments validate the selected model against the hosted catalog before
+starting, without loading or unloading local models. The agent picker and new hosted
+relays use the current account catalog, plan, and key even if desktop OpenCode retains
+an older configuration. If an assignment was blocked with
+`Not an opencode.ai model id`, update Hearth, restart the service, then **Resume** the
+assignment to retry from its saved workspace. If its saved model is no longer offered
+on the selected plan, choose an available model before resuming.
 
 ### Session routing and reliability details
 
@@ -830,11 +839,11 @@ plan — Pay-as-you-go (Console credits) or OpenCode Go (subscription, which use
 opencode.ai's dedicated /inference/go endpoint) — and models are served on an
 account-state basis (loaded/unload state doesn't apply; download and deletion stay
 with the opencode.ai account). Key storage is encrypted in PostgreSQL; **Test
-connection saves the key after verifying it**, a re-save from a blank field never
-wipes it, and removal is explicit via the card's **Remove stored key** button. They behave
-like remote models elsewhere: chat, agent assignments, and model tests accept them,
-and the agentic framework lists provider `opencode` models with their advertised
-context windows.
+connection saves the selected plan and key before verifying them**, a re-save from a
+blank field never wipes it, and removal is explicit via the card's **Remove stored key**
+button. They behave like remote models elsewhere: chat, agent assignments, and model
+tests accept them; the agentic framework lists provider `opencode` models with their
+advertised context windows.
 
 Hearth chat can also call its configured Playwright browser and persistent Python MCP
 tools when using KoboldCPP, FastFlowLM, opencode.ai, Lemonade, or LM Studio. Tool-enabled

@@ -946,6 +946,26 @@ class AgentAPITests(unittest.TestCase):
             app._prepare_agent_model({'model': model})
         load.assert_not_called()
 
+    def test_hosted_agent_model_is_verified_with_catalog_namespace(self):
+        with patch.object(app.zen, 'api_key', return_value='test-key'), \
+             patch.object(app.zen, 'list_models', return_value=[{
+                 'id': 'opencode/hosted-free', 'state': 'loaded',
+             }]), patch.object(app, 'api_load_model') as load, \
+             patch.object(app, '_test_model_inventory') as local_inventory:
+            app._prepare_agent_model({'model': {
+                'providerID': 'opencode', 'id': 'hosted-free',
+            }})
+        load.assert_not_called()
+        local_inventory.assert_not_called()
+
+    def test_hosted_agent_model_validation_preserves_missing_model_error(self):
+        with patch.object(app.zen, 'api_key', return_value='test-key'), \
+             patch.object(app.zen, 'list_models', return_value=[]):
+            with self.assertRaisesRegex(app.zen.OpenCodeError, 'not currently served'):
+                app._prepare_agent_model({'model': {
+                    'providerID': 'opencode', 'id': 'missing-free',
+                }})
+
     def test_loaded_model_with_small_context_is_reloaded_for_agent(self):
         model = {'providerID': 'lemonade', 'id': 'Ornith-1.5-9B-GGUF'}
         with patch.object(app.lemonade, 'list_models', return_value=[{

@@ -2137,7 +2137,9 @@ def _test_load_model(target):
         # Remote opencode.ai models consume no local resources and acknowledge no
         # load/unload: verify they are actually served and skip the local
         # handoff certification entirely.
-        zen.verify_model(target['id'])
+        model_id = target['id']
+        # Agents store providerID separately; model tests use namespaced catalog IDs.
+        zen.verify_model(model_id if zen.owns_model(model_id) else 'opencode/' + model_id)
         return
     _model_test_context.active = True
     try:
@@ -2202,6 +2204,9 @@ def _test_context(target):
 def _prepare_agent_model(job):
     with _reasoning_model_load_lock:
         model = job['model']
+        if model['providerID'] == 'opencode':
+            _test_load_model({'backend': 'opencode', 'id': model['id']})
+            return
         # Continuing with an already-serving FastFlowLM model is not a new model
         # load. Avoid a needless eviction/reload (and dependence on unrelated
         # backend availability).
@@ -2218,7 +2223,7 @@ def _prepare_agent_model(job):
         # target. For an agent continuing with a healthy model, that eviction is
         # unnecessary and can strand the task if a backend's unload call stalls.
         client = {'lemonade': lemonade, 'lmstudio': lms, 'vllm': vllm,
-                  'kobold': kobold, 'opencode': zen}.get(model['providerID'])
+                  'kobold': kobold}.get(model['providerID'])
         if client:
             try:
                 loaded = next((entry for entry in client.list_models()
@@ -4122,10 +4127,14 @@ def _test_opencode(base_url: str, api_key: str | None, plan: str = "payg") -> tu
     models_url = root + ("/go/v1/models" if plan == "go" else "/v1/models")
     try:
         response = requests.get(models_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
-        if response.status_code in (401, 403):
-            return False, "The API key was rejected by opencode.ai (check it in your opencode.ai console)."
         if response.status_code >= 400:
-            return False, f"opencode.ai responded with HTTP {response.status_code}."
+            detail = (response.text or "").strip()
+            if api_key and detail:
+                detail = detail.replace(api_key, "[redacted]")
+            if detail:
+                detail = detail[:500]
+                return False, f"opencode.ai responded with HTTP {response.status_code}: {detail}"
+            return False, f"opencode.ai responded with HTTP {response.status_code} (empty response body)."
         items = response.json().get("data", [])
     except requests.RequestException as exc:
         return False, f"Could not reach opencode.ai: {exc}"

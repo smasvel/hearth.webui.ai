@@ -476,8 +476,11 @@ class ContainerOpenCode(OpenCode):
             logging.warning('Could not read the running OpenCode model list; using Hearth model inventory.',
                             exc_info=True)
             models = []
-        known = {(model['providerID'], model['id']) for model in models}
         config = _generated_model_config()
+        if config is not None:
+            # The running desktop process can retain a previous hosted plan's catalog.
+            models = [model for model in models if model['providerID'] != 'opencode']
+        known = {(model['providerID'], model['id']) for model in models}
         for provider_id, provider in (config or {}).get('provider', {}).items():
             for model_id, entry in (provider.get('models') or {}).items():
                 if (provider_id, model_id) in known:
@@ -534,6 +537,11 @@ class ContainerOpenCode(OpenCode):
             config = parse_jsonc(config_path)
         except (OSError, ValueError):
             config = {}
+        if provider_id == 'opencode':
+            # Use the current account plan/key even when the desktop config is stale.
+            generated = _generated_model_config()
+            if generated is not None:
+                config = generated
         source = (config.get('provider') or {}).get(provider_id)
         models = (source or {}).get('models') or {}
         model = models.get(model_id)

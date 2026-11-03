@@ -431,6 +431,13 @@ class SuiteTests(unittest.TestCase):
 
 
 class ModelHandoffVerificationTests(unittest.TestCase):
+    def test_hosted_catalog_id_is_not_prefixed_twice(self):
+        with patch.object(app.zen, 'verify_model') as verify, \
+             patch.object(app, 'api_load_model') as load:
+            app._test_load_model({'backend': 'opencode', 'id': 'opencode/hosted-free'})
+        verify.assert_called_once_with('opencode/hosted-free')
+        load.assert_not_called()
+
     def test_tests_start_only_after_exclusive_requested_model_is_loaded(self):
         target = {'backend': 'lemonade', 'id': 'target'}
         good = {'backend': 'lemonade', 'id': 'target', 'state': 'loaded', 'type': 'llm'}
