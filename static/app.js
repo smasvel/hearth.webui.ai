@@ -407,6 +407,7 @@
   function buildModelCard(m) {
     const loaded = m.state === "loaded";
     const unavailable = m.loadable === false;
+    const externallyManaged = m.externally_managed === true;
     const card = document.createElement("div");
     card.className = "model-card";
     // Meta line: publisher · quantization · type · size — only the parts that exist,
@@ -441,7 +442,12 @@
       warning.append(label, message);
       actions.appendChild(warning);
     }
-    if (loaded) {
+    if (externallyManaged) {
+      const note = document.createElement("span");
+      note.className = "hint";
+      note.textContent = "Hosted remotely; managed by opencode.ai";
+      actions.appendChild(note);
+    } else if (loaded) {
       const unloadBtn = document.createElement("button");
       unloadBtn.textContent = "Unload";
       unloadBtn.className = "danger";
@@ -528,7 +534,9 @@
       const opt = document.createElement("option");
       opt.value = m.id;
       const label = BACKEND_LABELS[m.backend];
-      opt.textContent = label ? `${m.id} (${label})` : m.id;
+      const displayName = (m.name && m.name !== m.id) ? m.name : m.id;
+      const typeLabel = (m.quantization || "").replace("remote opencode.ai (", "").replace(")", "");
+      opt.textContent = `${displayName} · ${typeLabel || label || m.backend}`;
       opt.title = opt.textContent;
       modelSelectEl.appendChild(opt);
     }
@@ -547,6 +555,7 @@
     const supportTypes = new Set(["embeddings", "embedding", "transcription", "tts"]);
     const otherLoaded = models.filter(
       (m) => m.state === "loaded" && m.id !== modelKey
+        && m.externally_managed !== true
         && !supportTypes.has(m.type)
     );
     if (otherLoaded.length > 0 || targetBackend === "lemonade") {

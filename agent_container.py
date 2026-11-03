@@ -181,6 +181,11 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             if response.status_code >= 500:
                 logging.warning('Agent model upstream returned HTTP %s for %s (%s bytes).',
                                 response.status_code, request_path, length)
+            if proxy.get('provider_id') == 'opencode' and (200 <= response.status_code < 400 or response.status_code in (402, 429)):
+                live_requests.record_provider_availability(
+                    provider='opencode', model=proxy.get('model_id'), status=response.status_code,
+                    retry_after=response.headers.get('Retry-After'),
+                )
             self.send_response(response.status_code)
             for name in ('Content-Type', 'Content-Length', 'Cache-Control', 'Retry-After'):
                 if response.headers.get(name): self.send_header(name, response.headers[name])
@@ -191,6 +196,7 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             event_stream = 'text/event-stream' in response.headers.get('Content-Type', '').lower()
             pending = b''
             captured = bytearray()
+            payload = None
 
             def record_event(line):
                 if not line.startswith(b'data:'):
@@ -257,7 +263,10 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
                         live_requests.update(live_id, delta_chars=len(result_text), delta_content=result_text)
                 except (ValueError, TypeError, AttributeError, IndexError):
                     pass
+            usage = payload.get('usage') if 'payload' in locals() and isinstance(payload, dict) else None
+            completion_tokens = usage.get('completion_tokens') if isinstance(usage, dict) else None
             live_requests.finish(live_id, status='done' if response.ok else 'error',
+                                 total_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
                                  status_code=response.status_code)
         except (requests.RequestException, OSError, ValueError) as exc:
             logging.warning('Agent model relay failed for %s (%s bytes): %s: %s',

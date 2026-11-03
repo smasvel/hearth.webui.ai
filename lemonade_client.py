@@ -440,6 +440,12 @@ def _hf_checkpoint_size_bytes(checkpoint: str | None, timeout: float = 10.0) -> 
     return None
 
 
+def model_size_gb(model_id: str) -> float | None:
+    """Best-effort weight size for the shared load-capacity check."""
+    size = _hf_checkpoint_size_bytes(_get_checkpoint(model_id))
+    return size / 1e9 if size else None
+
+
 _SAFE_LOAD_RAM_FRACTION = 0.8
 
 

@@ -156,9 +156,10 @@ and [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) (the Ryzen AI NPU run
 standalone) — plus ComfyUI for image generation — and the opencode.ai hosted catalog
 (OpenCode Go subscription or pay-as-you-go) routed per conversation through its
 OpenAI-compatible endpoint. Local backends are exposed to LAN coding tools
-(Continue, OpenCode) over their own authenticated Caddy reverse-proxy ports (see **Help**), and
-every one has the same Search / Download / Load / Unload / Delete lifecycle from the Models and
-Downloads pages. Beyond chat it also does cross-chat memory (RAG), auto-detected web search,
+(Continue, OpenCode) over their own authenticated Caddy reverse-proxy ports (see **Help**).
+Local models have the Search / Download / Load / Unload / Delete lifecycle from the Models and
+Downloads pages; hosted opencode.ai models are remotely managed and cannot be unloaded or
+deleted from Hearth. Beyond chat it also does cross-chat memory (RAG), auto-detected web search,
 voice in/out, a performance-metrics board, and an in-chat practice-test/quiz platform —
 all documented in their own sections below.
 
@@ -170,12 +171,12 @@ preventing native tool parsers from rejecting ordinary answers.
 | Use case | Included capabilities |
 |---|---|
 | Local and hosted AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching (local or hosted opencode.ai), and supported reasoning displays |
-| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported backends; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
+| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
-| Web research | Web search and page retrieval, optional Chromium scraping, Playwright browser actions, and searchable AI browser history |
+| Web research | Relevance-ranked web search, broad configurable Playwright page retrieval, ad/tracker blocking, read-only chat browser research, and searchable AI browser history |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
@@ -294,7 +295,10 @@ depending on a Muse model for tools or coding work.
 
 A model appearing in search does not establish that it fits your hardware or
 supports every feature. Hearth includes resource checks and load feedback; runtime
-compatibility, available memory, context size, and model capabilities still apply.
+compatibility, available memory, context size, and model capabilities still apply. The
+shared load preflight keeps the current model loaded when available RAM can fit the
+incoming model's known weight size plus 1 GB headroom. Otherwise Hearth evicts the
+current model first; backend-specific model-size checks still apply.
 Embedding, speech, image, and video models have separate purposes from chat models.
 
 On **Models**, each model label includes its maximum supported context-token count
@@ -408,7 +412,7 @@ adjustments are limited to that model; by default it can perform up to six tool 
 multi-step browser tasks, then Hearth requests a text-only summary of the results.
 Other FastFlowLM models keep their existing path.
 For Hearth chat across backends, administrators can set the maximum tool-call retries
-(rounds) per response in Settings (1–64, default 6); the limit applies to the next chat request.
+(rounds) per response in Settings (1–100, default 100); the limit applies to the next chat request.
 When browser tools are available, Hearth adds their usage guidance to the leading system
 message and combines system instructions into one leading message for chat templates that
 require system instructions first.
@@ -604,7 +608,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Agent skills | Per-user skill library with add/edit/delete, file upload, URL import, and SKILL.md export; selected skills install into the agent's container and are surfaced to the agent | Agents → Skills |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
-| Web research | Automatic search detection, page retrieval, optional headless Chromium scraping, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
+| Web research | Automatic search detection, relevance-ranked search, configurable large-batch Playwright page retrieval, ad/tracker blocking, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
 | Voice | Microphone transcription, spoken replies, and hands-free conversation with configured speech models | [Voice](#voice-translation-images-and-video) |
 | Translation | Local voice, image, and video translation with configured compatible models | Chat translation controls |
 | Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
@@ -645,6 +649,8 @@ The evaluation workflows cover:
   failures, and responding to verification results.
 - Interactive agent behavior: single-choice and multiple-choice questions, custom
   answers, dismissed questions, permission denials, and task continuations.
+- Agent question submissions disable the prompt while the answer is being sent,
+  preventing refreshes or repeated clicks from interrupting the response.
 - Compatibility diagnostics for model runtimes, response parsers, and tool schemas.
 
 These checks evaluate responses against simulated tool results; they do not execute
@@ -778,6 +784,12 @@ an older configuration. If an assignment was blocked with
 `Not an opencode.ai model id`, update Hearth, restart the service, then **Resume** the
 assignment to retry from its saved workspace. If its saved model is no longer offered
 on the selected plan, choose an available model before resuming.
+
+When an agent request to opencode.ai receives HTTP 402 (credits or plan allowance) or
+429 (rate limit), Hearth records the affected model and the observed time. If the
+provider supplies `Retry-After`, the task list and task page show the estimated next
+available time. If the provider supplies no reset hint, Hearth reports that the reset
+time was not provided. A successful request clears that model's prior availability warning.
 
 ### Session routing and reliability details
 
@@ -1055,6 +1067,15 @@ aimed at Hearth itself ("How are you today?", "How's it going?"). A topical foll
 in the same message still triggers the lookup, and a plain "search for X", "browse X",
 or a pasted URL keeps the earlier behavior.
 
+Settings → Web search and research controls automatic versus explicit search, search result
+count, Playwright page limit (0–500), browser access, and direct URLs. General research uses
+the search evidence Hearth supplies directly; chat Playwright is reserved for specific page
+inspection and avoids redundant browser tool rounds. The default chat tool-round budget is 100
+and is configurable in Settings. Before navigation,
+Hearth filters out unrelated and sponsored results and diversifies domains. Browser requests
+to known ad and tracker destinations are blocked. Chat's Playwright tools are read-only for
+research: they navigate and inspect pages but do not click controls or submit forms.
+
 ## Voice, translation, images, and video
 
 Chat has a full-width, resizable message editor with a separate toolbar underneath.
@@ -1158,8 +1179,9 @@ Use **Clone** on an assignment in **My agents** to start a
 separate task with its title, prompt, model, and settings copied into the new task form.
 Review the copied settings before starting. The clone gets a fresh project workspace and
 does not copy the source task's code, activity, sharing, or schedules. The **My agents**
-page lists tasks and their plain-language status;
-open one to see its separate execution page. There, the **Activity** feed streams the
+page lists tasks and their plain-language status; completed tasks show the latest run's
+elapsed time and generated model tokens per second. The rate uses completed model request
+tokens divided by their combined generation time. Open a task to see its separate execution page. There, the **Activity** feed streams the
 agent progress, container tool inputs and outputs, and user-facing model responses
 from the active OpenCode session over a task-scoped live event stream, with correctly
 formatted timestamps on agent messages and completed container tools, plus a live indicator while it is working. Private reasoning

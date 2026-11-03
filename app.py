@@ -139,8 +139,8 @@ _MAX_CHAT_MESSAGES = 500
 _MAX_CHAT_MESSAGE_CHARS = 2_000_000
 _model_load_status: dict[tuple[str, str], dict] = {}
 _model_load_status_lock = threading.Lock()
-_DEFAULT_CHAT_TOOL_ROUNDS = 6
-_MAX_CHAT_TOOL_ROUNDS = 64
+_DEFAULT_CHAT_TOOL_ROUNDS = 100
+_MAX_CHAT_TOOL_ROUNDS = 100
 
 # settings_store keys for the admin-editable chat limits, mapped to their built-in defaults.
 _CHAT_LIMIT_DEFAULTS = {
@@ -659,8 +659,8 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
     either way (page_scraper's add_visit doesn't depend on screenshot_dir)."""
     if not query_text:
         return None, []
-    max_results = max(1, min(10, int(settings_store.get("web_search_max_results") or "6")))
-    max_pages = max(0, min(5, int(settings_store.get("web_search_max_pages") or "4")))
+    max_results = max(1, min(500, int(settings_store.get("web_search_max_results") or "6")))
+    max_pages = max(0, min(500, int(settings_store.get("web_search_max_pages") or "100")))
     browser_enabled = (settings_store.get("web_search_browser_enabled") or "true") == "true"
     allow_direct_urls = (settings_store.get("web_search_direct_urls") or "true") == "true"
     shots_dir = IMAGES_DIR if web_search.wants_screenshots(query_text) else None
@@ -727,7 +727,7 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
                 # fields while adding the generic `href` key the browser enricher uses.
                 results = web_search.enrich_with_full_text(
                     [{**r, "href": r.get("url") or r.get("href") or ""} for r in results],
-                    max_fetch=min(max_pages, 4), screenshot_dir=shots_dir,
+                    max_fetch=min(max_pages, 500), screenshot_dir=shots_dir,
                     query=query_text, source="news",
                 )
             note = web_search.format_news_for_context(query_text, results)
@@ -765,7 +765,7 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
             # the model had no reason not to hedge - closed by applying the same
             # framing here too when it's also a browse request, via _browse_framing().
             results = web_search.enrich_with_price_hints(
-                results, max_fetch=min(max_pages, 5 if is_browse_request else 4), screenshot_dir=shots_dir,
+                results, max_fetch=min(max_pages, 500), screenshot_dir=shots_dir,
                 query=query_text,
             )
             note = web_search.format_for_context(query_text, results)
@@ -783,7 +783,7 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
             # still finds the results; Playwright/headless Chrome does the actual
             # browsing - visiting and rendering the real result pages, which is the part
             # that's genuinely achievable and is what full_text below actually is.
-            results = web_search.enrich_with_full_text(results, max_fetch=min(max_pages, 5), screenshot_dir=shots_dir, query=query_text, source="browse")
+            results = web_search.enrich_with_full_text(results, max_fetch=min(max_pages, 500), screenshot_dir=shots_dir, query=query_text, source="browse")
             note = web_search.format_for_context(query_text, results)
             return (_browse_framing(note) if note else None), _screenshots_from_results(results)
         else:
@@ -796,7 +796,7 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
             # reflexive "I can't browse the internet" refusal it counters happens just
             # as much on auto-triggered searches, and the framing measurably fixes it
             # on weaker models (see _browse_framing's docstring) at zero cost.
-            results = web_search.enrich_with_full_text(results, max_fetch=min(max_pages, 4), screenshot_dir=shots_dir, query=query_text, source="search")
+            results = web_search.enrich_with_full_text(results, max_fetch=min(max_pages, 500), screenshot_dir=shots_dir, query=query_text, source="search")
             note = web_search.format_for_context(query_text, results)
             if note and any((r.get("full_text") or "").strip() for r in results):
                 note = _browse_framing(note)
@@ -2327,7 +2327,7 @@ def api_agent_models():
 @app.get('/api/agent-tasks')
 @agent_workflow_required
 def api_agent_tasks_list():
-    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error', 'schedule_id', 'scheduled_run_at', 'skills')
+    fields = ('id', 'title', 'assignee', 'project', 'model', 'status', 'cycles', 'max_cycles', 'updated_at', 'error', 'schedule_id', 'scheduled_run_at', 'skills', 'started_at', 'finished_at')
     tasks = []
     for job in _agent_tasks.list():
         if not _agent_task_visible_to_current_user(job):
@@ -2340,8 +2340,45 @@ def api_agent_tasks_list():
         activity = job.get('activity') or []
         task['latest_activity'] = str(activity[-1].get('text', ''))[:180] if activity else ''
         task['latest_activity_at'] = activity[-1].get('time') if activity else None
+        availability = next((row for row in live_requests.provider_availability()
+                             if row.get('model') == (job.get('model') or {}).get('id')), None)
+        if availability and availability.get('observed_at', 0) >= float(job.get('started_at') or job.get('created_at') or 0):
+            task['provider_availability'] = availability
+        started_at = _agent_execution_started_at(job)
+        task['completion_duration_s'] = (max(0, float(job.get('finished_at') or 0) - started_at)
+                                         if job.get('status') == 'completed' and started_at else None)
+        if job.get('status') == 'completed':
+            try:
+                rows = [row for row in live_requests.snapshot(limit=5000)
+                        if row.get('task_id') == job['id'][:24] and row.get('status') == 'done']
+                task['model_tokens'] = sum(int(row.get('tokens') or 0) for row in rows)
+                model_seconds = sum(float(row.get('elapsed_s') or 0) for row in rows)
+                task['model_tokens_per_sec'] = round(task['model_tokens'] / model_seconds, 1) if model_seconds else None
+            except (ImportError, TypeError, ValueError):
+                task['model_tokens'] = 0
+                task['model_tokens_per_sec'] = None
         tasks.append(task)
     return jsonify({'tasks': tasks})
+
+
+def _agent_execution_started_at(job):
+    """Return the start of this execution, including a history fallback for older tasks."""
+    try:
+        started = float(job.get('started_at') or 0)
+    except (TypeError, ValueError):
+        started = 0
+    # Each rerun resets cycles, so cycle 1's dispatch identifies the latest execution.
+    # Prefer it if present, even when an older saved started_at survived a prior rerun.
+    first_cycles = []
+    for item in job.get('activity', []):
+        try:
+            event_time = float(item.get('time') or 0)
+        except (TypeError, ValueError):
+            continue
+        if event_time > 0 and 'Agent work cycle 1 dispatched.' in str(item.get('text') or ''):
+            first_cycles.append(event_time)
+    latest_dispatch = max(first_cycles) if first_cycles else 0
+    return latest_dispatch if latest_dispatch > started else (started or None)
 
 
 @app.post('/api/agent-tasks')
@@ -2369,6 +2406,13 @@ def api_agent_tasks_get(task_id):
     if not _agent_task_owned_by_current_user(job):
         job.pop('owner', None)
         job['shared'] = True
+    started_at = _agent_execution_started_at(job)
+    if job.get('status') == 'completed' and started_at:
+        job['completion_duration_s'] = max(0, float(job.get('finished_at') or 0) - started_at)
+    availability = next((row for row in live_requests.provider_availability()
+                         if row.get('model') == (job.get('model') or {}).get('id')), None)
+    if availability and availability.get('observed_at', 0) >= float(job.get('started_at') or job.get('created_at') or 0):
+        job['provider_availability'] = availability
     return jsonify(job)
 
 
@@ -3181,7 +3225,7 @@ def _lemonade_is_npu(model_key: str) -> bool:
 
 
 def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool = False) -> list[str]:
-    """Unload every chat/reasoning model before a new load starts.
+    """Keep resident models when the requested model fits; otherwise free them first.
 
     Support models cannot answer chat requests and are intentionally allowed to
     coexist.  The requested model is deliberately *not* exempt: several runtimes
@@ -3213,6 +3257,28 @@ def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool 
     ):
         return []
 
+    # Keep the current reasoning model resident when the incoming model's installed
+    # weight size plus 1GB headroom fits in currently available RAM. The selected model
+    # itself is still unloaded first on a reload to avoid duplicate runtime instances.
+    selected = next((model for _, models, _ in inventories for model in models
+                     if model.get("id") == requested), None)
+    selected_is_loaded = bool(selected and selected.get("state") == "loaded")
+    size_gb = selected.get("size_gb") if selected else None
+    if size_gb is None:
+        for label, _, _ in inventories:
+            try:
+                if label == "LM Studio":
+                    size_gb = lms.model_size_gb(requested)
+                elif label == "Lemonade":
+                    size_gb = lemonade.model_size_gb(requested)
+            except Exception:
+                size_gb = None
+            if size_gb is not None:
+                break
+    if (not selected_is_loaded and isinstance(size_gb, (int, float)) and size_gb > 0
+            and resource_guard.check_available_memory(float(size_gb)) is None):
+        return []
+
     unloaded: list[str] = []
     for label, models, unload_model in inventories:
         for model in models:
@@ -3237,6 +3303,26 @@ def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool 
                     raise RuntimeError(f"Could not unload '{model_id}' from {label}: {exc}") from exc
                 unloaded.append(model_id)
     return unloaded
+
+
+def _model_load_size_gb(requested: str) -> float | None:
+    """Best-effort estimate of installed model weights for post-eviction capacity checks."""
+    try:
+        if fastflowlm.owns_model(requested):
+            models = fastflowlm.list_models()
+        elif vllm.owns_model(requested):
+            models = vllm.list_models()
+        elif kobold.owns_model(requested):
+            models = kobold.list_models()
+        elif lemonade.owns_model(requested):
+            return lemonade.model_size_gb(requested)
+        else:
+            return lms.model_size_gb(requested)
+        model = next((item for item in models if item.get("id") == requested), None)
+        size = (model or {}).get("size_gb")
+        return float(size) if isinstance(size, (int, float)) and size > 0 else None
+    except Exception:
+        return None
 
 
 def _claim_selected_npu(backend, model: str):
@@ -3350,7 +3436,7 @@ def api_load_model():
             _free_npu_except("fastflowlm", npu_lock_held=True)
             unloaded = _unload_reasoning_models_before_load(model_key, npu_lock_held=True)
             # Checked after eviction so the released memory counts.
-            refusal = resource_guard.check_available_memory()
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
             fastflowlm.load_model(model_key)
@@ -3375,7 +3461,7 @@ def api_load_model():
         # on top of restarting its user-level systemd unit with a different model.
         try:
             unloaded = _unload_reasoning_models_before_load(model_key)
-            refusal = resource_guard.check_available_memory()
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
             vllm.load_model(
@@ -3393,7 +3479,7 @@ def api_load_model():
             return jsonify({"error": refusal}), 422
         try:
             unloaded = _unload_reasoning_models_before_load(model_key)
-            refusal = resource_guard.check_available_memory()
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
             kobold.load_model(model_key)
@@ -3432,7 +3518,7 @@ def api_load_model():
                 _free_npu_except("lemonade", npu_lock_held=True)
             unloaded = _unload_reasoning_models_before_load(model_key, npu_lock_held=use_npu)
             # Checked after eviction so the released memory counts.
-            refusal = resource_guard.check_available_memory()
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
             lemonade.load_model(model_key, context_length=(
@@ -3458,7 +3544,7 @@ def api_load_model():
             # Checked after unloading whatever LM Studio itself had loaded above, so that
             # freed memory counts — same resource_guard used by every other backend's load
             # path (see its docstring for the cross-backend OOM incident this guards against).
-            refusal = resource_guard.check_available_memory()
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
             # After unloading another model, LM Studio can need a moment to fully
@@ -3513,6 +3599,8 @@ def api_unload_model():
     identifier = body.get("identifier")
     if not identifier:
         return jsonify({"error": "'identifier' is required"}), 400
+    if zen.owns_model(identifier):
+        return jsonify({"error": "opencode.ai models are hosted remotely and cannot be unloaded from Hearth."}), 409
     if vllm.owns_model(identifier):
         try:
             vllm.unload_model(identifier)
@@ -4367,7 +4455,7 @@ def _settings_snapshot() -> dict:
         "web_search_enabled": (settings_store.get("web_search_enabled") or "true") == "true",
         "web_search_mode": settings_store.get("web_search_mode") or "automatic",
         "web_search_max_results": int(settings_store.get("web_search_max_results") or "6"),
-        "web_search_max_pages": int(settings_store.get("web_search_max_pages") or "4"),
+        "web_search_max_pages": int(settings_store.get("web_search_max_pages") or "100"),
         "web_search_direct_urls": (settings_store.get("web_search_direct_urls") or "true") == "true",
         "web_search_browser_enabled": (settings_store.get("web_search_browser_enabled") or "true") == "true",
         "caddy": _read_caddy_info(),
@@ -4450,8 +4538,8 @@ def api_update_settings():
             return jsonify({"error": "web_search_mode must be 'automatic' or 'explicit'"}), 400
         settings_store.set("web_search_mode", mode)
     for key, minimum, maximum in (
-        ("web_search_max_results", 1, 10),
-        ("web_search_max_pages", 0, 5),
+        ("web_search_max_results", 1, 500),
+        ("web_search_max_pages", 0, 500),
     ):
         if key in body:
             try:
@@ -5483,10 +5571,11 @@ def api_chat():
                 loop_messages = list(messages)
                 if tools_list:
                     tool_instruction = (
-                        "For online lookups, use the offered Playwright tools and inspect their returned evidence. "
-                        "After page-changing actions, Hearth waits and inspects every open tab, including popups. "
-                        "Use tabs, snapshots, find, click, and back as needed to investigate; do not stop at a "
-                        "loading message or claim a page was checked without its returned snapshot."
+                        "For general online research, use the live search evidence already supplied in the system "
+                        "context; do not launch a separate sequence of browser tool calls to repeat that research. "
+                        "Use Playwright only when the user asks to inspect a specific page or perform a browser task. "
+                        "The available browser tools are for navigation and inspection, not clicking or submitting "
+                        "page controls. Inspect returned page evidence before making claims, and avoid redundant calls."
                     )
                     first_system = next(
                         (m for m in loop_messages if m.get("role") == "system"), None

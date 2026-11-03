@@ -79,10 +79,14 @@ def filter_navigation_results(query: str, results: list[dict], limit: int | None
         if not page_scraper.is_allowed_navigation_url(href):
             continue
         host = (urlparse(href).hostname or "").replace("www.", "")
-        candidate_terms = _search_terms(f"{title} {body} {host}")
+        candidate_terms = _search_terms(f"{title} {body}")
         # With no meaningful terms (rare, e.g. "browse"), there is no defensible
         # relevance decision, so do not navigate automatically.
-        if not query_terms or not (query_terms & candidate_terms):
+        overlap = query_terms & candidate_terms
+        # Require at least two matching terms for multi-term topics; a single common
+        # word such as "pain" or "browser" is too weak to justify navigation.
+        minimum_overlap = 1 if len(query_terms) <= 1 else 2
+        if not query_terms or len(overlap) < minimum_overlap:
             continue
         kept.append(result)
         if limit is not None and len(kept) >= limit:
@@ -123,8 +127,7 @@ def _rank_and_diversify(query: str, results: list[dict], limit: int) -> list[dic
         seen_urls.add(normalized_url)
         title_terms = _search_terms(str(result.get("title") or ""))
         body_terms = _search_terms(str(result.get("body") or ""))
-        host_terms = _search_terms(parsed.hostname or "")
-        overlap = query_terms & (title_terms | body_terms | host_terms)
+        overlap = query_terms & (title_terms | body_terms)
         title_overlap = query_terms & title_terms
         coverage = len(overlap) / max(len(query_terms), 1)
         host = (parsed.hostname or "").lower()
@@ -161,7 +164,7 @@ def search(query: str, max_results: int = 6) -> list[dict]:
         candidates = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(planned_queries)) as pool:
             futures = [
-                pool.submit(DDGS().text, planned, max_results=max_results * 3)
+                pool.submit(DDGS().text, planned, max_results=min(max_results, 500))
                 for planned in planned_queries
             ]
             for future in futures:
@@ -737,7 +740,7 @@ def enrich_with_price_hints(results: list[dict], max_fetch: int = 4, screenshot_
     thread-safe) when Playwright isn't installed, so this still works on a deployment
     that skipped `playwright install chromium`. Returns new dicts (originals untouched)
     with added 'price_hints' and 'full_text' keys."""
-    targets = results[:max_fetch]
+    targets = filter_navigation_results(query or "", results, limit=max_fetch)
     if not targets:
         return results
     urls = [r.get("href", "") for r in targets if r.get("href")]
@@ -826,7 +829,9 @@ def enrich_with_full_text(results: list[dict], max_fetch: int = 3, max_chars: in
     (returns results unchanged) when Playwright isn't installed/available, so a plain
     snippet-only search is still what callers get on a deployment without it - never
     raises, same fail-soft contract as the rest of this module."""
-    targets = results[:max_fetch]
+    # Re-score immediately before navigation as callers may pass results from a
+    # specialized search route. Only organic pages with query evidence are opened.
+    targets = filter_navigation_results(query or "", results, limit=max_fetch)
     if not targets or not page_scraper.available():
         return results
     urls = [r.get("href", "") for r in targets if r.get("href")]

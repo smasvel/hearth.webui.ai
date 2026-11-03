@@ -332,10 +332,16 @@ Controlled globally from **Settings → Web search and research**. The master sw
 all searching immediately; activation can be **Automatic** (via
 `web_search_client.should_search_web()`) or **Explicit only** (the user must directly ask to
 search/browse or paste a URL). Admins can independently cap organic search results (1–10), cap
-Playwright-opened pages (0–5), disable all browser page opening for snippet-only research, and
+Playwright-opened pages (0–500), disable all browser page opening for snippet-only research, and
 allow/deny direct opening of user-pasted URLs. These values persist in `settings_store` and take
 effect without a restart. Relevance filtering, sponsored-result rejection, ad/tracker blocking,
-and domain diversity are mandatory and cannot be disabled from the UI.
+and domain diversity are mandatory and cannot be disabled from the UI. Relevance is reapplied
+immediately before navigation so specialized result routes cannot send unrelated pages to
+Chromium. Chat's Playwright tool subset is read-only: navigation, snapshots, search, and tab
+inspection remain available, while clicks and form controls are omitted to avoid unintended
+page actions during research. General research uses the already-injected search evidence
+instead of a redundant model-driven browser sequence; the default chat tool-round budget is
+12 for explicit multi-step browser tasks.
 
 When triggered, `web_search_client.py` runs a live search via [`ddgs`](https://pypi.org/project/ddgs/)
 (DuckDuckGo metasearch, no API key needed — picked deliberately over adding a paid search API key

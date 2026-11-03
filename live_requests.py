@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from email.utils import parsedate_to_datetime as _parse_http_date
 import database
 import threading
 import time
@@ -40,6 +41,10 @@ def _init_trace_store() -> int:
                )"""
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_developer_traces_finished ON developer_traces(finished_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS provider_availability (
+            provider TEXT NOT NULL, model TEXT NOT NULL, observed_at DOUBLE PRECISION NOT NULL,
+            status INTEGER NOT NULL, next_available_at DOUBLE PRECISION, detail TEXT,
+            PRIMARY KEY(provider, model))""")
         conn.execute("DELETE FROM developer_traces WHERE finished_at < %s", (time.time() - _RECENT_KEEP_SECONDS,))
         maximum = conn.execute("SELECT COALESCE(MAX(id), 0) FROM developer_traces").fetchone()[0]
         for row in conn.execute(
@@ -58,6 +63,53 @@ def _init_trace_store() -> int:
 
 
 _counter = itertools.count(_init_trace_store())
+
+
+def record_provider_availability(*, provider: str, model: str | None, status: int,
+                                 retry_after: str | None = None, detail: str = '') -> None:
+    """Persist provider exhaustion/rate-limit signal and any advertised reset time."""
+    if provider != 'opencode':
+        return
+    if 200 <= status < 400:
+        try:
+            with database.connect() as conn:
+                conn.execute("DELETE FROM provider_availability WHERE provider=%s AND model=%s",
+                             (provider, (model or 'unknown')[:200]))
+        except (OSError, database.Error):
+            pass
+        return
+    if status not in (402, 429):
+        return
+    now = time.time()
+    next_at = None
+    if retry_after:
+        try:
+            next_at = now + max(0, float(retry_after))
+        except (TypeError, ValueError):
+            try:
+                parsed = _parse_http_date(retry_after)
+                next_at = parsed.timestamp()
+            except (TypeError, ValueError, OverflowError):
+                pass
+    try:
+        with database.connect() as conn:
+            conn.execute("""INSERT INTO provider_availability
+                (provider, model, observed_at, status, next_available_at, detail)
+                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(provider,model) DO UPDATE SET
+                observed_at=EXCLUDED.observed_at, status=EXCLUDED.status,
+                next_available_at=EXCLUDED.next_available_at, detail=EXCLUDED.detail""",
+                (provider, (model or 'unknown')[:200], now, int(status), next_at, (detail or '')[:500] or None))
+    except (OSError, database.Error, TypeError, ValueError):
+        pass
+
+
+def provider_availability(provider: str = 'opencode') -> list[dict]:
+    try:
+        with database.connect() as conn:
+            rows = conn.execute("SELECT * FROM provider_availability WHERE provider=%s ORDER BY observed_at DESC", (provider,)).fetchall()
+        return [dict(row) for row in rows]
+    except (OSError, database.Error):
+        return []
 
 
 def clear_all() -> None:

@@ -1,0 +1,24 @@
+# Pi Assistant configuration
+wake_word: "hey_jarvis"          # openWakeWord built-ins: hey_jarvis, hey_mycroft, ...
+
+stt:
+  model: "small.en"              # tiny.en on Pi 4, small.en on Pi 5
+  device: "cpu"
+
+tts:
+  voice: "en_US-lessac-medium"   # piper voice
+
+brain:
+  backend: "ollama"              # ollama = fully local
+  model: "qwen2.5:3b"            # or llama3.2:3b
+
+homeassistant:
+  url: "http://homeassistant.local:8123"
+  token: "PASTE_LONG_LIVED_TOKEN_HERE"
+
+# Map spoken room names -> Home Assistant entity IDs
+rooms:
+  living room: [light.living_room, light.living_room_lamp, switch.tv]
+  bedroom:     [light.bedroom, fan.bedroom]
+  kitchen:     [light.kitchen, switch.coffee_maker]
+  default:     [light.living_room, climate.home]

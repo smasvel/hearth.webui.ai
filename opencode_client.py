@@ -153,7 +153,7 @@ def list_models() -> list[dict]:
             "publisher": "opencode.ai",
             "type": "llm",
             "state": "loaded",
-            "quantization": "remote opencode.ai" + (" (Go plan)" if plan() == "go" else ""),
+            "quantization": "remote opencode.ai (" + ("free" if str(model_id).endswith("-free") else ("Go plan" if plan() == "go" else "pay-as-you-go")) + ")",
             "externally_managed": True,
             "deletable": False,
             "max_context_length": context,
