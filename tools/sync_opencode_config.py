@@ -68,7 +68,7 @@ def main() -> int:
               .get('models', {}).get(model_id) or {}).get('limit', {}).get('context')
     if isinstance(window, int) and window > 0:
         # Compaction follows the selected model's *current* advertised window, so
-        # keep/buffer track it automatically (49,152 / 8,192 on a 65K window).
+        # keep/buffer track it automatically (40,960 / 16,384 on a 65K window).
         budgets = help_data.compaction_for_window(window)
         config['compaction'] = {'auto': True, 'keep': {'tokens': budgets['keep']},
                                 'buffer': budgets['buffer']}

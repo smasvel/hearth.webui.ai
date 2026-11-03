@@ -53,3 +53,18 @@ selected default model and hand-added agents and re-deriving compaction from
 the selected model's current advertised window. The first-time installer now
 installs it as the `opencode-config-sync.timer` systemd user timer (every two
 minutes); the run is idempotent and leaves a timestamped `.bak` on real changes.
+
+## Follow-up: single-step overrun (2026-11-03)
+
+The Muse agent session failed again, this time with "request (10830 tokens)
+exceeds the available context size (9984 tokens)" (`opencode.log`
+2026-11-03T11:32Z, Muse agent session): the session sat at ~55.5K of a
+65,536-token window, the 8,192 buffer had not yet triggered auto-compaction,
+and one 10,830-token step (then the compaction summarization itself) overran
+the 9,984 tokens left, surfacing in Hearth as the "OpenCode could not compact
+its conversation." recovery banner. The buffer is not just an output reserve —
+it is the headroom a single agentic step has when compaction fires, and steps
+reach ~11K tokens. Fix: 65K+ windows now reserve a quarter of the window as
+the buffer (16,384 on 65,536; 32,768 on 131,072), with `keep` re-derived to
+40,960 on a 65,536 window. Tests, README, and the install guide were updated,
+and the desktop config re-synced.

@@ -81,11 +81,20 @@ def compaction_for_window(window: int, output_reserve: int | None = None) -> dic
     to the whole window makes OpenCode's own summarization request impossible and the
     session fails with "The compaction request cannot be reduced further without losing
     the latest exchange or checkpoint". 65K+ windows keep a large recent-context budget
-    (up to 65,536) with the full output reserve; smaller windows scale to one eighth.
+    (up to 65,536); smaller windows scale to one eighth.
+
+    The buffer is also the headroom a single agentic step (system prompt + tool schema +
+    latest exchange or file read) has left when auto-compaction fires. A single step can
+    reach ~11K tokens (observed in production: a 10,830-token step against 9,984 tokens
+    left on a 65,536 window with the old 8,192 buffer — the step, and then the
+    compaction summarization itself, overran the window and the session failed with
+    "request exceeds the available context size"). So on 65K+ windows the buffer is at
+    least a quarter of the window, not just the model's output reserve: 16,384 on a
+    65,536-token window, which no observed single step exceeds.
     """
     reserve = int(output_reserve) if output_reserve and output_reserve > 0 else 8192
     if window >= 65536:
-        buffer = min(reserve, window // 4)
+        buffer = max(reserve, window // 4)
         keep = min(65536, window - buffer - max(4096, window // 8))
     else:
         keep = max(1024, window // 8)

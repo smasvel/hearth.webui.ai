@@ -1245,12 +1245,18 @@ and includes the original goal, acceptance criteria, and refinements in the new 
 Agent compaction settings are bounded by the selected model's actual context window:
 the retained recent-turn budget is capped at one eighth of context up to a 65K-token
 window. Lemonade/Muse-style 65K+ models get a large recent-context budget (`keep.tokens`
-capped at 65,536) with an 8K output reserve (`buffer`: 8,192), but `keep` never equals the
-window: OpenCode's own compaction sends a summarization request over the retained history,
-so `keep` + `buffer` + prompt overhead must fit inside the window. On a 65,536-token window
-`keep` is 49,152 and `buffer` 8,192; a `keep` equal to the whole window reproducibly fails
-compaction with "The compaction request cannot be reduced further without losing the latest
-exchange or checkpoint". The selected model's own context is the floor, too: a global config
+capped at 65,536), but `keep` never equals the window: OpenCode's own compaction sends a
+summarization request over the retained history, so `keep` + `buffer` + prompt overhead
+must fit inside the window. On a 65,536-token window `keep` is 40,960 and `buffer`
+16,384; a `keep` equal to the whole window reproducibly fails compaction with "The
+compaction request cannot be reduced further without losing the latest exchange or
+checkpoint". The buffer is also the headroom left when auto-compaction fires, and a
+single agentic step (system prompt + tool schema + latest exchange or file read) can
+reach ~11K tokens — an 8,192 buffer let a 10,830-token step (and then the compaction
+summarization itself) overrun the 9,984 tokens left on a 65,536-token window, failing
+the session with "request exceeds the available context size". 65K+ windows therefore
+reserve a quarter of the window as the buffer, which no observed single step exceeds.
+The selected model's own context is the floor, too: a global config
 from a smaller sibling model cannot leave a larger-window assignment with only a tiny
 retained history. This prevents the agent repeatedly re-reading the same large file after
 compaction.

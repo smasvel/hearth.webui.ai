@@ -11,16 +11,23 @@ BE, MODEL = 'lemonade', 'Muse-Glimmer-30B-GGUF'
 class CompactionForWindowTests(unittest.TestCase):
     def test_65k_window_keeps_room_for_the_compaction_request(self):
         budgets = help_data.compaction_for_window(65536)
-        self.assertEqual(budgets, {'keep': 49152, 'buffer': 8192})
+        self.assertEqual(budgets, {'keep': 40960, 'buffer': 16384})
         self.assertLessEqual(budgets['keep'] + budgets['buffer'] + 4096, 65536)
+
+    def test_65k_buffer_covers_a_single_large_step(self):
+        # A production agent step reached 10,830 tokens; the buffer (headroom left
+        # when auto-compaction fires) must be larger than such a step.
+        self.assertGreater(help_data.compaction_for_window(65536)['buffer'], 11000)
 
     def test_large_windows_cap_keep_at_65536(self):
         self.assertEqual(help_data.compaction_for_window(131072),
-                         {'keep': 65536, 'buffer': 8192})
+                         {'keep': 65536, 'buffer': 32768})
 
-    def test_output_reserve_scales_the_buffer(self):
+    def test_output_reserve_cannot_shrink_the_safety_cushion(self):
+        # A small output reserve must not shrink the buffer below window // 4:
+        # the cushion exists to absorb a single large step, not just the reserve.
         self.assertEqual(help_data.compaction_for_window(65536, 4096),
-                         {'keep': 53248, 'buffer': 4096})
+                         {'keep': 40960, 'buffer': 16384})
 
     def test_small_windows_scale_to_one_eighth(self):
         for window, expected in ((8192, (1024, 1024)), (32768, (4096, 4096))):
@@ -58,7 +65,7 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(result['model'], f'{BE}/{MODEL}')
         self.assertIn('custom', result.get('agents', {}))
         self.assertEqual(result['compaction'],
-                         {'auto': True, 'keep': {'tokens': 49152}, 'buffer': 8192})
+                         {'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384})
 
     def test_idempotent_when_config_matches_generation(self):
         first = self._run(
