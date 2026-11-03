@@ -124,6 +124,17 @@ def default_gpu_offload(model_key: str) -> str:
     return 'max'
 
 
+def model_size_gb(model_key: str) -> float | None:
+    """Best-effort installed weight size for deciding whether a second model can fit."""
+    try:
+        catalog = json.loads(_run_lms(['ls', '--json'], timeout=15))
+    except (LMStudioError, OSError, ValueError, TypeError):
+        return None
+    model = next((entry for entry in catalog if entry.get('modelKey') == model_key), None)
+    size = (model or {}).get('sizeBytes')
+    return float(size) / 1e9 if isinstance(size, (int, float)) and size > 0 else None
+
+
 def load_model(
     model_key: str,
     identifier: str | None = None,

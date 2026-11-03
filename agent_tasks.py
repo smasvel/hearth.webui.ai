@@ -915,6 +915,7 @@ class Manager:
                     retry_current_cycle=False, session_recovery_attempts=0,
                     compaction_recovery_attempts=0, prose_only_turns=0,
                     agent_no_request_since=None,
+                    started_at=None,
                 )
                 if schedule_id:
                     job.update(schedule_id=schedule_id, scheduled_run_at=scheduled_at)
@@ -1081,6 +1082,11 @@ class Manager:
                            awaiting_since=time.time(), agent_last_progress_at=time.time(),
                            agent_model_progress=None, agent_no_request_since=None,
                            cycles=job['cycles'] if retrying_cycle else job['cycles']+1)
+                # Rerun explicitly clears this field; setdefault would preserve its
+                # existing None value and leave the UI to mistake older history for
+                # the current execution start.
+                if not job.get('started_at'):
+                    job['started_at'] = time.time()
                 if session_id:
                     job['agent_memory_context_session_id'] = session_id
                 job.pop('retry_current_cycle_reason', None)
@@ -1121,6 +1127,7 @@ class Manager:
             job.update(verification_id=None, verification_admitted=False)
             if result['status'] == 'exited' and type(result['exit']) in (int, float) and result['exit'] == 0:
                 job.update(status='completed', completion='Verified by the assigned command.', finished_at=time.time())
+                job.setdefault('started_at', job.get('created_at', job['finished_at']))
                 self.note(job, 'Goal complete; verification command passed.')
                 self.save(job)
                 return
@@ -1397,6 +1404,7 @@ class Manager:
                                 job['status'] = 'verifying'
                             else:
                                 job.update(status='completed', completion='Agent-reported completion; no independent command was supplied.', finished_at=time.time())
+                                job.setdefault('started_at', job.get('created_at', job['finished_at']))
                                 self.note(job, job['completion'])
                             self.save(job)
                             if job['status'] == 'completed':

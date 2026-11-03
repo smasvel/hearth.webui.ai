@@ -79,8 +79,6 @@ _CHAT_TOOL_NAMES = {
     "browser_navigate_back", "navigate_back",
     "browser_tabs", "browse_tabs", "browser_snapshot", "browse_tab",
     "browser_find", "find", "browser_wait_for", "wait_for",
-    "browser_click", "click", "browser_type", "type",
-    "browser_fill_form", "fill_form", "browser_select_option", "select_option",
     "execute_python",
 }
 CHAT_TOOL_RESULT_LIMIT = 1400

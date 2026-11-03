@@ -168,9 +168,9 @@
     }
     summaryEl.innerHTML =
       `<div class="model-sum-chips">` +
-      chip(models.length, "on disk") +
+      chip(models.filter((m) => m.backend !== "opencode").length, "on disk") +
       chip(loaded.length, "loaded") +
-      chip(fmtSize(totalGb) || "—", "total size") +
+      chip(fmtSize(models.filter((m) => m.backend !== "opencode").reduce((s, m) => s + (m.size_gb || 0), 0)) || "—", "total size") +
       chip(models.filter(m => m.resource_warning || m.load_status?.state === "error").length, "with warnings") +
       `</div>` + loadedHtml;
   }
@@ -495,6 +495,7 @@
     const supportTypes = new Set(["embeddings", "embedding", "transcription", "tts"]);
     const other = models.filter(
       (m) => m.state === "loaded" && m.id !== modelKey
+        && m.externally_managed !== true
         && !supportTypes.has(m.type)
     );
     const serviceIsDown = ON_DEMAND_BACKENDS.has(target) && !models.some((m) => m.backend === target && m.state === "loaded");
@@ -509,7 +510,8 @@
     if (serviceIsDown) {
       lines.push(`${LABEL[target] || target}'s service is currently stopped, so this will start it from cold — that can take up to ~1-2 minutes.`);
     }
-    if (!confirm(lines.join("\n\n"))) return;
+    const needsConfirmation = other.length > 0 || target === "lemonade" || serviceIsDown;
+    if (needsConfirmation && !confirm(lines.join("\n\n"))) return;
 
     const stopTicker = startBusyOp(modelKey, "Loading", `Loading ${modelKey}… (cold starts can take up to ~1-2 min)`);
     try {

@@ -4,6 +4,7 @@
   const page=app?.dataset.page || 'list';
   const initialTaskId=app?.dataset.taskId || '';
   let selected = null, task = null, pendingSignature = '', timer;
+  let replyInFlight = false;
   let rerunAcceptedAt = 0;
   let editingScheduleId = null;
   let cloneDraft = null;
@@ -74,6 +75,13 @@
     const date=agentDate(value);
     return date && Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,options) : '';
   }
+  function durationLabel(seconds) {
+    if (!Number.isFinite(Number(seconds)) || Number(seconds) < 0) return '';
+    let remaining=Math.floor(Number(seconds));
+    const hours=Math.floor(remaining/3600); remaining%=3600;
+    const minutes=Math.floor(remaining/60), secs=remaining%60;
+    return hours ? `${hours}h ${minutes}m ${secs}s` : minutes ? `${minutes}m ${secs}s` : `${secs}s`;
+  }
   function newestFirst(events) {
     return [...(events || [])].sort((a,b)=>{
       const at=agentDate(a.time)?.getTime() || 0, bt=agentDate(b.time)?.getTime() || 0;
@@ -125,7 +133,10 @@
     if(el('agent-reset-cycles'))el('agent-reset-cycles').hidden=!['running','waiting_input','paused','blocked','interrupted'].includes(task.status);
     if(el('agent-prompts'))el('agent-prompts').hidden = false;
     if(el('agent-title'))el('agent-title').textContent = task.title;
-    if(el('agent-status'))el('agent-status').textContent = `${task.status}${task.shared ? ' · shared access' : ''} · ${task.assignee} · ${task.cycles}/${task.max_cycles} cycles · ${task.opencode_steps || 40} OpenCode steps/turn`;
+    const availability=task.provider_availability;
+    const availabilityText=availability ? (availability.next_available_at ? ` · OpenCode available after ${displayTime(availability.next_available_at,{dateStyle:'medium',timeStyle:'short'})}` : ` · OpenCode quota exhausted; reset time not provided`) : '';
+    const taskStats=task.status==='completed' ? ` · completed in ${durationLabel(task.completion_duration_s) || 'unknown time'}${task.model_tokens_per_sec ? ` · ${Number(task.model_tokens_per_sec).toLocaleString()} model tokens/s` : ''}` : availabilityText;
+    if(el('agent-status'))el('agent-status').textContent = `${task.status}${task.shared ? ' · shared access' : ''} · ${task.assignee} · ${task.cycles}/${task.max_cycles} cycles · ${task.opencode_steps || 40} OpenCode steps/turn${taskStats}`;
     const recentActivity=newestFirst(task.activity);
     const latestActivity=recentActivity[0] || null;
     const latestTime=el('agent-latest-time');
@@ -245,14 +256,24 @@
     });
   }
   async function reply(kind,id,value) {
-    try { show(await api(`/api/agent-tasks/${task.id}/reply`,{kind,id,value})); el('agent-network').textContent=''; }
-    catch(e) { el('agent-network').textContent=e.message; }
+    if(replyInFlight || !task?.id)return;
+    replyInFlight=true;
+    const prompts=el('agent-prompts');
+    prompts?.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});
+    try {
+      show(await api(`/api/agent-tasks/${task.id}/reply`,{kind,id,value}));
+      el('agent-network').textContent='';
+    } catch(e) {
+      el('agent-network').textContent=e.message;
+      prompts?.querySelectorAll('button,input,select').forEach(control=>{control.disabled=false;});
+    } finally { replyInFlight=false; }
   }
   function renderPrompts() {
     if(!el('agent-prompts'))return;
     const forms = Array.isArray(task.forms) ? task.forms : [];
     const permissions = Array.isArray(task.permissions) ? task.permissions : [];
     const signature = JSON.stringify([task.id,task.status,forms,permissions]);
+    if(replyInFlight)return;
     if (signature === pendingSignature) return; pendingSignature = signature;
     const container = el('agent-prompts'); container.replaceChildren();
     if (task.status !== 'waiting_input') return;
@@ -360,7 +381,10 @@
           const link=node('a',undefined,row); link.className='agent-task-card-link'; link.href=`/agents/${t.id}`;
           const top=node('div',undefined,link); top.className='agent-task-card-top';
           node('strong',t.title,top); const badge=node('span',friendlyStatus(t.status),top); badge.className=`agent-status-badge status-${t.status}`;
-          node('p',`${t.schedule_id ? 'Scheduled · ' : ''}${cycleText}${latest}`,link).className='agent-task-meta';
+          const availability=t.provider_availability;
+          const availabilityText=availability ? (availability.next_available_at ? ` · OpenCode after ${displayTime(availability.next_available_at,{dateStyle:'medium',timeStyle:'short'})}` : ' · OpenCode quota exhausted; reset time not provided') : '';
+          const taskStats=t.status==='completed' ? ` · ${durationLabel(t.completion_duration_s) || 'time unavailable'}${t.model_tokens_per_sec ? ` · ${Number(t.model_tokens_per_sec).toLocaleString()} model tokens/s` : ''}` : availabilityText;
+          node('p',`${t.schedule_id ? 'Scheduled · ' : ''}${cycleText}${latest}${taskStats}`,link).className='agent-task-meta';
           const clone=button('Clone',row,()=>cloneAgentTask(t.id)); clone.classList.add('agent-task-clone');
         }
         if(!tasks.length) { const empty=node('div',undefined,list);empty.className='agent-empty';node('strong','No assignments yet',empty);node('p','Create an agent and its progress will appear here.',empty);node('a','Create an agent',empty).href='/agents/new'; }

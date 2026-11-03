@@ -40,6 +40,10 @@ model weights automatically. On Downloads, use **Exclude unknown support** to hi
 search results whose catalog metadata does not say whether they support tool calling;
 the per-backend tool-calling filters remain available when you want only models that
 explicitly declare support.
+When loading a model, Hearth checks whether currently available RAM can fit the new
+model's known weight size plus 1 GB headroom. If it fits, the currently loaded model
+stays resident; otherwise Hearth evicts it before loading. Backend-specific model-size
+checks and runtime limits still apply. No extra setting is required.
 You can also choose **Upload a local GGUF model** on Models to browse for a `.gguf`
 file on the device using the browser. Hearth stores the upload in `data/local-models`
 and registers its local path with the Lemonade server configured in Settings. The
@@ -258,7 +262,11 @@ Models are remote and externally managed; the key is stored encrypted in Postgre
 and only sent to opencode.ai's inference endpoint. Test connection saves a verified
 key, an empty field never wipes the stored key, and the card's Remove stored key
 button removes it explicitly. Deletion and download controls stay
-with the opencode.ai console.
+with the opencode.ai console. Hosted model cards are informational in Hearth: they do not
+offer local load or unload actions, direct unload requests for hosted model IDs are rejected
+rather than sent to a local inference backend, and selecting a hosted model does not prompt
+to unload local models. Choose a hosted model in Chat or an agent assignment to use it; no
+backend service restart is needed when switching hosted models.
 
 ### Hosted opencode.ai models (free tier or Go subscription)
 
@@ -282,6 +290,12 @@ selected hosted model and the saved workspace. No API key change is needed for t
 The agent picker and new hosted relays use the current catalog, account plan, and key
 without requiring a desktop OpenCode reload. If a saved model is absent from the current
 plan's catalog, select an available model before resuming the assignment.
+When an agent receives HTTP 402 (credits or plan allowance) or 429 (rate limit), Hearth
+records the affected hosted model and checks the provider's `Retry-After` header. The
+task list and task page show that estimated next-available time when supplied; otherwise
+they state that the provider did not give a reset time. A later successful request clears
+the model's prior warning. This records provider signals; it does not automatically retry
+the assignment before the provider's stated time.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
 tools on KoboldCPP, FastFlowLM, opencode.ai, Lemonade, and LM Studio. The MCP servers
@@ -293,7 +307,14 @@ offers a compact browser tool set and trims oversized FastFlowLM browser results
 they fit more reliably within smaller model context windows. After navigation and
 page-changing actions, Hearth waits for content, lists and visits each open tab
 (including popups), captures snapshots, and returns an explicit confirmation to the
-model. The model can continue to inspect, find text, click, or navigate back.
+model. The chat browser tools support navigation and inspection; they omit page clicks
+and form submission so research cannot trigger page actions. Online research settings
+allow up to 500 relevant pages per request. Organic results are relevance-filtered and
+domain-diversified before navigation, while ad and tracker requests are blocked. Set
+the limit to 0 for snippets only; pasted URLs still follow the separate direct-URL setting.
+For general online research, chat uses Hearth's supplied search evidence instead of making
+the model repeat the lookup through many browser tool calls. The tool-call round budget
+defaults to 100 and is configurable in Settings for specific multi-step browser tasks.
 
 After signing in, open **Agents**. Use **New agent** to enter a required agent name,
 name the task, and describe what you want in everyday language; the agent name identifies
@@ -326,7 +347,10 @@ Transient provider connection resets are retried automatically in the same task 
 The model relay avoids sending a second HTTP response after a streamed response has begun.
 The agent label is used for Hearth's request attribution and is removed by compatibility
 shims before requests are forwarded to model servers.
-**My agents** shows task status. In automatic shell mode, allowed
+**My agents** shows task status. Completed assignments include the latest execution's
+elapsed time and generated model tokens per second. The rate is based on completed model
+requests recorded by the local model relay; older or unavailable request records may
+leave the rate blank. In automatic shell mode, allowed
 in-container actions run without permission prompts; `.env` files, external
 directories, and subagents remain denied. Ask mode pauses shell commands for your
 decision. Open a task to follow its live **Activity** feed.
@@ -406,7 +430,9 @@ during long model turns; these notes do not include prompts or tool output. Ques
 and permission controls appear
 on the assignment page when a response is needed. If it says **Needs your help** but
 the request details have not loaded, use **Refresh request** in the notice. You can
-also pause or continue the work from that page. When an assignment is paused, blocked,
+submit an answer with **Answer and continue**; Hearth keeps the prompt stable and
+disables its controls while the reply is being sent. You can also pause or continue
+the work from that page. When an assignment is paused, blocked,
 or interrupted, its owner can change the model before continuing. This starts a fresh
 OpenCode session from the latest saved workspace checkpoint and carries forward the
 previous agent summary. The model picker defaults to the currently loaded model when
@@ -595,7 +621,7 @@ FastFlowLM `minicpm-v-4.7:1b` path has its own tool-use reminder and exact named
 handling. By default, it can perform up to six tool rounds for multi-step browser tasks, then
 requests a text-only summary of the results; other FastFlowLM models use their
 existing behavior. Administrators can set Hearth chat's maximum tool-call retries
-(rounds) per response under Settings (1–64, default 6); changes apply to the next chat request.
+(rounds) per response under Settings (1–100, default 100); changes apply to the next chat request.
 When browser tools are available, Hearth adds their usage guidance to the leading system
 message and combines system instructions into one leading message for chat templates that
 require system instructions first.

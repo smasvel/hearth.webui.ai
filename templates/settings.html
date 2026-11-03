@@ -240,9 +240,10 @@
           <div class="console-card span-all">
             <h2>Web search and research</h2>
             <p class="hint">
-              Controls when Hearth may search and whether it may open result pages. Relevance
-              filtering, sponsored-result rejection, and advertisement blocking are always
-              enforced. Disabling browser access still permits safe search-result snippets.
+              Controls when Hearth searches and opens result pages. Playwright opens relevant
+              organic pages, blocks ad and tracker requests, and does not click page controls.
+              Higher page limits support broad research while relevance and domain diversity
+              keep fetched pages focused. Disabling browser access still permits snippets.
             </p>
             <div class="download-form">
               <label class="hint" style="display: flex; align-items: center; gap: 8px;">
@@ -258,12 +259,12 @@
                 <label class="hint">
                   Search results
                   <input id="settings-web-search-max-results" class="panel-input" type="number"
-                         min="1" max="10" step="1" value="6" />
+                         min="1" max="500" step="1" value="6" />
                 </label>
                 <label class="hint">
-                  Pages opened with Playwright
+                  Maximum relevant pages opened with Playwright
                   <input id="settings-web-search-max-pages" class="panel-input" type="number"
-                         min="0" max="5" step="1" value="4" />
+                         min="0" max="500" step="1" value="100" />
                 </label>
               </div>
               <label class="hint" style="display: flex; align-items: center; gap: 8px;">
@@ -275,8 +276,9 @@
                 Allow direct opening of URLs pasted by the user
               </label>
               <p class="hint">
-                Set pages to <strong>0</strong> for snippet-only research. Direct URLs are
-                opened only when both direct URLs and Playwright are enabled.
+                Set pages to <strong>0</strong> for snippet-only research. Irrelevant and
+                duplicate-domain results are skipped. Direct URLs are opened only when both
+                direct URLs and Playwright are enabled.
               </p>
             </div>
           </div>
@@ -339,7 +341,7 @@
               <label class="hint">
                 Max tool-call retries (rounds) per response
                 <input id="settings-chat-max-tool-rounds" class="panel-input" type="number"
-                       min="1" max="64" step="1" value="6" />
+                       min="1" max="100" step="1" value="100" />
               </label>
             </div>
             <p class="hint">Higher values allow longer multi-step tool use. This applies to Hearth chat and does not change OpenCode/Continue.</p>

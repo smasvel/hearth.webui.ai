@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import psutil
 
-_MIN_AVAILABLE_GB = 6.0
+_MIN_AVAILABLE_GB = 1.0
+_MODEL_LOAD_HEADROOM_GB = 1.0
 
 
-def check_available_memory() -> str | None:
+def check_available_memory(model_size_gb: float | None = None) -> str | None:
     """Returns a human-readable refusal message if available RAM is already too low to
     safely start another model load, None if there's enough headroom. Uses psutil's
     `available` figure (accounts for reclaimable page cache, unlike the raw `free` column)
@@ -32,11 +33,14 @@ def check_available_memory() -> str | None:
     same-backend eviction, e.g. app.py's _free_npu_except), so freed memory from that
     eviction counts toward the available figure."""
     available_gb = psutil.virtual_memory().available / 1e9
-    if available_gb >= _MIN_AVAILABLE_GB:
+    required_gb = (_MIN_AVAILABLE_GB if model_size_gb is None else
+                   max(_MIN_AVAILABLE_GB, float(model_size_gb) + _MODEL_LOAD_HEADROOM_GB))
+    if available_gb >= required_gb:
         return None
     return (
-        f"Refusing to load: only {available_gb:.1f}GB of RAM is free right now (below the "
-        f"{_MIN_AVAILABLE_GB:.0f}GB safety floor). Loading another model on top of whatever's "
+        f"Refusing to load: {available_gb:.1f}GB of RAM is available, "
+        f"but about {required_gb:.1f}GB is needed for the new model and safety headroom. "
+        f"Loading another model on top of whatever's "
         f"already using memory risks the kernel OOM-killing a backend mid-request - this "
         f"happened for real (flm.service got OOM-killed three times when Lemonade had its own "
         f"duplicate copy of the same NPU model loaded at the same time). Unload something "

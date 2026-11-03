@@ -192,7 +192,7 @@
     settingsWebSearchEnabledEl.checked = data.web_search_enabled !== false;
     settingsWebSearchModeEl.value = data.web_search_mode || "automatic";
     settingsWebSearchMaxResultsEl.value = data.web_search_max_results ?? 6;
-    settingsWebSearchMaxPagesEl.value = data.web_search_max_pages ?? 4;
+    settingsWebSearchMaxPagesEl.value = data.web_search_max_pages ?? 100;
     settingsWebSearchDirectUrlsEl.checked = data.web_search_direct_urls !== false;
     settingsWebSearchBrowserEnabledEl.checked = data.web_search_browser_enabled !== false;
     updateWebSearchControls();
@@ -201,7 +201,7 @@
     settingsChatMaxMaxTokensEl.value = data.chat_max_max_tokens ?? 32768;
     settingsChatMaxMessagesEl.value = data.chat_max_messages ?? 500;
     settingsChatMaxMessageCharsEl.value = data.chat_max_message_chars ?? 2000000;
-    settingsChatMaxToolRoundsEl.value = data.chat_max_tool_rounds ?? 6;
+    settingsChatMaxToolRoundsEl.value = data.chat_max_tool_rounds ?? 100;
     settingsOpencodeCompactionKeepTokensEl.value = data.opencode_compaction_keep_tokens ?? 15000;
     settingsOpencodeCompactionBufferEl.value = data.opencode_compaction_buffer ?? "";
     settingsOpencodeAdvertiseLoadedContextEl.checked = data.opencode_advertise_loaded_context ?? true;
