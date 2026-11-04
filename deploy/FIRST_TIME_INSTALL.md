@@ -683,10 +683,13 @@ Rejected agent relay chat requests appear as failed 403 entries labeled with the
 name and model; Hearth does not read or save their prompt body.
 For streamed chat requests, Hearth asks Lemonade, FastFlowLM, and LM Studio for token
 usage and records generated-token counts when the backend supplies them. Historical rows
-created without usage counts remain unknown.
-Metrics tables scroll horizontally inside their panels on phones. The model report uses
-fixed shared column widths to keep headers aligned with their values; dashboard cards
-and filters fit the available screen width.
+created without usage counts remain unknown. Tok/s values are decode speeds: Hearth uses
+the backend's own measured `decoding_speed_tps` when available (Lemonade and FastFlowLM)
+and otherwise falls back to completion tokens divided by request elapsed time (which
+includes prefill). Requests without a measurable speed show — rather than 0.
+Metrics tables scroll horizontally inside their panels on phones, and the header row pins
+to the top of each table's scroll area so all columns stay aligned at any width. The model
+report uses fixed shared column widths; dashboard cards and filters fit the available screen width.
 Agent HTML result previews also work when workspace synchronization stores the entry
 file path with a leading `./`.
 

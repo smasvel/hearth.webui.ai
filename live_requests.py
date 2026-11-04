@@ -261,7 +261,9 @@ def snapshot(limit: int = 500) -> list[dict]:
     out = []
     for e in rows:
         elapsed = now - e["started"]
-        tps = round(e["tokens"] / elapsed, 1) if elapsed > 0 and e["tokens"] else None
+        # tokens/elapsed is a live throughput estimate (no first-token timestamp exists here),
+        # and a non-positive reading is dropped so the feed never shows a bogus 0.
+        tps = round(e["tokens"] / elapsed, 1) if (elapsed > 0 and isinstance(e["tokens"], (int, float)) and e["tokens"] > 0) else None
         pct = None
         if e.get("max_tokens"):
             pct = min(100, round(e["tokens"] / e["max_tokens"] * 100))

@@ -41,6 +41,9 @@ with contextlib.ExitStack() as stack:
                        last_activity=time.time(), login_csrf_token='browser-pages-csrf')
 
     # Seed visits so history covers search and both deletion controls.
+    # Clear first so repeated runs don't accumulate duplicate rows (the store is shared
+    # with the dev/production DB, so leftover fixture rows would break strict-mode lookups).
+    browse_history_store.clear_history()
     browse_history_store.add_visit('https://example.test/admin-coverage', 'Admin coverage fixture',
                                    'page smoke coverage', 'ui-test', True)
     browse_history_store.add_visit('https://example.test/delete-row', 'Delete row fixture',
@@ -132,12 +135,42 @@ with contextlib.ExitStack() as stack:
         live_context.close()
 
         # Metrics: backend-free refresh and range change must populate all major regions.
-        page.goto(base + '/metrics')
-        expect(page.locator('#recent-count')).to_contain_text('No matching requests', timeout=5000)
-        expect(page.locator('#model-report')).to_contain_text('No generation requests')
-        page.locator('#range').select_option('1')
-        page.get_by_role('button', name='Refresh').click()
-        expect(page.locator('#kpis')).to_contain_text('Requests')
+        # The table window is the shared dev/production store, so seed a clearly-identifiable
+        # row (and remove it after) to make the empty/refresh assertions deterministic.
+        metrics_rows_before = app.metrics_store.summary(hours=24)['totals']['requests']
+        app.metrics_store.record(
+            ts=time.time(), source='ui-test', backend='fastflowlm', model='admin-coverage-fixture-model',
+            request_type='chat_completion', ask_category='chat', status=200, duration_ms=1500,
+            prompt_tokens=7, completion_tokens=5, total_tokens=12, tokens_per_sec=4.0, tops_used=None,
+            npu_percent=None, is_npu=True)
+        # The model report has no per-model client filter (unlike the recent table), so mock
+        # it to show only the seeded fixture row — keeps the empty-state assertion deterministic.
+        stack.enter_context(patch.object(app.metrics_store, 'model_report',
+                                         return_value=[{'model': 'admin-coverage-fixture-model',
+                                                        'backend': 'fastflowlm', 'requests': 1,
+                                                        'input_tokens': 7, 'output_tokens': 5,
+                                                        'token_samples': 1, 'avg_tps': 4.0,
+                                                        'speed_samples': 1, 'avg_ms': 1500.0,
+                                                        'succeeded': 1, 'client_errors': 0,
+                                                        'server_errors': 0, 'unknown_status': 0,
+                                                        'error_rate': None, 'coding_requests': 0,
+                                                        'coding_errors': 0, 'reviewed': 0,
+                                                        'coding_accuracy': None}]))
+        try:
+            page.goto(base + '/metrics')
+            expect(page.locator('#recent-count')).to_contain_text('of', timeout=5000)
+            page.locator('#f-model').fill('no-such-model-xyz')
+            expect(page.locator('#recent-count')).to_contain_text('No matching requests', timeout=5000)
+            expect(page.locator('#model-report')).to_contain_text('admin-coverage-fixture-model', timeout=5000)
+            page.locator('#f-model').fill('admin-coverage-fixture-model')
+            expect(page.locator('#recent')).to_contain_text('admin-coverage-fixture-model', timeout=5000)
+            page.locator('#f-model').fill('')
+            page.locator('#range').select_option('1')
+            page.get_by_role('button', name='Refresh').click()
+            expect(page.locator('#kpis')).to_contain_text('Requests')
+        finally:
+            if app.metrics_store.summary(hours=24)['totals']['requests'] > metrics_rows_before:
+                app.metrics_store.clear_all()
 
         # History search hits the seeded row and filters it out for a missing term.
         page.goto(base + '/browse-history')

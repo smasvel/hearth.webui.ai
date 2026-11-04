@@ -1386,9 +1386,13 @@ Lemonade, FastFlowLM, or LM Studio when the backend supplies usage counts; other
 backends do not expose per-token proxy visibility. Hearth requests usage counts for streamed
 generations and records the final usage event when the backend provides it.
 Available measurements depend on the backend and configured proxy instrumentation.
-Metrics tables scroll horizontally within their own panels on phones. The model report
-uses fixed shared column widths so each header stays aligned with its values; dashboard
-cards and filters fit the screen width.
+The Tok/s figures are decode speeds: when the backend measures them (Lemonade and
+FastFlowLM report `decoding_speed_tps` in their usage events), Hearth uses that reading;
+otherwise it falls back to completion tokens divided by full request elapsed time, which
+includes prefill. Requests without a measurable speed show —, never 0.
+Metrics tables scroll horizontally within their own panels on phones, and the header row
+pins to the top of each table's own scroll area so every column stays aligned at any width.
+The model report uses fixed shared column widths; dashboard cards and filters fit the screen width.
 Agent HTML previews recognize saved workspace entry files whether their stored path
 includes a leading `./` or not.
 
