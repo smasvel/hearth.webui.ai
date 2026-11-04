@@ -94,6 +94,22 @@
           </div>
 
           <div class="console-card span-all">
+            <h2>q38rocm (Qwen 3.8 27B)</h2>
+            <div class="download-form">
+              <input id="settings-q38rocm-url" class="panel-input" type="text" placeholder="http://127.0.0.1:8008" autocomplete="off" />
+              <input id="settings-q38rocm-key" class="panel-input" type="text" placeholder="No API key set" autocomplete="off" spellcheck="false" />
+              <div class="download-row">
+                <button id="settings-test-q38rocm" class="panel-btn" type="button">Test connection</button>
+              </div>
+              <p id="settings-test-q38rocm-result" class="hint"></p>
+            </div>
+            <div class="download-row">
+              <button id="restart-q38rocm" class="panel-btn" type="button">Restart q38rocm</button>
+            </div>
+            <p class="hint">Hearth starts and stops the local q38rocm service from Models. Restart it here after a backend issue; an unloaded service stays unloaded. This Radeon 890M Vulkan build supports a 262,144-token context for local Hearth chat and model tests.</p>
+          </div>
+
+          <div class="console-card span-all">
             <h2>vLLM</h2>
             <p class="hint">
               vLLM itself has no runtime load/unload API — a <code class="inline-code">vllm

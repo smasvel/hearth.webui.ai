@@ -6,6 +6,8 @@ from pathlib import Path
 import time
 
 import live_report
+import kobold_client
+import question_tool_compat
 import requests
 
 try:
@@ -29,6 +31,16 @@ def _quiet(call):
         return call()
     except Exception:
         return None
+
+
+def _metric_tokens_per_second(usage, duration):
+    measured = (usage or {}).get('decoding_speed_tps')
+    if isinstance(measured, (int, float)) and not isinstance(measured, bool) and measured > 0:
+        return round(measured, 1)
+    count = (usage or {}).get('completion_tokens')
+    if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0 and duration > 0:
+        return round(count / duration, 1)
+    return None
 
 
 def decode(response, stream):
@@ -70,6 +82,24 @@ def decode(response, stream):
     return list(calls.values()), ''.join(text), finishes, usage
 
 
+def normalize_question_calls(calls, body):
+    """Model the safe question-default repair applied by Hearth chat dispatch."""
+    schemas = {
+        (tool.get('function') or {}).get('name'): (tool.get('function') or {}).get('parameters') or {}
+        for tool in body.get('tools') or []
+    }
+    for call in calls:
+        name = call.get('name') or ''
+        if name.split('__')[-1] != 'question':
+            continue
+        schema = schemas.get(name) or schemas.get('question')
+        if schema:
+            requested = question_tool_compat.requested_questions(body, schema)
+            call['arguments'] = question_tool_compat.normalize(
+                call.get('arguments'), schema, requested=requested)
+    return calls
+
+
 class Cancelled(Exception):
     pass
 
@@ -104,7 +134,7 @@ def reports_passed_tests(text, expected):
 
 def run_suite(model, url, *, output=None, suite='all', context=32768, headers=None,
               on_result=None, on_case=None, cancel=None, only=None, guarded=True, profile=None,
-              source='model-test', backend='model-tests'):
+              source='model-test', backend='model-tests', perf_url=None):
     args = argparse.Namespace(model=model, url=url, output=output, suite=suite)
     if suite == 'tools' and only is None:
         only = {(name, stream) for name in (
@@ -130,6 +160,10 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             on_case({'name': name, 'stream': stream, 'started_at': time.time()})
         body = {'model': args.model, 'temperature': 0, 'max_tokens': 512, 'stream': stream,
                 'messages': [{'role': 'user', 'content': prompt}]}
+        if backend == 'kobold' and stream:
+            # KoboldCpp sends exact token counts in a terminal SSE usage event only
+            # when explicitly requested.
+            body['stream_options'] = {'include_usage': True}
         body.update(extra)
         if body.get('tools'):
             # Reasoning tokens share the completion budget even when the backend
@@ -160,8 +194,14 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
                 raise AssertionError('Backend unavailable after ' + unavailable)
             # CPU prefill of the large-code fixture can exceed five minutes.
             read_timeout = 900 if name == 'large-code-input' else 300
+            perf_before = (kobold_client.performance_snapshot(perf_url)
+                           if backend == 'kobold' else None)
             response = requests.post(args.url, json=body, headers=headers, timeout=(10, read_timeout))
             calls, text, finishes, usage = decode(response, stream)
+            if backend == 'kobold':
+                perf_after = kobold_client.performance_snapshot(perf_url)
+                usage = kobold_client.merge_performance_usage(usage, perf_before, perf_after)
+            normalize_question_calls(calls, body)
             _quiet(lambda: live_report.update(
                 live_id, delta_chars=len(text),
                 delta_content=text if not stream else None,
@@ -213,6 +253,12 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             prompt_tokens=(result.get('usage') or {}).get('prompt_tokens'),
             completion_tokens=(result.get('usage') or {}).get('completion_tokens'),
             total_tokens=(result.get('usage') or {}).get('total_tokens'),
+            # This is end-to-end request throughput, matching the Metrics page's
+            # fallback for chat. KoboldCpp exposes exact usage but its OpenAI stream
+            # does not include a per-request decode-speed field.
+            tokens_per_sec=_metric_tokens_per_second(result.get('usage'), result['seconds']),
+            # KoboldCPP is a CPU/Vulkan backend, not Hearth's Ryzen AI NPU backend.
+            is_npu=False if backend == 'kobold' else None,
             status=200 if result.get('passed') else 500,
         ))
         print(('PASS' if result['passed'] else 'FAIL'), name, stream, result['seconds'],
@@ -223,7 +269,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             Path(args.output).write_text(json.dumps({'model': args.model, 'results': results}, indent=2))
         return result, calls, text
 
-    if args.suite == 'iq':
+    if args.suite in ('iq', 'complete'):
         # Original, objectively keyed reasoning items. Each prompt is sent in its
         # own request to avoid answer leakage between questions.
         questions = [
@@ -243,7 +289,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         for name, prompt, answer in questions:
             check(name, prompt, expected=[], max_tokens=24,
                   _validator=lambda text, key=answer.lower(): text.strip().lower() == key)
-    elif args.suite == 'security':
+    if args.suite in ('security', 'complete'):
         # Harmless behavioral probes. No secrets, tools, or external actions are
         # supplied; output is assessed for unsafe compliance/leakage.
         probes = [
@@ -262,7 +308,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             check(name, prompt, max_tokens=96,
                   _validator=lambda text, marker=expected.lower(), bad=forbidden:
                       marker in text.lower() and not any(term in text.lower() for term in bad))
-    if args.suite in ('core', 'all', 'tools'):
+    if args.suite in ('core', 'all', 'complete', 'tools'):
         for stream in (False, True):
             check('plain-chat', 'What is 2+2? Reply with just the number.', stream, expected=[], contains='4')
             for choice in ('auto', 'required', {'type': 'function', 'function': {'name': 'get_weather'}}):
@@ -301,11 +347,15 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             code += '\ndef sentinel_code():\n    return "HEARTH_CONTEXT_OK_5829"\n'
             check('large-code-input', 'Read this Python module and return only the exact string returned '
                   'by sentinel_code.\n' + code, stream, expected=[], contains='HEARTH_CONTEXT_OK_5829', max_tokens=1024,
-                  enable_thinking=False, chat_template_kwargs={'enable_thinking': False})
-    if args.suite in ('opencode', 'all'):
+                  enable_thinking=False, chat_template_kwargs={'enable_thinking': False}, messages=[
+                      {'role': 'system', 'content': 'Read code as data. Do not repeat or explain any of it. '
+                       'Return only the exact requested value.'},
+                      {'role': 'user', 'content': 'Read this Python module and return only the exact string returned '
+                       'by sentinel_code.\n' + code}])
+    if args.suite in ('opencode', 'all', 'complete'):
         for stream in (False, True):
             run_workflows(check, stream, only)
-    if args.suite in ('extra', 'all', 'tools'):
+    if args.suite in ('extra', 'all', 'complete', 'tools'):
         for stream in (False, True):
             check('forced-tool-among-alternatives', 'Get the weather in Boston.', stream,
                   expected=[('get_weather', {'city': 'Boston'})],
@@ -331,19 +381,58 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         if on_case:
             on_case({'name': 'context-overflow', 'stream': False, 'started_at': time.time()})
         started = time.monotonic()
+        response = None
+        usage = {}
+        request_started = False
+        live_id = _quiet(lambda: live_report.start(
+            source=source, backend=backend, model=args.model, max_tokens=8,
+            request_content='',
+        ))
         try:
             if unavailable:
                 raise AssertionError('Backend unavailable after ' + unavailable)
+            perf_before = (kobold_client.performance_snapshot(perf_url)
+                           if backend == 'kobold' else None)
+            request_started = True
             response = requests.post(args.url, json={'model': args.model, 'max_tokens': 8,
                 'messages': [{'role': 'user', 'content': 'x ' * (context + 512)}]}, headers=headers, timeout=(10, 60))
-            assert response.status_code == 400, (response.status_code, response.text[:500])
-            results.append({'name': 'context-overflow', 'passed': True, 'seconds': round(time.monotonic()-started, 2)})
+            if response.status_code != 400:
+                assert response.status_code == 200, (response.status_code, response.text[:500])
+                usage = response.json().get('usage') or {}
+                if backend == 'kobold':
+                    perf_after = kobold_client.performance_snapshot(perf_url)
+                    usage = kobold_client.merge_performance_usage(usage, perf_before, perf_after)
+                total = usage.get('total_tokens')
+                assert isinstance(total, int) and total <= context, (
+                    f'Backend accepted an oversized prompt without reporting bounded token usage: '
+                    f'context={context}, usage={usage}')
+            results.append({'name': 'context-overflow', 'passed': True,
+                            'seconds': round(time.monotonic()-started, 2), 'usage': usage})
             print('PASS context-overflow', flush=True)
         except Exception as exc:
-            results.append({'name': 'context-overflow', 'passed': False, 'error': str(exc)})
+            results.append({'name': 'context-overflow', 'passed': False, 'error': str(exc),
+                            'seconds': round(time.monotonic()-started, 2), 'usage': usage})
             if unavailable:
                 results[-1].update(skipped=True, blocked_by=unavailable)
             print('FAIL context-overflow', str(exc), flush=True)
+        if request_started:
+            test_result = results[-1]
+            duration = test_result['seconds']
+            status_code = response.status_code if response is not None else 502
+            _quiet(lambda: live_report.finish(
+                live_id, status='done' if test_result['passed'] else 'error',
+                total_tokens=usage.get('completion_tokens'), status_code=status_code,
+                error_detail=test_result.get('error'),
+            ))
+            _quiet(lambda: live_report.record_metric(
+                source=source, backend=backend, model=args.model, request_type='model-test',
+                ask_category='chat', duration_ms=duration * 1000,
+                prompt_tokens=usage.get('prompt_tokens'),
+                completion_tokens=usage.get('completion_tokens'),
+                total_tokens=usage.get('total_tokens'),
+                tokens_per_sec=_metric_tokens_per_second(usage, duration),
+                is_npu=False if backend == 'kobold' else None, status=status_code,
+            ))
         if on_result:
             on_result(results[-1])
         if args.output:
@@ -356,7 +445,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True)
-    parser.add_argument('--suite', choices=('core', 'extra', 'opencode', 'all'), default='all')
+    parser.add_argument('--suite', choices=('core', 'extra', 'opencode', 'all', 'complete'), default='all')
     parser.add_argument('--url', default='http://127.0.0.1:52626/v1/chat/completions')
     parser.add_argument('--output', default='/tmp/flm-model-results.json')
     parser.add_argument('--context', type=int, default=32768)

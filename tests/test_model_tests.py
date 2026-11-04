@@ -50,10 +50,11 @@ class RegistryTests(unittest.TestCase):
 
     def test_queue_serial_reports_survive_restart(self):
         second = {'backend': 'lmstudio', 'id': 'other'}
-        job, _ = self.run_job([[result('chat', True)], [result('chat', True)]], [TARGET, second])
+        job, calls = self.run_job([[result('chat', True)], [result('chat', True)]], [TARGET, second])
         self.assertEqual(self.loads, [TARGET, second])
         self.assertEqual(job['status'], 'completed')
         self.assertEqual(len(job['results']), 2)
+        self.assertEqual([call['backend'] for call in calls], ['fastflowlm', 'lmstudio'])
         restored = model_tests.Registry(self.directory).get(job['id'])
         self.assertEqual(restored, job)
 
@@ -222,6 +223,22 @@ class RegistryTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_q38rocm_tests_disable_thinking_and_bound_all_replies(self):
+        chat = {'model': 'q38', 'max_tokens': 512, 'messages': []}
+        tools = {'model': 'q38', 'max_tokens': 2048, 'messages': [], 'tools': [{'type': 'function'}]}
+        self.assertEqual(profiles.apply(chat, 'q38rocm')['max_tokens'], 128)
+        self.assertEqual(profiles.apply(tools, 'q38rocm')['max_tokens'], 128)
+        for body in (chat, tools):
+            updated = profiles.apply(body, 'q38rocm')
+            self.assertFalse(updated['enable_thinking'])
+            self.assertFalse(updated['chat_template_kwargs']['enable_thinking'])
+
+    def test_q38rocm_profile_preserves_lower_reply_limit_and_template_options(self):
+        body = {'max_tokens': 32, 'chat_template_kwargs': {'custom': True}}
+        updated = profiles.apply(body, 'q38rocm')
+        self.assertEqual(updated['max_tokens'], 32)
+        self.assertEqual(updated['chat_template_kwargs'], {'custom': True, 'enable_thinking': False})
+
     @patch.object(profiles, 'get', return_value=profiles.RECIPE)
     def test_recipe_is_idempotent_and_does_not_mutate_history(self, _get):
         body = {'model': 'x', 'tools': [{'function': {'name': 'read'}}],
@@ -444,12 +461,58 @@ class ModelHandoffVerificationTests(unittest.TestCase):
         helper = {'backend': 'lemonade', 'id': 'embedding', 'state': 'loaded', 'type': 'embeddings'}
         wrong = {'backend': 'lmstudio', 'id': 'old', 'state': 'loaded', 'type': 'llm'}
         with patch.object(app, 'api_load_model', Mock(__wrapped__=lambda: app.jsonify({'ok': True}))), \
-             patch.object(app, '_test_model_inventory', return_value=[good, helper]):
+             patch.object(app, '_unload_reasoning_models_before_load') as unload, \
+             patch.object(app, '_test_loaded_reasoning_models', return_value=[good]):
             app._test_load_model(target)
+        unload.assert_called_once_with('target', force=True)
         for inventory in ([], [wrong], [good, wrong]):
             with self.subTest(inventory=inventory), \
                  patch.object(app, 'api_load_model', Mock(__wrapped__=lambda: app.jsonify({'ok': True}))), \
-                 patch.object(app, '_test_model_inventory', return_value=inventory):
+                 patch.object(app, '_unload_reasoning_models_before_load'), \
+                 patch.object(app, '_test_loaded_reasoning_models', return_value=inventory):
                 with self.assertRaisesRegex(RuntimeError, 'handoff verification failed'):
                     app._test_load_model(target)
                 self.assertFalse(app._model_test_context.active)
+
+    def test_model_test_handoff_evicts_other_resident_models_even_when_memory_fits(self):
+        target = {'id': 'target', 'state': 'not-loaded', 'type': 'llm', 'size_gb': 1.0}
+        resident = {'id': 'resident', 'state': 'loaded', 'type': 'llm', 'size_gb': 1.0}
+        unload_resident = Mock()
+        with patch.object(app.lms, 'list_models', return_value=[target]), \
+             patch.object(app.lemonade, 'list_models', return_value=[]), \
+             patch.object(app.vllm, 'list_models', return_value=[]), \
+             patch.object(app.kobold, 'list_models', return_value=[resident]), \
+             patch.object(app.q38rocm, 'list_models', return_value=[]), \
+             patch.object(app.fastflowlm, 'list_models', return_value=[]), \
+             patch.object(app.kobold, 'unload_model', unload_resident), \
+             patch.object(app.resource_guard, 'check_available_memory', return_value=None):
+            unloaded = app._unload_reasoning_models_before_load('target', force=True)
+        self.assertEqual(unloaded, ['resident'])
+        unload_resident.assert_called_once_with('resident')
+
+    def test_handoff_verification_uses_live_backend_inventories(self):
+        live = {'id': 'target', 'state': 'loaded', 'type': 'llm'}
+        stopped = {'id': 'stale', 'state': 'not-loaded', 'type': 'llm'}
+        with patch.object(app.lms, 'list_models', return_value=[live]), \
+             patch.object(app.lemonade, 'list_models', return_value=[stopped]), \
+             patch.object(app.vllm, 'list_models', return_value=[]), \
+             patch.object(app.kobold, 'list_models', return_value=[]), \
+             patch.object(app.q38rocm, 'list_models', return_value=[]), \
+             patch.object(app.fastflowlm, 'list_models', return_value=[]):
+            loaded = app._test_loaded_reasoning_models()
+        self.assertEqual([(m['backend'], m['id']) for m in loaded], [('lmstudio', 'target')])
+
+    def test_chat_question_calls_preserve_explicit_multi_select(self):
+        schema = {'type': 'object', 'properties': {'questions': {'type': 'array', 'items': {
+            'type': 'object', 'properties': {'question': {'type': 'string'},
+                'header': {'type': 'string'}, 'options': {'type': 'array'},
+                'multiple': {'type': 'boolean'}},
+            'required': ['question', 'header', 'options']}}}}
+        tools = [{'type': 'function', 'function': {'name': 'opencode__question', 'parameters': schema}}]
+        messages = [{'role': 'user', 'content': 'Ask me this: {"questions":[{"question":"Which features?",'
+                    '"header":"Features","multiple":true,"options":[{"label":"API"}]}]}'}]
+        calls = [{'function': {'name': 'opencode__question', 'arguments':
+                  '{"questions":[{"question":"Which features?","header":"Features",'
+                  '"options":[{"label":"API"}]}]}'}}]
+        app._normalize_question_tool_calls(calls, tools, messages)
+        self.assertTrue(json.loads(calls[0]['function']['arguments'])['questions'][0]['multiple'])

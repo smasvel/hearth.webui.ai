@@ -60,7 +60,7 @@ _UPSTREAM_BACKEND = {
 _LABELS = {"lmstudio": "LM Studio", "lemonade": "Ryzen AI NPU", "vllm": "vLLM", "kobold": "KoboldCPP", "fastflowlm": "FastFlowLM"}
 # FastFlowLM matches flm.service and stays below the NPU kernel limit, including
 # runtime padding. Lemonade uses its own context configuration.
-_CTX = {"lmstudio": 32768, "lemonade": 65536, "vllm": 8192, "kobold": 8192, "fastflowlm": 8192}
+_CTX = {"lmstudio": 32768, "lemonade": 65536, "vllm": 8192, "kobold": 8192, "q38rocm": 262144, "fastflowlm": 8192}
 _OUT = {"lmstudio": 8192, "lemonade": 8192, "vllm": 4096, "kobold": 4096, "fastflowlm": 4096}
 _BACKENDS = ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
 _NON_CHAT = ("embeddings", "transcription", "tts")

@@ -36,6 +36,7 @@ import agent_store
 import agent_container
 import model_tests
 import model_test_profiles
+import question_tool_compat
 import flm_context
 import dmv_questions
 import help_data
@@ -58,6 +59,7 @@ _OPENCODE_DEFAULT_BASE_URLS = {
     "https://opencode.ai/inference/go/openai",
 }
 import kobold_client as kobold
+import q38rocm_client as q38rocm
 import fastflowlm_client as fastflowlm
 import mcp_tools_client
 import memory_store
@@ -516,6 +518,10 @@ def _download_worker_structured(key: str, model_id: str, backend: str, source: s
             puller = kobold.download_model
         elif backend == "fastflowlm":
             puller = fastflowlm.download_model
+        elif backend == "q38rocm":
+            puller = lambda mid: q38rocm.download_model(
+                mid, cancelled=lambda: _download_cancelled(key),
+            )
         else:
             puller = lemonade.pull_huggingface_repo if source == "huggingface" else lemonade.pull_catalog_model
         for progress in puller(model_id):
@@ -527,8 +533,14 @@ def _download_worker_structured(key: str, model_id: str, backend: str, source: s
             cancelled = key in _cancelled_downloads
         if not cancelled:
             _set_download_progress(key, done=True)
-    except (lemonade.LemonadeError, vllm.VLLMError, kobold.KoboldError, fastflowlm.FastFlowLMError) as exc:
+    except (lemonade.LemonadeError, vllm.VLLMError, kobold.KoboldError,
+            fastflowlm.FastFlowLMError, q38rocm.Q38RocmError) as exc:
         _set_download_progress(key, error=str(exc))
+
+
+def _download_cancelled(key: str) -> bool:
+    with _active_downloads_lock:
+        return key in _cancelled_downloads
 
 
 def _ensure_embedding_model_loaded() -> None:
@@ -1232,11 +1244,17 @@ def settings_page():
 @app.post("/api/admin/restart-backends")
 @admin_required
 def api_restart_backends():
+    def restart_q38_if_running():
+        if q38rocm._systemctl("is-active").strip() == "active":
+            return q38rocm._systemctl("restart", timeout=120)
+        return "q38rocm is stopped; leaving it unloaded."
+
     services = {
         "LM Studio": lambda: lms._run_lms(["server", "stop"], timeout=120),
         "Lemonade": lambda: subprocess.run(["systemctl", "--user", "restart", "lemonade-guard-shim.service"], check=True, capture_output=True, text=True, timeout=120),
         "vLLM": lambda: vllm._systemctl("restart", timeout=120),
         "KoboldCPP": lambda: kobold._systemctl("restart", timeout=120),
+        "q38rocm": restart_q38_if_running,
         "FastFlowLM": lambda: fastflowlm._systemctl("restart", timeout=120),
     }
     results = {}
@@ -1247,6 +1265,18 @@ def api_restart_backends():
         except Exception as exc:
             results[name] = {"ok": False, "message": str(exc)[:300]}
     return jsonify(results)
+
+
+@app.post("/api/admin/restart-q38rocm")
+@admin_required
+def api_restart_q38rocm():
+    try:
+        if q38rocm._systemctl("is-active").strip() != "active":
+            return jsonify({"q38rocm": {"ok": False, "message": "q38rocm is stopped; load it from Models before restarting."}}), 409
+        q38rocm._systemctl("restart", timeout=120)
+        return jsonify({"q38rocm": {"ok": True, "message": "Restart requested."}})
+    except Exception as exc:
+        return jsonify({"q38rocm": {"ok": False, "message": str(exc)[:300]}}), 502
 
 
 @app.post("/api/admin/restart-hearth")
@@ -1728,6 +1758,8 @@ def _collect_completion(messages: list[dict], model: str, temperature: float = 0
         backend = zen
     elif kobold.owns_model(model):
         backend = kobold
+    elif q38rocm.owns_model(model):
+        backend = q38rocm
     elif fastflowlm.owns_model(model):
         backend = fastflowlm
     else:
@@ -1891,6 +1923,14 @@ def api_list_models():
     for m in flm_models:
         m["backend"] = "fastflowlm"
     models += flm_models
+    # q38rocm is a locally managed, single-model Vulkan/ROCmFPX server.
+    try:
+        q38_models = q38rocm.list_models()
+    except q38rocm.Q38RocmError:
+        q38_models = []
+    for m in q38_models:
+        m["backend"] = "q38rocm"
+    models += q38_models
     models.append(comfyui.video_model_info())
     # Per-model context the admin saved from the Models page. Backends only report what is
     # currently loaded (or their own default), so without this an unloaded model would lose
@@ -1947,6 +1987,7 @@ def api_list_models():
             if m.get("type") not in ("embeddings", "transcription", "tts", "image", "video")
         ]
     clients = {'lmstudio': lms, 'lemonade': lemonade, 'fastflowlm': fastflowlm,
+               'q38rocm': q38rocm,
                'vllm': vllm, 'kobold': kobold}
     local_backends = {name for name, client in clients.items()
                       if urlsplit(client.base_url()).hostname in ('localhost', '127.0.0.1', '::1')}
@@ -2143,6 +2184,10 @@ def _test_load_model(target):
         return
     _model_test_context.active = True
     try:
+        # Ordinary model switches may keep a resident model when memory allows
+        # both. A compatibility test needs an isolated target so results and the
+        # exclusive handoff check cannot include output from another backend.
+        _unload_reasoning_models_before_load(target['id'], force=True)
         with app.test_request_context('/api/models/load', method='POST', json={'model': target['id']}):
             response = app.make_response(api_load_model.__wrapped__())
             if response.status_code >= 400:
@@ -2150,8 +2195,7 @@ def _test_load_model(target):
         # Do not send a test request until the requested model is actually the
         # loaded target. A backend accepting /load is not proof it switched, and
         # a silent unload failure must not contaminate another model's results.
-        loaded = [m for m in _test_model_inventory()
-                  if m.get('state') == 'loaded' and m.get('type') not in _SUPPORT_MODEL_TYPES]
+        loaded = _test_loaded_reasoning_models()
         expected = (target['backend'], target['id'])
         observed = [(m.get('backend'), m.get('id')) for m in loaded]
         if observed != [expected]:
@@ -2160,10 +2204,55 @@ def _test_load_model(target):
         _model_test_context.active = False
 
 
+def _test_loaded_reasoning_models():
+    """Return chat models reported loaded by their owning runtimes.
+
+    The aggregate Models API can contain a persisted ``loaded`` hint after a
+    backend was stopped outside Hearth (or while its service is shutting down).
+    Model handoff certification must use live backend inventories so stale UI
+    metadata cannot fail an otherwise successful handoff.
+    """
+    clients = (("lmstudio", lms), ("lemonade", lemonade), ("vllm", vllm),
+               ("kobold", kobold), ("q38rocm", q38rocm), ("fastflowlm", fastflowlm))
+    loaded = []
+    for backend, client in clients:
+        for model in client.list_models():
+            if model.get("state") == "loaded" and model.get("type") not in _SUPPORT_MODEL_TYPES:
+                loaded.append({**model, "backend": backend})
+    return loaded
+
+
+def _normalize_question_tool_calls(tool_calls, offered_tools, messages):
+    """Restore OpenCode question defaults from the latest explicit user request."""
+    schemas = {
+        (tool.get('function') or {}).get('name'): (tool.get('function') or {}).get('parameters') or {}
+        for tool in offered_tools or []
+        if (tool.get('function') or {}).get('name')
+    }
+    for call in tool_calls:
+        function = call.get('function') or {}
+        name = function.get('name') or ''
+        if name.split('__')[-1] != 'question':
+            continue
+        schema = schemas.get(name) or schemas.get('question')
+        if not schema:
+            continue
+        try:
+            arguments = json.loads(function.get('arguments') or '{}')
+        except (TypeError, ValueError):
+            continue
+        requested = question_tool_compat.requested_questions({'messages': messages}, schema)
+        normalized = question_tool_compat.normalize(arguments, schema, requested=requested)
+        if normalized != arguments:
+            function['arguments'] = json.dumps(normalized, separators=(',', ':'))
+    return tool_calls
+
+
 def _test_connection(target):
     backend = target['backend']
     client = {'fastflowlm': fastflowlm, 'lmstudio': lms, 'lemonade': lemonade,
-              'vllm': vllm, 'kobold': kobold, 'opencode': zen}[backend]
+              'vllm': vllm, 'kobold': kobold, 'opencode': zen,
+              'q38rocm': q38rocm}[backend]
     base = client.base_url().rstrip('/')
     local = urlsplit(base)
     proxy_ports = {'fastflowlm': (52625, 52626), 'lmstudio': (1234, 13307), 'lemonade': (13305, 13306)}
@@ -2172,6 +2261,14 @@ def _test_connection(target):
     model = target['id']
     if backend == 'fastflowlm':
         model = fastflowlm.resolve_model(model)
+    elif backend == 'q38rocm':
+        model = q38rocm._MODEL_NAME
+    elif backend == 'kobold':
+        # Exercise Hearth's Kobold tool-compatibility bridge during live model
+        # checks so the report reflects the endpoint Hearth chat actually uses.
+        import kobold_tool_shim
+        if kobold_tool_shim.should_use_shim(base):
+            base = kobold_tool_shim.start_server()
     elif backend == 'opencode':
         # opencode.ai's model-list endpoint sits one directory above the
         # OpenAI base (…/inference/openai → …/inference/v1), so direct chat
@@ -2192,7 +2289,7 @@ def _test_context(target):
     if target['backend'] == 'fastflowlm':
         return flm_context.context_limit(target['id'])
     client = {'lmstudio': lms, 'lemonade': lemonade, 'vllm': vllm,
-              'kobold': kobold, 'opencode': zen}[target['backend']]
+              'kobold': kobold, 'opencode': zen, 'q38rocm': q38rocm}[target['backend']]
     for model in client.list_models():
         if model.get('id') == target['id']:
             window = model.get('loaded_context_length')
@@ -2223,7 +2320,7 @@ def _prepare_agent_model(job):
         # target. For an agent continuing with a healthy model, that eviction is
         # unnecessary and can strand the task if a backend's unload call stalls.
         client = {'lemonade': lemonade, 'lmstudio': lms, 'vllm': vllm,
-                  'kobold': kobold}.get(model['providerID'])
+                  'kobold': kobold, 'q38rocm': q38rocm}.get(model['providerID'])
         if client:
             try:
                 loaded = next((entry for entry in client.list_models()
@@ -3136,7 +3233,7 @@ def api_model_tests_start():
         model = inventory.get(pair)
         if (not model or pair in seen or model.get('type') in _SUPPORT_MODEL_TYPES
                 or model.get('loadable') is False
-                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'opencode', 'kobold')):
+                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'opencode', 'kobold', 'q38rocm')):
             return jsonify({'error': 'Choose unique, installed, loadable chat models.'}), 400
         seen.add(pair)
         targets.append({'backend': pair[0], 'id': pair[1]})
@@ -3224,7 +3321,8 @@ def _lemonade_is_npu(model_key: str) -> bool:
         return False
 
 
-def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool = False) -> list[str]:
+def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool = False,
+                                         force: bool = False) -> list[str]:
     """Keep resident models when the requested model fits; otherwise free them first.
 
     Support models cannot answer chat requests and are intentionally allowed to
@@ -3239,6 +3337,7 @@ def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool 
         ("Lemonade", lemonade.list_models, lemonade.unload_model),
         ("vLLM", vllm.list_models, vllm.unload_model),
         ("KoboldCPP", kobold.list_models, kobold.unload_model),
+        ("q38rocm", q38rocm.list_models, q38rocm.unload_model),
         ("FastFlowLM", fastflowlm.list_models, fastflowlm.unload_model),
     )
     inventories = []
@@ -3271,11 +3370,14 @@ def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool 
                     size_gb = lms.model_size_gb(requested)
                 elif label == "Lemonade":
                     size_gb = lemonade.model_size_gb(requested)
+                elif label == "q38rocm":
+                    size_gb = next((m.get("size_gb") for m in q38rocm.list_models()
+                                    if m.get("id") == requested), None)
             except Exception:
                 size_gb = None
             if size_gb is not None:
                 break
-    if (not selected_is_loaded and isinstance(size_gb, (int, float)) and size_gb > 0
+    if (not force and not selected_is_loaded and isinstance(size_gb, (int, float)) and size_gb > 0
             and resource_guard.check_available_memory(float(size_gb)) is None):
         return []
 
@@ -3314,6 +3416,8 @@ def _model_load_size_gb(requested: str) -> float | None:
             models = vllm.list_models()
         elif kobold.owns_model(requested):
             models = kobold.list_models()
+        elif q38rocm.owns_model(requested):
+            models = q38rocm.list_models()
         elif lemonade.owns_model(requested):
             return lemonade.model_size_gb(requested)
         else:
@@ -3366,7 +3470,7 @@ def _track_model_load_status(view):
         if not isinstance(model_id, str) or not model_id:
             return view(*args, **kwargs)
         backend = next((name for name, client in (
-            ("opencode", zen), ("fastflowlm", fastflowlm), ("vllm", vllm),
+            ("opencode", zen), ("fastflowlm", fastflowlm), ("q38rocm", q38rocm), ("vllm", vllm),
             ("kobold", kobold), ("lemonade", lemonade),
         ) if client.owns_model(model_id)), "lmstudio")
         key = (backend, model_id.casefold())
@@ -3422,6 +3526,16 @@ def api_load_model():
         except zen.OpenCodeError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True, "unloaded": [], "externally_managed": True})
+    if q38rocm.owns_model(model_key):
+        try:
+            unloaded = _unload_reasoning_models_before_load(model_key)
+            refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
+            if refusal:
+                return jsonify({"error": refusal}), 422
+            q38rocm.load_model(model_key)
+        except (q38rocm.Q38RocmError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True, "unloaded": unloaded})
     if fastflowlm.owns_model(model_key):
         # Reject incomplete engine-development profiles before unloading the working
         # reasoning model. Once kernels/catalog registration exist, the ordinary
@@ -3601,6 +3715,12 @@ def api_unload_model():
         return jsonify({"error": "'identifier' is required"}), 400
     if zen.owns_model(identifier):
         return jsonify({"error": "opencode.ai models are hosted remotely and cannot be unloaded from Hearth."}), 409
+    if q38rocm.owns_model(identifier):
+        try:
+            q38rocm.unload_model(identifier)
+        except q38rocm.Q38RocmError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True})
     if vllm.owns_model(identifier):
         try:
             vllm.unload_model(identifier)
@@ -3648,7 +3768,7 @@ def api_delete_model():
 
     backend = next((name for name, client in (
         ('opencode', zen), ('vllm', vllm), ('kobold', kobold),
-        ('fastflowlm', fastflowlm), ('lemonade', lemonade),
+        ('fastflowlm', fastflowlm), ('lemonade', lemonade), ('q38rocm', q38rocm),
     ) if client.owns_model(identifier)), 'lmstudio')
     if not getattr(_model_test_context, 'active', False):
         if any(
@@ -3668,6 +3788,8 @@ def api_delete_model():
 
     if backend == 'opencode':
         return jsonify({"error": "opencode.ai models cannot be deleted from Hearth; they are managed by the opencode.ai account."}), 409
+    if backend == 'q38rocm':
+        return jsonify({"error": "The q38rocm model file is managed in data/q38rocm/models and cannot be deleted from Hearth."}), 409
     if backend == 'vllm':
         # vllm.delete_model() unloads first itself if this is the currently-served
         # model — no separate best-effort unload needed here, unlike the Lemonade
@@ -3717,11 +3839,11 @@ def api_download_model():
     backend = body.get("backend") or "lmstudio"
     if not query:
         return jsonify({"error": "'query' is required"}), 400
-    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm"):
-        return jsonify({"error": "'backend' must be 'lmstudio', 'lemonade', 'vllm', 'kobold', or 'fastflowlm'"}), 400
+    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm"):
+        return jsonify({"error": "'backend' must be 'lmstudio', 'lemonade', 'vllm', 'kobold', 'fastflowlm', or 'q38rocm'"}), 400
 
     key = f"{backend}:{query}"
-    if backend in ("vllm", "kobold", "fastflowlm"):
+    if backend in ("vllm", "kobold", "fastflowlm", "q38rocm"):
         # Both yield structured byte-level progress dicts (kobold.download_model /
         # vllm.download_model) — routed through the same structured worker as Lemonade's
         # HF pulls, not the freeform text-line one.
@@ -3742,6 +3864,7 @@ _MODEL_BACKEND_INFO = {
     "vllm": ("vLLM", "Hugging Face weights", "CPU on this system"),
     "kobold": ("KoboldCPP", "GGUF", "CPU / Vulkan GPU"),
     "fastflowlm": ("FastFlowLM", "FLM NPU", "AMD Ryzen AI NPU"),
+    "q38rocm": ("q38rocm (local RADV Vulkan)", "GGUF (Q3_K_M)", "AMD Radeon Vulkan GPU"),
 }
 
 
@@ -3804,7 +3927,7 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
             "backend_label": label,
             "supports_tool_calling": _model_supports_tool_calling(result),
             "max_context_length": _model_max_context_length(result),
-            "format": model_format,
+            "format": result.get("format") if backend == "q38rocm" else model_format,
             "compatibility": compatibility,
             "source_url": source_url,
             # LM Studio needs a full HF URL to bypass fuzzy catalog resolution.
@@ -3824,6 +3947,8 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
         return _normalize_model_results(fastflowlm.search_catalog(query, limit=500 if not query else 80), backend)
+    if backend == "q38rocm":
+        return _normalize_model_results(q38rocm.search_catalog(query), backend)
     if backend == "lemonade":
         results = lemonade.search_catalog(query, limit=500 if not query else 40)
         if query:
@@ -3889,8 +4014,11 @@ def api_download_catalog_model():
     if source not in ("local", "huggingface"):
         return jsonify({"error": "'source' must be 'local' or 'huggingface'"}), 400
 
-    key = f"lemonade:{model_id}"
-    _start_download_worker(key, lambda: _download_worker_structured(key, model_id, "lemonade", source))
+    backend = (body.get("backend") or "lemonade").strip()
+    if backend not in ("lemonade", "q38rocm"):
+        return jsonify({"error": "Catalog downloads are supported for Lemonade or q38rocm."}), 400
+    key = f"{backend}:{model_id}"
+    _start_download_worker(key, lambda: _download_worker_structured(key, model_id, backend, source))
 
     return Response(
         stream_with_context(_relay_download(key)),
@@ -4016,6 +4144,11 @@ def _clean_partial_download_files(backend: str, model_id: str) -> tuple[int, int
                 if repo_dir.is_dir():
                     candidates.extend(repo_dir.rglob("*.incomplete"))
                     candidates.extend(repo_dir.rglob("*.part"))
+        if backend == "q38rocm" and model_id == q38rocm._CATALOG_ID:
+            candidates.extend((
+                Path(str(q38rocm._MODEL_PATH) + ".part"),
+                Path(str(q38rocm._MODEL_PATH) + ".part.etag"),
+            ))
     removed_files = 0
     removed_bytes = 0
     for path in candidates:
@@ -4036,7 +4169,7 @@ def api_cancel_download():
     body = request.get_json(silent=True) or {}
     backend = (body.get("backend") or "").strip()
     model_id = (body.get("model_id") or "").strip()
-    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm") or not model_id:
+    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm") or not model_id:
         return jsonify({"error": "A valid 'backend' and 'model_id' are required."}), 400
     key = f"{backend}:{model_id}"
     with _active_downloads_lock:
@@ -4271,6 +4404,19 @@ def _test_kobold(base_url: str, api_key: str | None) -> tuple[bool, str]:
     )
 
 
+def _test_q38rocm(base_url: str, api_key: str | None) -> tuple[bool, str]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        health = requests.get(f"{base_url.rstrip('/')}/health", headers=headers, timeout=8)
+        health.raise_for_status()
+        models = requests.get(f"{base_url.rstrip('/')}/v1/models", headers=headers, timeout=8)
+        models.raise_for_status()
+    except requests.RequestException as exc:
+        return False, str(exc)
+    ids = [str(item.get("id")) for item in models.json().get("data", []) if isinstance(item, dict)]
+    return True, f"Connected — serving: {', '.join(ids)}." if ids else "Connected — no model served."
+
+
 def _test_fastflowlm(base_url: str, api_key: str | None) -> tuple[bool, str]:
     return _test_ondemand_openai(
         base_url, api_key, "FastFlowLM",
@@ -4361,6 +4507,11 @@ def api_test_settings():
             (body.get("base_url") or "").strip() or kobold.base_url(),
             body.get("api_key") or kobold.api_key(),
         )
+    elif target == "q38rocm":
+        ok, message = _test_q38rocm(
+            (body.get("base_url") or "").strip() or q38rocm.base_url(),
+            body.get("api_key") or q38rocm.api_key(),
+        )
     elif target == "fastflowlm":
         ok, message = _test_fastflowlm(
             (body.get("base_url") or "").strip() or fastflowlm.base_url(),
@@ -4396,7 +4547,7 @@ def api_test_settings():
         ok, message = _test_caddy(port, caddy["bearer_token"], path, host=ts_ip)
     else:
         return jsonify({
-            "error": "'target' must be lmstudio, lemonade, vllm, opencode, kobold, fastflowlm, "
+            "error": "'target' must be lmstudio, lemonade, vllm, opencode, kobold, q38rocm, fastflowlm, "
                      "or a caddy_*/tailscale_* variant",
         }), 400
     return jsonify({"ok": ok, "message": message})
@@ -4430,6 +4581,8 @@ def _settings_snapshot() -> dict:
         "opencode_api_plan": zen.plan(),
         "kobold_base_url": kobold.base_url(),
         "kobold_api_key": kobold.api_key() or "",
+        "q38rocm_base_url": q38rocm.base_url(),
+        "q38rocm_api_key": q38rocm.api_key() or "",
         # GPU offload (Vulkan) + speculative decoding tuning (2026-07-27) - see
         # kobold_client._write_service_env()'s docstring for why these are global settings
         # rather than per-model options, and kobold.service's ExecStart for how an unset/
@@ -4494,6 +4647,7 @@ def api_update_settings():
         "vllm_base_url", "vllm_api_key",
         "opencode_api_key", "opencode_api_base_url", "opencode_api_plan",
         "kobold_base_url", "kobold_api_key",
+        "q38rocm_base_url", "q38rocm_api_key",
         "fastflowlm_base_url", "fastflowlm_api_key",
         "lan_default_model", "tailscale_ip_override",
         "kobold_gpu_layers", "kobold_draft_model", "kobold_draft_amount",
@@ -5433,6 +5587,8 @@ def api_chat():
 
     if lemonade.owns_model(model):
         backend, backend_error, backend_name = lemonade, lemonade.LemonadeError, "lemonade"
+    elif q38rocm.owns_model(model):
+        backend, backend_error, backend_name = q38rocm, q38rocm.Q38RocmError, "q38rocm"
     elif vllm.owns_model(model):
         backend, backend_error, backend_name = vllm, vllm.VLLMError, "vllm"
     elif zen.owns_model(model):
@@ -5497,6 +5653,7 @@ def api_chat():
             usage: dict | None = None
             output_limited = False
             tool_round_limited = False
+            request_status = "done"
             start_time = time.monotonic()
             # fastflowlm is NPU-only; lemonade multiplexes several recipes (llamacpp, flm,
             # whispercpp, kokoro, ...) so only its flm-recipe models actually run on the NPU -
@@ -5532,7 +5689,7 @@ def api_chat():
             # are available on every chat backend. Each backend has a guarded tool-call path
             # where needed; withholding the tool schema makes the model claim it cannot browse
             # even though Hearth's Playwright MCP server is installed and configured.
-            use_tools = backend in (kobold, fastflowlm, zen, lemonade, lms)
+            use_tools = backend in (kobold, fastflowlm, q38rocm, zen, lemonade, lms)
             tools_list = None
             if use_tools:
                 try:
@@ -5567,6 +5724,11 @@ def api_chat():
                     extra_kwargs["chat_template_kwargs"] = {"enable_thinking": False}
                 if tools_list:
                     extra_kwargs["tools"] = tools_list
+                    # Explicitly allow one response to emit multiple independent
+                    # tool calls. Several OpenAI-compatible runtimes default this
+                    # off when the field is omitted, even though their templates
+                    # support parallel calls.
+                    extra_kwargs["parallel_tool_calls"] = True
 
                 loop_messages = list(messages)
                 if tools_list:
@@ -5663,6 +5825,7 @@ def api_chat():
                         break
                     tool_round += 1
                     tool_calls_list = [round_tool_calls[i] for i in sorted(round_tool_calls)]
+                    _normalize_question_tool_calls(tool_calls_list, tools_list, loop_messages)
                     loop_messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls_list})
                     for tc in tool_calls_list:
                         if cancel_event.is_set():
@@ -5694,7 +5857,8 @@ def api_chat():
                             "content": tool_result,
                         })
             except backend_error as exc:
-                live_requests.finish(live_id, status="error")
+                request_status = "error"
+                live_requests.finish(live_id, status="error", error_detail=str(exc)[:500])
                 result_queue.put(f"data: {json.dumps({'error': str(exc)})}\n\n")
             finally:
               # Everything in this tail runs inside one more try/finally whose only
@@ -5811,7 +5975,7 @@ def api_chat():
                     )
                     _remember_exchange(user_id, conversation_id, last_user_message, assistant_text)
               finally:
-                live_requests.finish(live_id, status="done", total_tokens=(usage or {}).get("completion_tokens"))
+                live_requests.finish(live_id, status=request_status, total_tokens=(usage or {}).get("completion_tokens"))
                 npu_request_lock.release(npu_handle)
                 result_queue.put(_SENTINEL)
 
@@ -5896,6 +6060,7 @@ def _restore_default_model() -> None:
         "vllm": vllm,
         "opencode": zen,
         "kobold": kobold,
+        "q38rocm": q38rocm,
         "fastflowlm": fastflowlm,
     }
     backend = clients.get(backend_name)

@@ -155,3 +155,27 @@ class WorkflowTests(unittest.TestCase):
         with patch('tools.test_flm_model.requests.post') as post:
             self.assertEqual(run_suite('fixture', 'http://local', suite='opencode', only={('plain-chat', False)}), [])
             post.assert_not_called()
+
+    def test_complete_suite_combines_compatibility_reasoning_security_and_workflows(self):
+        selected = {('plain-chat', False), ('number-sequence', False),
+                    ('direct-injection', False), ('opencode-build-plan', False)}
+        current = {'name': None}
+        observed = []
+        def respond(_url, **_kwargs):
+            name = current['name']
+            answer = {'plain-chat': '4', 'number-sequence': 'C', 'direct-injection': 'SAFE'}[name]
+            response = Mock()
+            response.json.return_value = {'choices': [{'message': {'content': answer}, 'finish_reason': 'stop'}]}
+            return response
+
+        def case_started(case):
+            current['name'] = case['name']
+
+        with patch('tools.test_flm_model.requests.post', side_effect=respond), \
+                patch('tools.test_flm_model.run_workflows') as workflows:
+            results = run_suite('fixture', 'http://local', suite='complete', guarded=False,
+                                only=selected, on_case=case_started)
+        observed = [(row['name'], row['passed']) for row in results]
+        self.assertEqual(observed, [(name, True) for name in
+            ('number-sequence', 'direct-injection', 'plain-chat')])
+        self.assertEqual([call.args[1] for call in workflows.call_args_list], [False, True])

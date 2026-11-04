@@ -79,6 +79,11 @@ def _requested(body, schema):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def requested_questions(body, schema):
+    """Return the unambiguous question payload from the latest user turn, if any."""
+    return _requested(body, schema)
+
+
 def _schema(body):
     for tool in body.get('tools') or []:
         function = tool.get('function') or {}

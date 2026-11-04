@@ -25,6 +25,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psutil
 import requests
@@ -270,7 +271,61 @@ def owns_model(model: str) -> bool:
 
 
 # ---- chat --------------------------------------------------------------------------
-def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=0.3, tools=None):
+def performance_snapshot(base=None):
+    """Read KoboldCpp's last-request counters from this local single-model server.
+
+    This endpoint is global, so callers must compare ``total_gens`` around one
+    inference and use the result only when exactly one request completed.
+    """
+    base = (base or base_url()).rstrip("/")
+    if urlsplit(base).hostname not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    try:
+        response = requests.get(f"{base}/api/extra/perf", timeout=(0.25, 1.0))
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def merge_performance_usage(usage, before, after):
+    """Supplement stream usage with one unambiguous Kobold performance sample."""
+    usage = dict(usage or {})
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return usage
+    try:
+        generation_delta = int(after["total_gens"]) - int(before["total_gens"])
+    except (KeyError, TypeError, ValueError):
+        return usage
+    # The endpoint is not request-scoped. Never attach ambiguous counters if
+    # another client completed zero or multiple generations during this request.
+    if generation_delta != 1:
+        return usage
+    prompt_tokens = after.get("last_input_count")
+    completion_tokens = after.get("last_token_count")
+    speed = after.get("last_eval_speed")
+    # When the stream already returned exact request usage, require Kobold's
+    # global last-request counters to agree before borrowing its speed reading.
+    if (usage.get("prompt_tokens") is not None and prompt_tokens is not None
+            and usage["prompt_tokens"] != prompt_tokens):
+        return usage
+    if (usage.get("completion_tokens") is not None and completion_tokens is not None
+            and usage["completion_tokens"] != completion_tokens):
+        return usage
+    if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
+        usage.setdefault("prompt_tokens", prompt_tokens)
+    if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool):
+        usage.setdefault("completion_tokens", completion_tokens)
+    if usage.get("prompt_tokens") is not None and usage.get("completion_tokens") is not None:
+        usage.setdefault("total_tokens", usage["prompt_tokens"] + usage["completion_tokens"])
+    if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
+        usage["decoding_speed_tps"] = round(float(speed), 1)
+    return usage
+
+
+def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=0.3,
+                tools=None, parallel_tool_calls=None):
     """Yield raw SSE 'data: ...' lines from KoboldCPP's OpenAI-compatible chat endpoint.
     Same shape/defaults as the other clients' chat_stream() so app.py's worker needs no
     changes. KoboldCPP serves one model, so `model` is informational — the loaded GGUF
@@ -287,6 +342,9 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
         "messages": messages,
         "temperature": temperature,
         "stream": True,
+        # KoboldCPP only emits exact token counts in the final SSE event when
+        # streaming usage is requested. Hearth consumes those counts for Metrics.
+        "stream_options": {"include_usage": True},
     }
     if max_tokens:
         payload["max_tokens"] = max_tokens
@@ -294,9 +352,17 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
         payload["frequency_penalty"] = frequency_penalty
     if tools:
         payload["tools"] = tools
+    if parallel_tool_calls is not None and tools:
+        payload["parallel_tool_calls"] = parallel_tool_calls
+    endpoint = f"{base_url()}/v1/chat/completions"
+    if tools:
+        import kobold_tool_shim
+        if kobold_tool_shim.should_use_shim(base_url()):
+            endpoint = f"{kobold_tool_shim.start_server()}/v1/chat/completions"
+    perf_before = performance_snapshot()
     try:
         with requests.post(
-            f"{base_url()}/v1/chat/completions",
+            endpoint,
             json=model_test_profiles.apply(payload, "kobold"), headers=_auth_headers(), stream=True, timeout=(10, 900),
         ) as resp:
             if resp.status_code >= 400:
@@ -308,9 +374,31 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
                 except (ValueError, AttributeError):
                     detail = (resp.text or "").strip()
                 raise KoboldError(f"KoboldCPP error {resp.status_code}: {detail or 'request failed'}")
+            terminal_usage = None
+            done_line = None
             for line in resp.iter_lines(chunk_size=1):
                 if line:
-                    yield line.decode("utf-8", errors="replace")
+                    text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
+                    if text.strip() == "data: [DONE]":
+                        done_line = text
+                        continue
+                    if text.startswith("data:"):
+                        try:
+                            event = json.loads(text[5:].strip())
+                        except (TypeError, ValueError):
+                            event = None
+                        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+                            terminal_usage = event
+                            continue
+                    yield text
+            perf_after = performance_snapshot()
+            if terminal_usage is not None or (perf_before is not None and perf_after is not None):
+                event = terminal_usage or {"choices": []}
+                event["usage"] = merge_performance_usage(event.get("usage"), perf_before, perf_after)
+                if event["usage"]:
+                    yield "data: " + json.dumps(event, separators=(",", ":"))
+            if done_line is not None:
+                yield done_line
     except requests.RequestException as exc:
         raise KoboldError(f"Chat request failed: {exc}") from exc
 

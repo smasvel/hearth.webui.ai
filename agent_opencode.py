@@ -77,7 +77,7 @@ class OpenCode:
         return response.json() if response.content else {}
 
     def models(self):
-        local = {'fastflowlm', 'lemonade', 'lmstudio', 'vllm', 'kobold', 'opencode'}
+        local = {'fastflowlm', 'lemonade', 'lmstudio', 'vllm', 'kobold', 'q38rocm', 'opencode'}
         models = []
         for x in self.call('GET', '/api/model')['data']:
             if x.get('providerID') not in local:

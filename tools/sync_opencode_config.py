@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import help_data  # noqa: E402
+import q38rocm_client  # noqa: E402
 
 CONFIG_PATH = Path.home() / '.config/opencode/opencode.jsonc'
 
@@ -33,9 +34,32 @@ def _strip_jsonc(text: str) -> dict:
     return json.loads(raw)
 
 
+def _add_desktop_q38_provider(config: dict) -> None:
+    """Expose the loopback-only q38rocm model to OpenCode on this desktop."""
+    if not q38rocm_client._MODEL_PATH.is_file():
+        return
+    model = q38rocm_client._MODEL_NAME
+    config.setdefault('provider', {})['q38rocm'] = {
+        'npm': '@ai-sdk/openai-compatible',
+        'name': 'q38rocm (this desktop)',
+        'options': {
+            'baseURL': q38rocm_client.base_url().rstrip('/') + '/v1',
+            'apiKey': q38rocm_client.api_key() or 'q38rocm-local',
+        },
+        'models': {
+            model: {
+                'name': model + ' (local RADV Vulkan)',
+                'limit': {'context': q38rocm_client._CONTEXT,
+                          'output': q38rocm_client._CONTEXT // 2},
+            },
+        },
+    }
+
+
 def main() -> int:
     try:
         config = json.loads(help_data.build()['opencode_config'])
+        _add_desktop_q38_provider(config)
     except Exception:
         print('sync-opencode-config: generation failed; leaving config untouched',
               file=sys.stderr)

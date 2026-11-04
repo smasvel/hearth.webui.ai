@@ -10,6 +10,7 @@ from pathlib import Path
 import database
 import model_metadata_store
 import model_test_profiles as profiles
+import kobold_client
 from tools.test_flm_model import Cancelled, run_suite
 
 ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
@@ -17,7 +18,7 @@ ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
 # are slices of 'all' so slow long-running checks (workflows, context overflow) can be
 # skipped without rerunning chat+tool basics; each also maps into run_suite's repairable
 # set below.
-SUITES = ('all', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
+SUITES = ('all', 'complete', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
 
 
 class Registry:
@@ -215,14 +216,16 @@ class Registry:
                                 self.save(job)
                         update(status='running')
                         results = run_suite(served_model, url, suite=suite, context=window, headers=headers,
-                            cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case), guarded=backend == 'fastflowlm',
+                            cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case),
+                            guarded=backend == 'fastflowlm', backend=backend,
+                            perf_url=kobold_client.base_url() if backend == 'kobold' else None,
                             profile=lambda body: profiles.apply(body, backend))
                         # A failed workflow step marks its dependents as skipped. Those
                         # blocked steps are visible in the report, but are not checks
                         # that a compatibility repair can fix or should count against.
                         failures = {(r['name'], r.get('stream', False)) for r in results
                                     if not r['passed'] and not r.get('skipped')}
-                        if repair and suite in ('all', 'core', 'opencode', 'extra') and failures:
+                        if repair and suite in ('all', 'complete', 'core', 'opencode', 'extra') and failures:
                             if any(r.get('backend_unavailable') for r in results):
                                 with self.lock:
                                     job['repairs'].append({'model': model, 'backend': backend,
@@ -240,7 +243,9 @@ class Registry:
                             try:
                                 retried = run_suite(served_model, url, suite=suite, context=window, headers=headers,
                                     cancel=cancel, on_result=lambda r: record(r, 2), on_case=lambda case: update(current_check=case),
-                                    guarded=backend == 'fastflowlm', profile=lambda body: profiles.apply_recipe(body, profiles.RECIPE))
+                                    guarded=backend == 'fastflowlm', backend=backend,
+                                    perf_url=kobold_client.base_url() if backend == 'kobold' else None,
+                                    profile=lambda body: profiles.apply_recipe(body, profiles.RECIPE))
                                 # Keep a recipe only when at least one original assertion now passes.
                                 remaining = {(r['name'], r.get('stream', False)) for r in retried
                                              if not r['passed'] and not r.get('skipped')}
