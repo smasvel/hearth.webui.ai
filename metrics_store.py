@@ -184,7 +184,11 @@ def model_report(hours: float | None = 24, conn=None) -> list[dict]:
                COALESCE(backend,'Unknown backend') backend, COUNT(*) requests,
                SUM(prompt_tokens) input_tokens, SUM(completion_tokens) output_tokens,
                COUNT(completion_tokens) token_samples,
-               AVG(tokens_per_sec) avg_tps, COUNT(tokens_per_sec) speed_samples,
+               -- A non-positive tokens_per_sec is a broken or missing measurement (the recorders
+               -- normalize these to NULL, but legacy rows may predate that), so keep it out of the
+               -- speed average and its sample count rather than dragging them toward 0.
+               AVG(CASE WHEN tokens_per_sec > 0 THEN tokens_per_sec END) avg_tps,
+               COUNT(CASE WHEN tokens_per_sec > 0 THEN tokens_per_sec END) speed_samples,
                AVG(duration_ms) avg_ms,
                SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) succeeded,
                SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END) client_errors,

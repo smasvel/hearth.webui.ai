@@ -131,9 +131,12 @@ def _record_chat_metric(*, started: float, source: str, model: str,
     usage = usage or {}
     duration_ms = round((time.monotonic() - started) * 1000, 1)
     completion = usage.get("completion_tokens")
-    tps = None
-    if isinstance(completion, (int, float)) and duration_ms > 0:
-        tps = round(completion / (duration_ms / 1000), 3)
+    # Completion tokens / full request elapsed time — an average, not a decode speed, because
+    # the shim has no first-token timestamp. Non-positive or non-numeric readings are dropped
+    # (None) so the metrics table shows "—" instead of a bogus 0.
+    tps = round(completion / (duration_ms / 1000), 3) if isinstance(completion, (int, float)) and duration_ms > 0 else None
+    if not isinstance(tps, (int, float)) or tps <= 0:
+        tps = None
     live_report.record_metric(
         source=source, backend="lmstudio", model=model,
         request_type="chat_completion", ask_category="chat",

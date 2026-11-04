@@ -2303,6 +2303,25 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .metric-sort-button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 .metric-table { width: max-content; min-width: 100%; table-layout: auto; font-size: 12.5px; }
 .metric-table th, .metric-table td { padding: 6px 9px; white-space: nowrap; word-break: normal; }
+/* Deterministic column widths for the recent-requests table. With `width:
+   max-content` and no explicit widths, the browser's auto-layout pass can size
+   thead and tbody columns differently (the model-name column in particular,
+   where header text is short but row values are long), so header cells end up
+   misaligned with their data cells — headers left, rows offset right. Explicit
+   widths force a single consistent geometry. .metric-model-report overrides these
+   with table-layout: fixed and its own .col-* widths. */
+.metric-table .col-id { width: 44px; }
+.metric-table .col-time { width: 108px; }
+.metric-table .col-source { width: 96px; }
+.metric-table .col-backend { width: 105px; }
+.metric-table .col-model { width: 230px; min-width: 230px; }
+.metric-table .col-type { width: 120px; }
+.metric-table .col-ask { width: 85px; }
+.metric-table .col-num { width: 68px; }
+.metric-table .col-status { width: 58px; }
+.metric-table .col-npu-served { width: 92px; }
+.metric-table .col-ip { width: 110px; }
+.metric-table .col-user { width: 85px; }
 .metric-table th.num, .metric-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .metric-model-report { width: 1972px; min-width: 100%; table-layout: fixed; }
 .metric-model-report .col-model { width: 170px; }
@@ -2548,6 +2567,19 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   .metrics-page .metric-table tbody { display: table-row-group; }
   .metrics-page .metric-table tbody tr { display: table-row; padding: 0; margin: 0; border: 0; border-radius: 0; }
   .metrics-page .metric-table td { display: table-cell; padding: 7px 9px; border-bottom: 1px solid var(--border); }
+  /* With table-layout: auto and no fixed table width, Chromium's column-sizing
+     pass has been observed to size thead and tbody columns independently (header
+     cells stay narrow at the left while body cells start offset far to the right),
+     so on phones the last table's headers end up misaligned with their data. Forcing
+     a single, deterministic geometry — fixed layout + an explicit table width equal
+     to the sum of the .col-* widths defined above — makes every row share one column
+     grid. .metric-model-report is already fixed-layout and unaffected. */
+  .metrics-page .metric-table { width: 2352px; min-width: 2352px; table-layout: fixed; }
+  /* Both metric tables scroll inside their own panel (the sticky headers pin to
+     .console-body, outside the panel, so they would float over the KPI cards above).
+     Pinning the header row to the top of the table's own scroll region instead keeps
+     headers aligned with every column on any screen width. */
+  .metrics-page .metric-table th { position: sticky; top: 0; z-index: 3; }
   .metrics-page .metric-table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .metric-bar-row { grid-template-columns: 90px 1fr auto; }
   .metric-kpi-val { font-size: 22px; }

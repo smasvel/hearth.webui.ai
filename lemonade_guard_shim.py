@@ -362,8 +362,10 @@ def _record_chat_metric(*, started: float, source: str, model: str, is_npu: bool
     duration_ms = round((time.monotonic() - started) * 1000, 1)
     completion = usage.get("completion_tokens")
     tps = usage.get("decoding_speed_tps")
-    if tps is None and isinstance(completion, (int, float)) and duration_ms > 0:
-        tps = round(completion / (duration_ms / 1000), 3)
+    # A non-positive or non-numeric backend reading is a broken measurement, not a speed —
+    # fall back to completion/elapsed (or NULL when that's unavailable) instead of recording 0.
+    if not (isinstance(tps, (int, float)) and tps > 0):
+        tps = round(completion / (duration_ms / 1000), 3) if isinstance(completion, (int, float)) and duration_ms > 0 else None
     live_report.record_metric(
         source=source, backend="lemonade", model=model,
         request_type="chat_completion",

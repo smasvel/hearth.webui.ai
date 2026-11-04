@@ -5795,7 +5795,13 @@ def api_chat():
                         prompt_tokens=(usage or {}).get("prompt_tokens"),
                         completion_tokens=_ct,
                         total_tokens=(usage or {}).get("total_tokens"),
-                        tokens_per_sec=round(_ct / duration, 1) if (_ct and duration > 0) else None,
+                        # Decode speed: prefer the backend's own measured decoding rate
+                        # (Lemonade and FLM report it in usage); otherwise fall back to
+                        # completion tokens / full request duration. A zero-length stream or
+                        # a missing completion count must yield NULL, never a bogus 0.
+                        tokens_per_sec=(lambda tps: tps if isinstance(tps, (int, float)) and tps > 0 else (
+                            round(_ct / duration, 1) if (_ct and duration > 0) else None)
+                        )((usage or {}).get("decoding_speed_tps")),
                         tops_used=tops_used,
                         npu_percent=npu_percent,
                         status=200,

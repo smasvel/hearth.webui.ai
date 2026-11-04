@@ -35,7 +35,9 @@ class ModelReportTests(unittest.TestCase):
         self.assertEqual(row["requests"], 4)
         self.assertEqual(row["output_tokens"], 100)
         self.assertEqual(row["token_samples"], 2)
-        self.assertEqual(row["avg_tps"], 5)
+        # The 500-error row records tokens_per_sec=0 — a broken measurement, not a speed —
+        # so it is excluded from the average (a zero would otherwise drag it toward 0).
+        self.assertEqual(row["avg_tps"], 10)
         self.assertEqual(row["error_rate"], 66.7)
         self.assertEqual(row["unknown_status"], 1)
         self.assertIsNone(row["coding_accuracy"])
@@ -53,6 +55,13 @@ class ModelReportTests(unittest.TestCase):
         row = metrics_store.model_report(1)[0]
         self.assertIsNone(row["output_tokens"])
         self.assertIsNone(row["error_rate"])
+
+    def test_nonpositive_speed_readings_are_treated_as_unknown(self):
+        # A broken or zero measurement must count as missing, not drag the average toward 0.
+        self.record(status=200, completion_tokens=100, tokens_per_sec=10, duration_ms=1000)
+        self.record(status=200, completion_tokens=100, tokens_per_sec=0, duration_ms=1000)
+        row = metrics_store.model_report(1)[0]
+        self.assertEqual(row["avg_tps"], 10)
 
     def test_proxy_records_without_model_are_labeled_as_unattributed(self):
         metrics_store.record(source="opencode", backend="lemonade",
