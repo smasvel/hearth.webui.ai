@@ -45,6 +45,7 @@
               <label><input data-tools-backend="lmstudio" type="checkbox" /> LM Studio</label>
               <label><input data-tools-backend="kobold" type="checkbox" /> KoboldCPP</label>
               <label><input data-tools-backend="fastflowlm" type="checkbox" /> FastFlowLM</label>
+              <label><input data-tools-backend="q38rocm" type="checkbox" /> q38rocm</label>
             </div>
             <p class="hint">Exclude unknown support to hide models whose catalog does not say whether they support tool calling. Backend filters show only models that declare support for that backend. Catalog metadata may be incomplete; backend configuration may also be required.</p>
             <div class="download-size-filters" aria-label="Filter models by parameter count">
@@ -177,6 +178,25 @@
             </form>
             <div id="vllm-results" class="result-grid">
               <p class="hint">Search Hugging Face for a model to download.</p>
+            </div>
+          </div>
+
+          <div class="console-card span-all">
+            <h2>q38rocm — local Vulkan GGUF</h2>
+            <p class="hint">
+              Downloads the Q3_K_M GGUF variant from the julianmb Hugging Face repository into
+              q38rocm's model directory. The backend on this Radeon desktop uses RADV Vulkan; the
+              repository's ROCmFP4 FAST file is not the variant installed here. After download,
+              load the model from the Models page.
+            </p>
+            <form id="q38-search-form" class="download-form">
+              <div class="download-row">
+                <input id="q38-search-input" class="panel-input" type="text" value="julianmb" placeholder="q38rocm-supported model" autocomplete="off" />
+                <button class="panel-btn" type="submit">Search</button>
+              </div>
+            </form>
+            <div id="q38-results" class="result-grid">
+              <p class="hint">Loading q38rocm's supported model&hellip;</p>
             </div>
           </div>
 

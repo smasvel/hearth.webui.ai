@@ -1,9 +1,10 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
-  const BACKEND_ORDER = ["fastflowlm", "lemonade", "lmstudio", "kobold", "vllm", "opencode"];
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", q38rocm: "q38rocm (Vulkan/ROCmFPX)", fastflowlm: "FastFlowLM" };
+  const BACKEND_ORDER = ["fastflowlm", "q38rocm", "lemonade", "lmstudio", "kobold", "vllm", "opencode"];
 
   const settingsForm = document.getElementById("settings-form");
   const restartBackendsBtn = document.getElementById("restart-backends");
+  const restartQ38rocmBtn = document.getElementById("restart-q38rocm");
   const restartHearthBtn = document.getElementById("restart-hearth");
   const restartResults = document.getElementById("restart-results");
   async function adminAction(url, label) {
@@ -11,6 +12,7 @@
     restartResults.textContent = `${label}…`;
     restartBackendsBtn.disabled = true;
     restartHearthBtn.disabled = true;
+    if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = true;
     try {
       const response = await fetch(url, { method: "POST", headers: { "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content } });
       const data = await response.json();
@@ -21,9 +23,11 @@
     } finally {
       restartBackendsBtn.disabled = false;
       restartHearthBtn.disabled = false;
+      if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = false;
     }
   }
   restartBackendsBtn?.addEventListener("click", () => adminAction("/api/admin/restart-backends", "Restart all backends"));
+  restartQ38rocmBtn?.addEventListener("click", () => adminAction("/api/admin/restart-q38rocm", "Restart q38rocm"));
   restartHearthBtn?.addEventListener("click", () => adminAction("/api/admin/restart-hearth", "Restart Hearth"));
   const settingsLmstudioUrlEl = document.getElementById("settings-lmstudio-url");
   const settingsLmstudioKeyEl = document.getElementById("settings-lmstudio-key");
@@ -39,6 +43,8 @@
   const settingsKoboldGpuLayersEl = document.getElementById("settings-kobold-gpu-layers");
   const settingsKoboldDraftModelEl = document.getElementById("settings-kobold-draft-model");
   const settingsKoboldDraftAmountEl = document.getElementById("settings-kobold-draft-amount");
+  const settingsQ38rocmUrlEl = document.getElementById("settings-q38rocm-url");
+  const settingsQ38rocmKeyEl = document.getElementById("settings-q38rocm-key");
   const settingsFastflowlmUrlEl = document.getElementById("settings-fastflowlm-url");
   const settingsFastflowlmKeyEl = document.getElementById("settings-fastflowlm-key");
   const settingsDefaultModelEl = document.getElementById("settings-default-model");
@@ -74,6 +80,8 @@
   const opencodeClearKeyBtn = document.getElementById("opencode-clear-key");
   const settingsTestKoboldBtn = document.getElementById("settings-test-kobold");
   const settingsTestKoboldResultEl = document.getElementById("settings-test-kobold-result");
+  const settingsTestQ38rocmBtn = document.getElementById("settings-test-q38rocm");
+  const settingsTestQ38rocmResultEl = document.getElementById("settings-test-q38rocm-result");
   const settingsTestFastflowlmBtn = document.getElementById("settings-test-fastflowlm");
   const settingsTestFastflowlmResultEl = document.getElementById("settings-test-fastflowlm-result");
   const settingsTestCaddyLmstudioBtn = document.getElementById("settings-test-caddy-lmstudio");
@@ -130,7 +138,8 @@
   // the admin's saved choice back to "Auto".
   function renderDefaultModelSelect() {
     const chatModels = models.filter((m) =>
-      m.loadable !== false && !["embeddings", "transcription", "tts"].includes(m.type));
+      m.loadable !== false && m.lan_compatible !== false
+      && !["embeddings", "transcription", "tts"].includes(m.type));
     settingsDefaultModelEl.innerHTML = '<option value="">Auto (recommended)</option>';
     const backends = [...BACKEND_ORDER, ...chatModels.map((m) => m.backend)]
       .filter((backend, index, all) => backend && all.indexOf(backend) === index);
@@ -185,6 +194,8 @@
     settingsKoboldGpuLayersEl.value = data.kobold_gpu_layers || "";
     settingsKoboldDraftModelEl.value = data.kobold_draft_model || "";
     settingsKoboldDraftAmountEl.value = data.kobold_draft_amount || "";
+    settingsQ38rocmUrlEl.value = data.q38rocm_base_url || "";
+    settingsQ38rocmKeyEl.value = data.q38rocm_api_key || "";
     settingsFastflowlmUrlEl.value = data.fastflowlm_base_url || "";
     settingsFastflowlmKeyEl.value = data.fastflowlm_api_key || "";
     savedDefaultModel = data.lan_default_model || "";
@@ -279,6 +290,8 @@
           kobold_gpu_layers: settingsKoboldGpuLayersEl.value.trim(),
           kobold_draft_model: settingsKoboldDraftModelEl.value.trim(),
           kobold_draft_amount: settingsKoboldDraftAmountEl.value.trim(),
+          q38rocm_base_url: settingsQ38rocmUrlEl.value.trim(),
+          q38rocm_api_key: settingsQ38rocmKeyEl.value.trim(),
           fastflowlm_base_url: settingsFastflowlmUrlEl.value.trim(),
           fastflowlm_api_key: settingsFastflowlmKeyEl.value.trim(),
           lan_default_model: settingsDefaultModelEl.value,
@@ -346,6 +359,12 @@
     runTest(settingsTestLemonadeBtn, settingsTestLemonadeResultEl, "lemonade", {
       base_url: settingsLemonadeUrlEl.value.trim(),
       api_key: settingsLemonadeKeyEl.value.trim(),
+    })
+  );
+  settingsTestQ38rocmBtn.addEventListener("click", () =>
+    runTest(settingsTestQ38rocmBtn, settingsTestQ38rocmResultEl, "q38rocm", {
+      base_url: settingsQ38rocmUrlEl.value.trim(),
+      api_key: settingsQ38rocmKeyEl.value.trim(),
     })
   );
   settingsTestVllmBtn.addEventListener("click", () =>

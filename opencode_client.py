@@ -191,6 +191,7 @@ def chat_stream(
     max_tokens: int | None = None,
     tools: list[dict] | None = None,
     session_id: str | None = None,
+    parallel_tool_calls: bool | None = None,
 ):
     payload = {
         "model": _served_id(model),
@@ -204,6 +205,8 @@ def chat_stream(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
 
     headers = _headers()
     # The Go surface requires a stable per-conversation routing header; without it

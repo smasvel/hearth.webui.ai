@@ -367,6 +367,7 @@ def chat_stream(
     max_tokens: int | None = None,
     frequency_penalty: float | None = 0.3,
     tools: list[dict] | None = None,
+    parallel_tool_calls: bool | None = None,
 ):
     """Yield raw SSE 'data: ...' lines proxied from LM Studio's chat endpoint.
 
@@ -386,6 +387,8 @@ def chat_stream(
         payload["frequency_penalty"] = frequency_penalty
     if tools:
         payload["tools"] = tools
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
 
     # Tool-enabled chat must pass through Hearth's compatibility shim so model-native
     # markup and named tool choices are normalized before the chat worker consumes them.

@@ -747,6 +747,8 @@ def chat_stream(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     frequency_penalty: float | None = 0.3,
+    tools: list[dict] | None = None,
+    parallel_tool_calls: bool | None = None,
 ):
     """Yield raw SSE 'data: ...' lines proxied from vLLM's OpenAI-compatible chat
     endpoint. Same shape and defaults as lmstudio_client.chat_stream()/
@@ -763,6 +765,10 @@ def chat_stream(
         payload["max_tokens"] = max_tokens
     if frequency_penalty:
         payload["frequency_penalty"] = frequency_penalty
+    if tools:
+        payload["tools"] = tools
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
 
     try:
         with requests.post(

@@ -315,6 +315,11 @@ the limit to 0 for snippets only; pasted URLs still follow the separate direct-U
 For general online research, chat uses Hearth's supplied search evidence instead of making
 the model repeat the lookup through many browser tool calls. The tool-call round budget
 defaults to 100 and is configurable in Settings for specific multi-step browser tasks.
+For local KoboldCPP, Hearth starts its tool compatibility bridge automatically on a
+loopback-only ephemeral port. It withholds tool schemas for an explicit "do not call
+more tools" follow-up and repairs a missing parallel call only when the request names
+two literal values for the same required string field. KoboldCPP model tests use this
+bridge too; no separate service or setup step is needed.
 
 After signing in, open **Agents**. Use **New agent** to enter a required agent name,
 name the task, and describe what you want in everyday language; the agent name identifies
@@ -571,6 +576,51 @@ If you skipped automatic runtime installation, install and start a supported run
 and credentials under Settings. LM Studio's default endpoint is
 `http://localhost:1234`; Lemonade's is `http://localhost:13305`. Download a model
 and load it from Models. PostgreSQL setup does not install model weights.
+For one-command installation of Hearth with the optional q38rocm Qwen 3.8
+backend on Ubuntu or Debian, run this from the project checkout:
+
+```bash
+bash deploy/install-hearth-q38rocm.sh
+```
+
+The installer accepts the model path as its first argument, or finds it if there
+is exactly one `Qwen3.8-27B-Q3_K_M.gguf` in the Hugging Face cache or already in
+the backend folder. For example:
+
+```bash
+bash deploy/install-hearth-q38rocm.sh /path/to/Qwen3.8-27B-Q3_K_M.gguf --skip-browser
+```
+
+The model weights are not downloaded by this installer. It installs the Mesa
+RADV Vulkan runtime and build dependencies with `sudo apt-get`, checks whether
+Vulkan detects the Radeon GPU, copies the model into the backend, builds q38rocm,
+installs its on-demand user service, and runs the standard Hearth first-time
+setup. The service expects this exact filename; it is a Q3_K_M quant, not a
+ROCmFP4 FAST model. On Radeon 890M (gfx1150), q38rocm uses Vulkan hardware
+acceleration and serves the model at its native 262,144-token context with Q8
+KV cache (about 8.6 GB at full context). Full-context prefill and generation can
+be slow, and available shared GPU memory must be sufficient for the model and
+KV cache. Hearth lists the model on **Models** and starts/stops `q38rocm.service` from its Load/Unload
+controls. It serves local Hearth chat and model tests, and the desktop OpenCode
+config sync adds the model to `~/.config/opencode/opencode.jsonc` while the GGUF
+is installed. Load it from Hearth's Models page before selecting it in local
+OpenCode. The endpoint listens on `127.0.0.1:8008`, so it is not included
+in LAN or Tailscale coding-client configs. q38rocm compatibility tests disable
+extended reasoning and cap every test reply at 128 tokens. This keeps slow
+reasoning or overlong responses from occupying the model-test runner's five-minute
+request window. Hearth forwards q38rocm's OpenAI-compatible tool-choice, parallel-call, and
+reasoning-template options. Change its URL in Settings only if you move it.
+Hearth requests the final streaming usage event so q38rocm prompt and completion
+token counts are included in Metrics.
+Model-test handoff checks use each backend's live inventory to avoid false failures
+from stale loaded-state metadata in the combined Models view.
+Hearth chat also preserves the requested single- or multi-select mode for structured
+OpenCode questions when a backend omits that optional field.
+The Downloads page lists the julianmb repository under q38rocm and downloads the
+Vulkan-compatible Q3_K_M GGUF into q38rocm's model directory. If the same file is
+already in Lemonade's Hugging Face cache, Hearth copies that cached file rather
+than downloading another copy. The model is assigned to q38rocm in Models, not
+Lemonade.
 Model loading and lifecycle controls are on **Models**. Deletion is blocked only for
 a model currently assigned to active agent work or included in an active model test;
 other offline models can be deleted while that work continues. For LM Studio, Hearth
@@ -587,13 +637,24 @@ on the next request. Some models may ignore the thinking controls.
 OpenCode assignments send both LM Studio thinking controls. The LM Studio gateway
 forwards streamed reasoning before buffered tool arguments finish; restart Hearth
 and `lmstudio-shim.service` after updating to activate this behavior.
-The page has tabs for the full compatibility run, core checks, the OpenCode coding
-workflows, extra tool-behavior checks, tool calling, model reasoning, and model
-security behavior. The reasoning tab asks 12 original questions one at a time and
+The page has tabs for the compatibility run, **All tests** (compatibility plus
+reasoning and security in one report), core checks, the OpenCode coding workflows,
+extra tool-behavior checks, tool calling, model reasoning, and model security behavior.
+The reasoning tab asks 12 original questions one at a time and
 scores points correct; it is a comparison benchmark, not a human IQ score. The
 security tab runs 10 safe behavioral probes and reports how the model handles them;
 it does not scan the host or certify security. Test prompts are sent individually,
 and generated tools/actions are not executed. Results are saved as model-test reports.
+Choose **All tests** to run the selected model's complete compatibility checks,
+reasoning questions, and security probes together in one report. Tool checks already
+included in the compatibility suite are not duplicated.
+Metrics recorded for these checks carry the selected backend name, making validation
+requests filterable with that backend's chat traffic on the Metrics page.
+Context overflow checks accept a clear rejection or a successful response whose
+reported token usage stays within the model's context window. Hearth chat preserves
+an explicit single- or multi-select mode when normalizing structured question calls.
+Tool-enabled chat requests also explicitly allow compatible backends to return
+multiple independent tool calls in one response.
 Tool checks use a 2,048-token completion budget to leave room for internal reasoning
 and complete tool arguments. Malformed argument failures include finish reasons,
 completion token counts, and a bounded argument excerpt in the saved error details.
@@ -681,12 +742,17 @@ can kill active Hearth chat and agent relay requests from their rows. Requests h
 entirely by an external backend cannot be stopped from Hearth.
 Rejected agent relay chat requests appear as failed 403 entries labeled with the agent
 name and model; Hearth does not read or save their prompt body.
-For streamed chat requests, Hearth asks Lemonade, FastFlowLM, and LM Studio for token
-usage and records generated-token counts when the backend supplies them. Historical rows
-created without usage counts remain unknown. Tok/s values are decode speeds: Hearth uses
-the backend's own measured `decoding_speed_tps` when available (Lemonade and FastFlowLM)
-and otherwise falls back to completion tokens divided by request elapsed time (which
-includes prefill). Requests without a measurable speed show — rather than 0.
+For streamed chat and model test requests, Hearth asks Lemonade, FastFlowLM, LM Studio, and KoboldCPP for
+token usage and records generated-token counts when the backend supplies them. On local
+KoboldCPP, Hearth also samples `/api/extra/perf` before and after each request. It accepts
+the last-request counts and decode speed only when KoboldCPP's generation counter advanced
+by exactly one, avoiding attribution of another concurrent request's global counters.
+Historical rows created without usage counts remain unknown. Tok/s values are decode speeds:
+Hearth uses the backend's own measured `decoding_speed_tps` when available (Lemonade and
+FastFlowLM), or KoboldCPP's correlated `last_eval_speed`; otherwise it falls back to
+completion tokens divided by request elapsed time (which includes prefill). Requests without
+a measurable speed show — rather than 0. KoboldCPP does not provide NPU utilization or TOPS
+through this endpoint, so those NPU-specific fields remain unavailable for Kobold requests.
 Metrics tables scroll horizontally inside their panels on phones, and the header row pins
 to the top of each table's scroll area so all columns stay aligned at any width. The model
 report uses fixed shared column widths; dashboard cards and filters fit the available screen width.
@@ -780,7 +846,9 @@ An explicitly configured remote URL is preserved even when local runtimes are in
 
 Administrators can restart managed inference services from **Settings → Service
 controls → Restart all backends**. Hearth restarts LM Studio, Lemonade's gateway,
-vLLM, KoboldCPP, and FastFlowLM independently and reports each result. A backend
+vLLM, KoboldCPP, q38rocm, and FastFlowLM independently and reports each result.
+Use **Restart q38rocm** on its Settings card to restart only that service; it must
+already be loaded. A backend
 restart interrupts active inference and may require loading the model again. Use
 **Restart Hearth** in the same section to restart the web application; the page
 disconnects briefly while the service comes back. Active agent tasks may be

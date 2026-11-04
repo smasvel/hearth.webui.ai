@@ -521,7 +521,8 @@ def current_served_model() -> str | None:
 
 
 # ---- chat --------------------------------------------------------------------------
-def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=0.3, tools=None, enable_thinking=True):
+def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=0.3,
+                tools=None, enable_thinking=True, parallel_tool_calls=None):
     """Yield raw SSE 'data: ...' lines from FLM's OpenAI-compatible endpoint. FLM auto-loads
     the requested model onto the NPU (switching from whatever was active).
 
@@ -544,6 +545,8 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
         payload["max_tokens"] = min(max_tokens, flm_context.output_limit(runtime_tag)) if runtime_tag.startswith("qwen3.8") else max_tokens
     if tools:
         payload["tools"] = tools
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
     # A mild repetition guard, same as lemonade_client.chat_stream sends — without it,
     # FastFlowLM has NO repetition penalty at all and long generations on some quantized
     # NPU models degenerate into a token-repetition loop (confirmed live: qwen3.6-moe:35b-a3b

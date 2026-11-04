@@ -28,6 +28,10 @@
   const npuSearchInput = document.getElementById("npu-search-input");
   const npuResultsEl = document.getElementById("npu-results");
 
+  const q38SearchForm = document.getElementById("q38-search-form");
+  const q38SearchInput = document.getElementById("q38-search-input");
+  const q38ResultsEl = document.getElementById("q38-results");
+
   const progressWrap = document.getElementById("download-progress");
   const progressTitle = document.getElementById("download-progress-title");
   const progressPct = document.getElementById("download-progress-pct");
@@ -44,7 +48,7 @@
     filter.className = "download-tool-filters";
     filter.innerHTML = '<strong>Tool calling filters:</strong>' +
       '<label><input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support</label>' +
-      [['lemonade','Lemonade'],['vllm','vLLM'],['lmstudio','LM Studio'],['kobold','KoboldCPP'],['fastflowlm','FastFlowLM']]
+      [['lemonade','Lemonade'],['vllm','vLLM'],['lmstudio','LM Studio'],['kobold','KoboldCPP'],['fastflowlm','FastFlowLM'],['q38rocm','q38rocm']]
         .map(([key,label]) => `<label><input data-tools-backend="${key}" type="checkbox" /> ${label}</label>`).join("") +
       '<strong>Model size:</strong>' +
       [['small','Small (up to 4B)'],['medium','Medium (over 4B to 13B)'],['large','Large (over 13B)']]
@@ -254,6 +258,13 @@
     backend: "fastflowlm", container: npuResultsEl, input: npuSearchInput, emptyIsCatalog: true,
     onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(id, "fastflowlm", btn, () => searchFastflow(npuSearchInput.value.trim()), sizeGb),
     browseHint: "Search FastFlowLM's NPU catalog.",
+  });
+  const searchQ38 = (q) => searchBackend(q, {
+    backend: "q38rocm", container: q38ResultsEl, input: q38SearchInput,
+    onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(
+      id, "q38rocm", btn, () => searchQ38(q38SearchInput.value.trim()), sizeGb,
+    ),
+    browseHint: "Browse q38rocm's supported local Vulkan GGUF.",
   });
 
   function formatDate(iso) {
@@ -609,6 +620,11 @@
     searchFastflow(npuSearchInput.value.trim());
   });
 
+  q38SearchForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    searchQ38(q38SearchInput.value.trim());
+  });
+
   vllmSearchForm.addEventListener("submit", (e) => {
     e.preventDefault();
     searchVllm(vllmSearchInput.value.trim());
@@ -623,6 +639,7 @@
   // FastFlowLM has a fixed NPU catalog, so its empty query loads the whole thing to browse
   // (installed first). LM Studio / Kobold have no catalog — they wait for a search term.
   searchFastflow("");
+  searchQ38(q38SearchInput.value.trim());
 
   // Shared by both "exact name" forms (LM Studio's fuzzy resolve, and Ryzen AI NPU's
   // exact-tag registration) — both go through /api/models/download and only ever yield

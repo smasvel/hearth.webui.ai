@@ -388,6 +388,16 @@
               no error (see Troubleshooting below — this happened for real, on two machines).
             </p>
             <p class="hint">
+              The local <code class="inline-code">q38rocm</code> model is available only to
+              OpenCode running on this desktop, because its server listens on loopback. The desktop
+              OpenCode config sync adds it to
+              <code class="inline-code">~/.config/opencode/opencode.jsonc</code> when its GGUF is
+              installed; load the model from Hearth's Models page before selecting it in OpenCode.
+              It is configured at the model's native 262K context; full-context runs need more
+              shared GPU memory and can take longer to prefill and generate.
+              It is not added to the LAN or Tailscale configs shown here.
+            </p>
+            <p class="hint">
               The top-level <code class="inline-code">"model"</code> line pins the default to the
               NPU daily driver so a fresh install doesn't default to something dead or slow —
               without it, OpenCode just picks the first provider/model it finds.

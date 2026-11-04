@@ -34,7 +34,7 @@ DEFAULT_TOKEN_FILE = os.path.expanduser(
 # Docker Hearth drives these three host units. Keeping the list explicit makes the blast
 # radius of a leaked token very small. FastFlowLM is a *system* unit (NPU memlock); vLLM
 # and KoboldCPP are user units, and the broker preserves that scope distinction.
-_DEFAULT_SERVICES = "vllm.service,kobold.service,flm.service"
+_DEFAULT_SERVICES = "vllm.service,kobold.service,q38rocm.service,flm.service"
 _ALLOWED_VERBS = frozenset({"start", "stop", "restart", "daemon-reload", "is-active", "is-enabled"})
 _ALLOWED_SCOPES = frozenset({"user", "system"})
 # The FLM CLI is only used from Docker Hearth to keep model *inventory*, download and

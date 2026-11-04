@@ -35,6 +35,7 @@ import requests
 import model_test_profiles
 
 import settings_store
+import q38rocm_client
 import lemonade_templates
 import lemonade_thinking
 
@@ -259,6 +260,10 @@ def list_models() -> list[dict]:
     models = []
     seen_ids = set()
     for m in models_resp.json().get("data", []):
+        # This catalog item is served by Hearth's local q38rocm backend, which
+        # downloads the same repository's Vulkan-compatible Q3_K_M variant.
+        if m.get("id") == q38rocm_client._CATALOG_ID:
+            continue
         if m.get("recipe") != "flm" and not m.get("downloaded"):
             continue
         model_id = m.get("id")
@@ -333,7 +338,7 @@ def list_models() -> list[dict]:
     # convention, matching how LM Studio's API already labels its embedding model -
     # "transcription"/"tts" need no such remapping, health already reports those as-is.
     for model_id, entry in loaded_by_id.items():
-        if model_id in seen_ids:
+        if model_id in seen_ids or model_id == q38rocm_client._CATALOG_ID:
             continue
         raw_type = entry.get("type") or "llm"
         entry_type = "embeddings" if raw_type == "embedding" else raw_type
@@ -646,7 +651,7 @@ def search_catalog(query: str, limit: int = 40) -> list[dict]:
     q = query.lower().strip()
     results = []
     for m in resp.json().get("data", []):
-        if m.get("recipe") == "flm":
+        if m.get("recipe") == "flm" or m.get("id") == q38rocm_client._CATALOG_ID:
             continue
         haystack = " ".join(
             [m.get("id") or "", m.get("checkpoint") or "", " ".join(m.get("labels") or [])]
@@ -1236,6 +1241,7 @@ def chat_stream(
     chat_template_kwargs: dict | None = None,
     enable_thinking: bool | None = None,
     tools: list[dict] | None = None,
+    parallel_tool_calls: bool | None = None,
 ):
     """Yield raw SSE 'data: ...' lines — identical contract to
     lmstudio_client.chat_stream(), since Lemonade's /v1/chat/completions is
@@ -1263,6 +1269,8 @@ def chat_stream(
         payload["enable_thinking"] = enable_thinking
     if tools:
         payload["tools"] = tools
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
     # Tool-enabled chat must pass through Hearth's guard shim, which repairs
     # model-native tool markup and named choices before the chat worker consumes it.
     url = ("http://127.0.0.1:13306/v1/chat/completions" if tools

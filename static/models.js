@@ -99,6 +99,7 @@
     { key: "vllm", label: "vLLM" },
     { key: "opencode", label: "opencode.ai (remote)" },
     { key: "kobold", label: "KoboldCPP" },
+    { key: "q38rocm", label: "q38rocm (Qwen 3.8 27B)" },
     { key: "fastflowlm", label: "FastFlowLM (NPU)" },
     { key: "comfyui", label: "ComfyUI — Image & Video" },
   ];
@@ -486,7 +487,7 @@
   // "loaded" means the service itself is stopped, so loading one starts it from cold (confirmed
   // live: vLLM took 91s). LM Studio/Lemonade are always-on processes, so there's no service to
   // start for them — only the on-demand three ever need this extra warning.
-  const ON_DEMAND_BACKENDS = new Set(["vllm", "kobold", "fastflowlm"]);
+  const ON_DEMAND_BACKENDS = new Set(["vllm", "kobold", "q38rocm", "fastflowlm"]);
 
   async function loadModel(modelKey) {
     if (busy || window.hearthModelTests?.isRunning()) return;
