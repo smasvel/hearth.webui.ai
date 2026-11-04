@@ -283,7 +283,7 @@ administrator to find models, then use **Models** to load and evaluate them.
 | Lemonade | Curated catalog and Hugging Face search, including GGUF models | CPU/GPU/NPU according to model recipe and hardware |
 | vLLM | Catalog and Hugging Face causal language model repositories | Depends on the installed vLLM runtime; the documented host uses CPU |
 | KoboldCPP | Hugging Face GGUF search and downloads | CPU/GPU according to the installed build |
-| q38rocm | One locally installed Qwen 3.8 GGUF in `data/q38rocm/models` | q38rocm fork built with RADV Vulkan on this desktop; one model served at a time |
+| q38rocm | `julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF`, shown under its actual Hugging Face repository ID | One locally installed Qwen 3.8 GGUF in `data/q38rocm/models`; q38rocm fork built with RADV Vulkan on this desktop; one model served at a time |
 | FastFlowLM | FastFlowLM NPU catalog and exact model tags | Supported AMD Ryzen AI NPU hardware |
 
 For a one-command Hearth plus q38rocm setup on Ubuntu or Debian, run the combined
@@ -330,7 +330,8 @@ separately from Lemonade and the Ryzen AI NPU. The supported service setup expec
 Downloads page lists the julianmb repository under q38rocm and downloads its
 compatible Q3_K_M file into the backend directory, reusing the file from
 Lemonade's Hugging Face cache when present. Hearth no longer lists this catalog
-entry as a Lemonade model.
+entry as a Lemonade model. Downloads shows the repository as
+`julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF` rather than a generated slug.
 
 Muse models, including Lemonade catalog entries such as the Muse-Glimmer family,
 are used through the Lemonade backend. Configure Lemonade in **Settings**, confirm

@@ -616,7 +616,8 @@ Model-test handoff checks use each backend's live inventory to avoid false failu
 from stale loaded-state metadata in the combined Models view.
 Hearth chat also preserves the requested single- or multi-select mode for structured
 OpenCode questions when a backend omits that optional field.
-The Downloads page lists the julianmb repository under q38rocm and downloads the
+The Downloads page lists `julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF` under q38rocm
+using its actual Hugging Face repository ID, not a generated slug, and downloads the
 Vulkan-compatible Q3_K_M GGUF into q38rocm's model directory. If the same file is
 already in Lemonade's Hugging Face cache, Hearth copies that cached file rather
 than downloading another copy. The model is assigned to q38rocm in Models, not
