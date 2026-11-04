@@ -223,6 +223,13 @@ class RegistryTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_q38rocm_catalog_uses_real_hugging_face_repository_id(self):
+        import q38rocm_client
+        result = q38rocm_client.search_catalog('julianmb')
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['id'], 'julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF')
+        self.assertEqual(result[0]['repo_id'], result[0]['id'])
+
     def test_q38rocm_tests_disable_thinking_and_bound_all_replies(self):
         chat = {'model': 'q38', 'max_tokens': 512, 'messages': []}
         tools = {'model': 'q38', 'max_tokens': 2048, 'messages': [], 'tools': [{'type': 'function'}]}

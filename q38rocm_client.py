@@ -41,7 +41,9 @@ def search_catalog(query: str = "") -> list[dict]:
     size_gb = (_MODEL_PATH.stat().st_size / 1_000_000_000
                if _MODEL_PATH.is_file() else 13.49)
     return [{
-        "id": _CATALOG_ID,
+        # Use the real Hugging Face repo ID as the visible/searchable result name.
+        # A synthetic slug made the catalog entry look unrelated to its source.
+        "id": _HF_REPO,
         "checkpoint": f"{_HF_REPO}:{_HF_FILE}",
         "filename": _HF_FILE,
         "repo_id": _HF_REPO,

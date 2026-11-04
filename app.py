@@ -4144,7 +4144,7 @@ def _clean_partial_download_files(backend: str, model_id: str) -> tuple[int, int
                 if repo_dir.is_dir():
                     candidates.extend(repo_dir.rglob("*.incomplete"))
                     candidates.extend(repo_dir.rglob("*.part"))
-        if backend == "q38rocm" and model_id == q38rocm._CATALOG_ID:
+        if backend == "q38rocm" and model_id in (q38rocm._CATALOG_ID, q38rocm._HF_REPO):
             candidates.extend((
                 Path(str(q38rocm._MODEL_PATH) + ".part"),
                 Path(str(q38rocm._MODEL_PATH) + ".part.etag"),
