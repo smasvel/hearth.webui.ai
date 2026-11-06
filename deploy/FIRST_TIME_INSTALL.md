@@ -34,23 +34,12 @@ image; agent execution is Linux-only. Setup offers optional runtime installation
 model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
 for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
 remote runtime.
-Open **Downloads** to browse Lemonade's native catalog, vLLM suggestions, popular
-Hugging Face GGUF repos for LM Studio and KoboldCPP, and FastFlowLM's NPU catalog.
-Review a result and choose Download; setup does not download model weights automatically.
-Leave **Search all backends** empty and select **Search all** to browse Lemonade,
-LM Studio, KoboldCPP, and vLLM together. FastFlowLM and q38rocm use separate fixed
-catalogs. Named searches use Lemonade's catalog and compatible GGUF repos, GGUF repos
-for LM Studio and KoboldCPP, and vLLM weight repos. LM Studio downloads its results
-through `lms get`; Lemonade uses its native catalog download or its GGUF registration
-path. Use **Tool calling only** to show models with declared support, and the **Small**
-(up to 4B), **Medium** (over 4B through 13B), and **Large** (over 13B) checkboxes
-to filter by parameter count. Models without a detectable count are hidden while a
-size checkbox is active. Filtered searches continue through later pages when the current
-page has too few matches. **Load more** reveals later results from a broad upstream
-search window (up to 500 results per backend); Hugging Face results are briefly reused
-across pages and compatible backends to avoid redundant requests. GGUF searches use
-Hugging Face's public model listing if its API rate-limits a request.
-Restart Hearth after updating to load the new Downloads page and search behavior.
+Open **Downloads** to find `Ornith-1.5-9B-GGUF` preselected in the Lemonade search.
+Review its result and choose Download to install the model; setup does not download
+model weights automatically. On Downloads, use **Exclude unknown support** to hide
+search results whose catalog metadata does not say whether they support tool calling;
+the per-backend tool-calling filters remain available when you want only models that
+explicitly declare support.
 When loading a model, Hearth checks whether currently available RAM can fit the new
 model's known weight size plus 1 GB headroom. If it fits, the currently loaded model
 stays resident; otherwise Hearth evicts it before loading. Backend-specific model-size

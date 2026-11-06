@@ -4150,46 +4150,26 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
     return normalized
 
 
-def _search_models_for_backend(backend: str, query: str, limit: int = 30,
-                               include_details: bool = True) -> list[dict]:
+def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "vllm":
-        results = (vllm.search_huggingface(query, limit=limit, include_sizes=include_details)
-                   if query else vllm.suggested_models(include_sizes=include_details))
+        results = vllm.search_huggingface(query) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
     if backend in ("lmstudio", "kobold"):
-        results = lemonade.search_huggingface(query, limit=limit, strict_format="gguf",
-                                              include_descriptions=include_details)
-        if include_details:
-            lemonade.fill_result_sizes(results)
+        results = lemonade.search_huggingface(query)
+        lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
         return _normalize_model_results(fastflowlm.search_catalog(query, limit=500 if not query else 80), backend)
     if backend == "q38rocm":
         return _normalize_model_results(q38rocm.search_catalog(query), backend)
     if backend == "lemonade":
-        results = lemonade.search_catalog(query, limit=500 if not query else limit)
+        results = lemonade.search_catalog(query, limit=500 if not query else 40)
         if query:
-            if include_details:
-                results = lemonade.enrich_with_hf_metadata(results)
-            results += lemonade.search_huggingface(query, limit=limit, strict_format="gguf",
-                                                    include_descriptions=include_details)
-        if include_details:
-            lemonade.fill_result_sizes(results)
+            results = lemonade.enrich_with_hf_metadata(results)
+            results += lemonade.search_huggingface(query)
+        lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")
-
-
-def _enrich_search_page(results: list[dict]) -> None:
-    """Fill sizes and summaries only for the visible page, keeping broad searches responsive."""
-    by_backend: dict[str, list[dict]] = {}
-    for result in results:
-        by_backend.setdefault(result.get("backend", ""), []).append(result)
-    for backend, items in by_backend.items():
-        if backend == "vllm":
-            vllm._fill_sizes(items)
-        elif backend in ("lemonade", "lmstudio", "kobold"):
-            lemonade.fill_result_sizes(items)
-            lemonade.fill_result_descriptions(items)
 
 
 @app.get("/api/models/search")
@@ -4199,74 +4179,9 @@ def api_search_models():
     backend = request.args.get("backend", "lemonade")
     query = (request.args.get("q") or "").strip()
     tools_only = request.args.get("tools_only", "").lower() in ("1", "true", "yes")
-    # Pagination + optional filters so a large HF result set can be browsed instead of
-    # returning hundreds of cards at once (which also keeps per-card size lookups fast).
-    # `max_results` defaults to a sane 100; the UI passes a page size and `offset` for
-    # "load more". A positive `min_size_gb` / `max_size_gb` (e.g. the UI's "Large model
-    # only" toggle = min_size_gb) hides models that don't fit the requested size range.
-    def _positive_float(value: str) -> float | None:
-        if value is None:
-            return None
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
 
-    def _int_arg(value: str, default: int, minimum: int = 0, maximum: int = 500) -> int:
-        try:
-            parsed = int(value) if value not in (None, "") else default
-        except (TypeError, ValueError):
-            return default
-        return max(minimum, min(maximum, parsed))
-
-    def _to_gb(size_gb) -> float | None:
-        # Accept a size already in GB (float) or a raw byte count (int) from the HF tree
-        # lookups so a caller can pass either without unit confusion.
-        if size_gb is None:
-            return None
-        try:
-            value = float(size_gb)
-        except (TypeError, ValueError):
-            return None
-        return value / (1024 ** 3) if value > 1e6 else value
-
-    def _size_in_range(r, min_gb, max_gb) -> bool:
-        # A model whose size isn't known yet shouldn't be silently dropped by a size
-        # filter the user can't see — keep it so it isn't hidden.
-        if min_gb is None and max_gb is None:
-            return True
-        size = _to_gb(r.get("size_gb"))
-        if size is None:
-            return True
-        if min_gb is not None and size < min_gb:
-            return False
-        if max_gb is not None and size > max_gb:
-            return False
-        return True
-
-    def _apply_filters(results, offset=0, max_results=10_000) -> tuple[list[dict], int]:
-        """Apply the tools-only + size filters and return (windowed_results, total).
-        `total` is post-filter, pre-pagination so the UI can offer 'load more'."""
-        out = results
-        if tools_only:
-            out = [r for r in out if r.get("supports_tool_calling") is True]
-        if min_size_gb is not None or max_size_gb is not None:
-            out = [r for r in out if _size_in_range(r, min_size_gb, max_size_gb)]
-        total = len(out)
-        return out[offset: offset + max_results], total
-
-    max_results = _int_arg(request.args.get("max_results"), default=100, minimum=1, maximum=500)
-    # Combined search includes several backends, so its available result count can be
-    # much larger than any one backend's page. Allow the UI to page through it.
-    offset = _int_arg(request.args.get("offset"), default=0, maximum=5000)
-    # Fetch a broad, bounded upstream prefix once and let the UI page through it. The
-    # Hugging Face client caches this shared 500-result window across backends/pages,
-    # avoiding repeated identical requests that trigger anonymous API rate limits.
-    search_limit = 500
-    min_size_gb = _positive_float(request.args.get("min_size_gb"))
-    max_size_gb = _positive_float(request.args.get("max_size_gb"))
-    include_details = min_size_gb is not None or max_size_gb is not None
+    def filtered(results):
+        return [r for r in results if r.get("supports_tool_calling") is True] if tools_only else results
 
     valid = tuple(_MODEL_BACKEND_INFO)
     if backend != "all" and backend not in valid:
@@ -4275,58 +4190,21 @@ def api_search_models():
         if backend == "all":
             results = []
             backend_errors = []
-            # These backends can download the models returned by this combined search.
-            # FastFlowLM has a separate NPU catalog; q38rocm has one supported model.
-            # LM Studio and KoboldCPP both consume the same GGUF Hugging Face search.
-            # Fetch it once here to avoid sending duplicate broad requests to HF when
-            # the Downloads page also starts their individual browse panels.
-            combined_backends = ("lemonade", "vllm")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(combined_backends)) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(valid)) as pool:
                 futures = {
-                    pool.submit(_search_models_for_backend, name, query, search_limit, include_details): name
-                    for name in combined_backends
+                    pool.submit(_search_models_for_backend, name, query): name
+                    for name in valid
                 }
                 for future, name in futures.items():
                     try:
                         results.extend(future.result(timeout=30))
-                    except Exception as exc:
-                        app.logger.warning("Downloads search failed for %s: %s", name, exc)
+                    except Exception:
+                        # One unavailable backend must not erase useful results from four others.
                         backend_errors.append(name)
-            try:
-                gguf_results = lemonade.search_huggingface(
-                    query, limit=search_limit, strict_format="gguf", include_descriptions=include_details
-                )
-                if include_details:
-                    lemonade.fill_result_sizes(gguf_results)
-                for name in ("lmstudio", "kobold"):
-                    results.extend(_normalize_model_results(gguf_results, name))
-            except Exception as exc:
-                app.logger.warning("Downloads GGUF search failed for LM Studio and KoboldCPP: %s", exc)
-                backend_errors.extend(("lmstudio", "kobold"))
             order = {name: i for i, name in enumerate(valid)}
-            # Stable sort by (backend order, downloads desc) so the pagination window is
-            # consistent across "load more" calls with the same filters.
             results.sort(key=lambda r: (order.get(r["backend"], 99), -(r.get("downloads") or 0)))
-            windowed, total = _apply_filters(results, offset, max_results)
-            if not include_details:
-                _enrich_search_page(windowed)
-            return jsonify({
-                "results": windowed,
-                "total": total,
-                "offset": offset,
-                "max_results": max_results,
-                "backend_errors": backend_errors,
-            })
-        single_results = _search_models_for_backend(backend, query, search_limit, include_details)
-        windowed, total = _apply_filters(single_results, offset, max_results)
-        if not include_details:
-            _enrich_search_page(windowed)
-        return jsonify({
-            "results": windowed,
-            "total": total,
-            "offset": offset,
-            "max_results": max_results,
-        })
+            return jsonify({"results": filtered(results), "backend_errors": backend_errors})
+        return jsonify({"results": filtered(_search_models_for_backend(backend, query))})
     except (lemonade.LemonadeError, vllm.VLLMError) as exc:
         return jsonify({"error": str(exc)}), 502
 

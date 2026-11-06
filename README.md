@@ -225,33 +225,26 @@ Hearth combines **local model discovery, Hugging Face model search, model downlo
 and model management** in one browser interface. Open **Downloads** as an
 administrator to find models, then use **Models** to load and evaluate them.
 
-1. Use **Search all backends** to compare Lemonade, LM Studio, KoboldCPP, and vLLM.
-   Leave the field empty and select **Search all** to browse Lemonade's native catalog,
-   vLLM suggestions, and popular Hugging Face GGUF repos for LM Studio and KoboldCPP.
-   A named search uses Lemonade's catalog plus compatible GGUF repos, GGUF repos for
-   LM Studio and KoboldCPP, and vLLM's supported Hugging Face weight repos. FastFlowLM
-   and q38rocm use their separate fixed catalogs and do not appear in the combined search.
-   Results are paginated with a **Load more** button. Search loads a broad upstream
-   window of up to 500 models per backend, and reuses Hugging Face results across pages
-   and compatible backends to avoid repeated requests. If Hugging Face rate-limits its
-   model API, GGUF search falls back to the public model listing.
-   Active size and tool-calling filters scan forward when a page has too few matches,
-   so filtered searches do not show an empty page while matching models remain.
+1. Use **Search all backends** to search LM Studio, Lemonade, vLLM, KoboldCPP,
+   FastFlowLM, and q38rocm together, or search a single backend. Leave the search field
+   empty to browse each backend's available catalog or popular Hugging Face models.
 2. Compare result cards by backend, model format, execution compatibility, download
    size, task type, update date, popularity, download status, and source link. Each
-   card shows declared tool-calling support when catalog metadata provides it.
-3. Use **Tool calling only** to restrict every search to models whose catalog metadata
-   explicitly declares tool-calling support; models with unknown or negative support are
-   excluded. A positive label does not guarantee compatibility with every tool or runtime,
-   so use **Model tests** before relying on it.
+   card labels tool-calling support as **yes**, **no**, or **unknown**, based on
+   catalog metadata.
+3. Use **Exclude unknown support** to hide models whose catalog does not say
+   whether they support tool calling; models marked **no** remain visible. The
+   independent **Tool calling filters** restrict selected backends to models whose
+   catalog metadata explicitly declares support. A positive label does not guarantee
+   compatibility with every tool or runtime, so use **Model tests** before relying on it.
 4. Filter by parameter count with **Small** (up to 4B), **Medium** (over 4B through
    13B), or **Large** (over 13B). These filters use reported parameter counts or
-   recognizable sizes in model names; models without a detectable
+   recognizable sizes in model names/descriptions; models without a detectable
    count are hidden while a size filter is active. Clear the size checkboxes to
    show all sizes again.
-5. **Downloads** opens with Lemonade's catalog, vLLM suggestions, popular GGUF repos
-   for LM Studio and KoboldCPP, and FastFlowLM's catalog. Review a result and choose
-   Download; Hearth does not download model weights automatically. Follow progress and logs, inspect active downloads, or
+5. **Downloads** opens with the recommended Lemonade `Ornith-1.5-9B-GGUF` search
+   selected. Review the result and choose Download; Hearth does not download model
+   weights automatically. Follow progress and logs, inspect active downloads, or
    cancel a download.
 6. To use a model file already on your device, choose **Upload a local GGUF model**
    on Models, browse to a `.gguf` file, and upload it. Hearth validates the GGUF
