@@ -526,12 +526,10 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     calling this when it's already true, rather than calling it unconditionally."""
     payload: dict = {"model_name": model_key}
     payload.update(lemonade_templates.load_options(model_key))
-    # Default to a reasonable context window when none is specified — Lemonade's own
-    # default (1280) is far too small for any real chat and causes
-    # exceed_context_size_error on the first non-trivial request, but 65536 can
-    # take too long to load on large models. 8192 is a safe middle ground.
+    # Default to a 65536-token context window when none is specified and the model
+    # supports it; Lemonade's own default (1280) is far too small for real chat.
     if not context_length:
-        context_length = 8192
+        context_length = 65536
     payload["ctx_size"] = context_length
 
     # A cold load of a large MoE GGUF (or Lemonade mid-evicting a previous model) can return a
@@ -544,7 +542,7 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     for attempt in range(1, _LOAD_RETRIES + 1):
         try:
             resp = requests.post(
-                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=300
+                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=600
             )
             if resp.status_code < 500:
                 break
