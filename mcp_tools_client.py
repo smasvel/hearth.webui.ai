@@ -79,6 +79,10 @@ _CHAT_TOOL_NAMES = {
     "browser_navigate_back", "navigate_back",
     "browser_tabs", "browse_tabs", "browser_snapshot", "browse_tab",
     "browser_find", "find", "browser_wait_for", "wait_for",
+    # Form interaction is exercised through the same inspect-after-action path the
+    # other playwright actions use (see _browser_action_and_inspect), so these stay in
+    # chat rather than being OpenCode-only.
+    "browser_click", "click", "browser_type", "type", "browser_fill_form", "fill_form",
     "execute_python",
 }
 CHAT_TOOL_RESULT_LIMIT = 1400

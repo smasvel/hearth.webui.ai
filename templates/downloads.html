@@ -14,14 +14,12 @@
       <header class="chat-header">
         <a href="{{ url_for('index') }}" class="icon-btn text-icon-btn" title="Back to chat">&larr; Chat</a>
         <nav class="console-tabs">
-          {% if agentic_workflow_enabled %}<a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>{% endif %}
+          <a class="console-tab" href="{{ url_for('agents_page') }}">Agents</a>
           <a class="console-tab" href="{{ url_for('models_page') }}">Models</a>
-          <a class="console-tab" href="{{ url_for('model_tests_page') }}">Model tests</a>
           <a class="console-tab active" href="{{ url_for('downloads_page') }}">Downloads</a>
           <a class="console-tab" href="{{ url_for('flm_converter_page') }}">Converter</a>
           <a class="console-tab" href="{{ url_for('browse_history_page') }}">History</a>
           <a class="console-tab" href="{{ url_for('metrics_page') }}">Metrics</a>
-          <a class="console-tab" href="{{ url_for('live_logs_page') }}">Live logs</a>
           <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
           <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
         </nav>
@@ -37,24 +35,15 @@
       <div class="console-body">
         <div class="console-head">
           <h1>Download Models</h1>
-            <div class="download-tool-filters" aria-label="Filter search results by tool calling support">
-              <strong>Tool calling filters:</strong>
-              <label><input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support</label>
-              <label><input data-tools-backend="lemonade" type="checkbox" /> Lemonade</label>
-              <label><input data-tools-backend="vllm" type="checkbox" /> vLLM</label>
-              <label><input data-tools-backend="lmstudio" type="checkbox" /> LM Studio</label>
-              <label><input data-tools-backend="kobold" type="checkbox" /> KoboldCPP</label>
-              <label><input data-tools-backend="fastflowlm" type="checkbox" /> FastFlowLM</label>
-              <label><input data-tools-backend="q38rocm" type="checkbox" /> q38rocm</label>
-            </div>
-            <p class="hint">Exclude unknown support to hide models whose catalog does not say whether they support tool calling. Backend filters show only models that declare support for that backend. Catalog metadata may be incomplete; backend configuration may also be required.</p>
+            <label><input id="tools-only" type="checkbox" /> Tool calling only (all searches)</label>
+            <p class="hint">Shows declared tool calling support. Models with unknown support are excluded. Backend configuration may also be required.</p>
             <div class="download-size-filters" aria-label="Filter models by parameter count">
               <strong>Model size:</strong>
               <label><input data-parameter-band="small" type="checkbox" /> Small (up to 4B)</label>
               <label><input data-parameter-band="medium" type="checkbox" /> Medium (over 4B to 13B)</label>
               <label><input data-parameter-band="large" type="checkbox" /> Large (over 13B)</label>
             </div>
-            <p class="hint">Size filters use reported parameter counts or a size stated in the model name. Models without a recognizable parameter count are hidden while a size filter is active.</p>
+            <p class="hint">Size filters use reported parameter counts or a size in the model name. Models without a recognizable count are hidden while a size filter is active.</p>
 
           <p class="hint">
             Search Ryzen AI (Lemonade)'s catalog or Hugging Face and download directly, or
@@ -67,16 +56,16 @@
           <button id="getting-started-dismiss" class="getting-started-dismiss" type="button" title="Dismiss" aria-label="Dismiss">&times;</button>
           <h2 style="margin-top: 0;">New to Hearth? Start here.</h2>
           <p class="hint">
-            <strong>Ornith-1.5-9B-GGUF</strong> is prefilled and searched in the Lemonade
-            catalog as a recommended first chat model. Review its card and choose Download
-            to install it; Hearth does not start model downloads automatically.
-            <strong>vLLM</strong> and <strong>FastFlowLM (NPU)</strong> also list ready-to-download
-            suggestions when available.
+            <strong>Ryzen AI (Lemonade)</strong>, <strong>LM Studio</strong>,
+            <strong>KoboldCPP</strong>, <strong>vLLM</strong>, and
+            <strong>FastFlowLM (NPU)</strong> below list ready-to-download models the
+            moment you open this page — no search needed. Look for the
+            <span class="badge staff-pick" style="vertical-align: middle;">staff pick</span> tag on
+            a card for a safe first choice.
           </p>
           <p class="hint">
-            <strong>LM Studio</strong> and <strong>KoboldCPP</strong> only search Hugging Face on
-            demand (they have no built-in catalog to browse), so their sections start empty.
-            You can search for other models there if you prefer a different backend.
+            LM Studio and KoboldCPP browse popular Hugging Face GGUF repos. Search
+            <code class="inline-code">qwen2.5 3b instruct</code> to narrow those lists.
           </p>
         </div>
 
@@ -121,10 +110,11 @@
           <div class="console-card span-all">
             <h2>Search all backends</h2>
             <p class="hint">
-              Search once to compare every supported backend. Each result identifies its
+              Search once to compare Hugging Face download backends. Leave the field empty to browse
+              Lemonade's catalog, vLLM suggestions, and popular GGUF models for LM Studio and KoboldCPP.
+              FastFlowLM and q38rocm use their own catalogs. Each result identifies its
               backend, model format, execution compatibility, download size and status, and
-              links to the verified model source used for downloading. Leave the search empty
-              to browse each backend's available catalog and popular models.
+              links to the verified model source used for downloading.
             </p>
             <form id="all-search-form" class="download-form">
               <div class="download-row">
@@ -134,7 +124,7 @@
               </div>
             </form>
             <div id="all-results" class="result-grid">
-              <p class="hint">Search every backend, or submit an empty search to browse available models.</p>
+              <p class="hint">Leave the field empty and select Search all to browse models.</p>
             </div>
           </div>
 
@@ -150,7 +140,7 @@
             </p>
             <form id="catalog-search-form" class="download-form">
               <div class="download-row">
-                <input id="catalog-search-input" class="panel-input" type="text" value="Ornith-1.5-9B-GGUF" placeholder="e.g. Ornith-1.5-9B-GGUF, llama, embed, whisper" autocomplete="off" />
+                <input id="catalog-search-input" class="panel-input" type="text" placeholder="e.g. qwen, llama, embed, whisper" autocomplete="off" />
                 <button id="catalog-search-btn" class="panel-btn" type="submit">Search</button>
               </div>
             </form>
@@ -182,30 +172,11 @@
           </div>
 
           <div class="console-card span-all">
-            <h2>q38rocm — local Vulkan GGUF</h2>
-            <p class="hint">
-              Downloads the Q3_K_M GGUF variant from the julianmb Hugging Face repository into
-              q38rocm's model directory. The backend on this Radeon desktop uses RADV Vulkan; the
-              repository's ROCmFP4 FAST file is not the variant installed here. After download,
-              load the model from the Models page.
-            </p>
-            <form id="q38-search-form" class="download-form">
-              <div class="download-row">
-                <input id="q38-search-input" class="panel-input" type="text" value="julianmb" placeholder="q38rocm-supported model" autocomplete="off" />
-                <button class="panel-btn" type="submit">Search</button>
-              </div>
-            </form>
-            <div id="q38-results" class="result-grid">
-              <p class="hint">Loading q38rocm's supported model&hellip;</p>
-            </div>
-          </div>
-
-          <div class="console-card span-all">
             <h2>LM Studio — search Hugging Face (GGUF)</h2>
             <p class="hint">
-              LM Studio has no catalog API of its own, but it installs GGUF repos straight
-              from Hugging Face — so this searches the same public GGUF index and downloads
-              the chosen repo via <code class="inline-code">lms get</code>, auto-picking a
+              LM Studio installs GGUF repos through <code class="inline-code">lms get</code>.
+              This page browses Hugging Face GGUF repos and downloads
+              the chosen repo directly, auto-picking a
               quantization. Real download sizes shown up front. Or, below, resolve an exact
               or fuzzy name / full HF URL directly.
             </p>

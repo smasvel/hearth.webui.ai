@@ -39,7 +39,7 @@
         <div class="console-head">
           <h1>Models</h1>
           <p class="hint">
-            View models already on disk and their current state, grouped by backend. Chat models
+            Browse local models and online models in separate sections, grouped by backend. Local chat models
             can be loaded, unloaded, and deleted; media models load automatically when requested. Need a different
             model? Upload a local GGUF here or get one from the <a href="{{ url_for('downloads_page') }}">Downloads page</a>.
           </p>
@@ -48,7 +48,12 @@
         <!-- summary strip -->
         <div id="model-summary" class="model-summary"></div>
 
-        <section class="console-card span-all" aria-labelledby="local-model-upload-heading">
+        <nav class="model-view-tabs" aria-label="Model type">
+          <button class="model-view-tab active" type="button" data-model-view="local" aria-selected="true">Local models</button>
+          <button class="model-view-tab" type="button" data-model-view="online" aria-selected="false">Online models</button>
+        </nav>
+
+        <section id="local-model-tools" class="console-card span-all" aria-labelledby="local-model-upload-heading">
           <h2 id="local-model-upload-heading">Upload a local GGUF model</h2>
           <p class="hint">Browse for a GGUF file on this device. Hearth uploads it to local model storage and registers it with the configured Lemonade server. The file remains on this host so Lemonade can load it.</p>
           <form id="local-model-upload-form" class="download-form">
@@ -61,7 +66,7 @@
           <div id="local-model-upload-progress" class="progress-bar-track hidden"><div class="progress-bar-fill"></div></div>
         </section>
 
-        <div class="model-toolbar">
+        <div id="model-toolbar" class="model-toolbar">
           <input id="model-search" class="panel-input" type="search" aria-label="Filter models by name" placeholder="Filter models by name…" autocomplete="off" />
           <label class="model-warning-filter"><input id="model-warnings-only" type="checkbox" /> Warnings only</label>
           <button id="model-max-context-btn" class="panel-btn" type="button">Set all to max context</button>

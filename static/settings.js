@@ -7,6 +7,92 @@
   const restartQ38rocmBtn = document.getElementById("restart-q38rocm");
   const restartHearthBtn = document.getElementById("restart-hearth");
   const restartResults = document.getElementById("restart-results");
+  const restartStatusEl = document.getElementById("restart-status");
+  const restartHistoryEl = document.getElementById("restart-history");
+  const preserveMandatoryEl = document.getElementById("restart-preserve-mandatory");
+
+  async function loadRestartHistory() {
+    try {
+      const res = await fetch("/api/admin/service-status");
+      const data = await res.json();
+      if (restartHistoryEl && data.services) {
+        restartHistoryEl.innerHTML = "<strong>Service status:</strong><br/>" + data.services.map(s =>
+          `${escapeHtml(s.service)}: ${escapeHtml(s.status)}${s.detail ? " — " + escapeHtml(s.detail) : ""} (updated ${new Date(s.updated_at * 1000).toLocaleTimeString()})`
+        ).join("<br/>");
+      }
+    } catch (e) { /* ignore */ }
+  }
+  // Render per-backend start/stop controls
+  async function renderBackendControls() {
+    const container = document.getElementById("backend-controls");
+    if (!container) return;
+    try {
+      const res = await fetch("/api/admin/service-status");
+      const data = await res.json();
+      const services = data.services || [];
+      container.innerHTML = services.map(s => {
+        const name = escapeHtml(s.service);
+        const status = escapeHtml(s.status);
+        const canStart = s.status !== "started";
+        const canStop = s.status === "started";
+        return `<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span style="min-width: 120px;">${name}</span>
+          <span style="min-width: 80px; color: ${s.status === 'started' ? 'green' : s.status === 'error' ? 'red' : 'gray'};">${status}</span>
+          ${canStart ? `<button class="panel-btn backend-start-btn" data-backend="${name}" type="button">Start</button>` : ''}
+          ${canStop ? `<button class="panel-btn backend-stop-btn" data-backend="${name}" type="button">Stop</button>` : ''}
+        </div>`;
+      }).join("");
+      container.querySelectorAll(".backend-start-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            const r = await fetch("/api/admin/start-backend", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content }, body: JSON.stringify({ backend: btn.dataset.backend }) });
+            const d = await r.json();
+            restartResults.textContent = d.message || (d.ok ? "Started" : "Failed");
+          } catch (e) { restartResults.textContent = `Error: ${e.message}`; }
+          renderBackendControls();
+          loadRestartHistory();
+        });
+      });
+      container.querySelectorAll(".backend-stop-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            const r = await fetch("/api/admin/stop-backend", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content }, body: JSON.stringify({ backend: btn.dataset.backend }) });
+            const d = await r.json();
+            restartResults.textContent = d.message || (d.ok ? "Stopped" : "Failed");
+          } catch (e) { restartResults.textContent = `Error: ${e.message}`; }
+          renderBackendControls();
+          loadRestartHistory();
+        });
+      });
+    } catch (e) { container.textContent = `Could not load service status: ${e.message}`; }
+  }
+  renderBackendControls();
+
+  loadRestartHistory();
+
+  async function pollRestartJob(jobId) {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/admin/restart-status/${jobId}`);
+        const data = await res.json();
+        if (restartStatusEl) {
+          restartStatusEl.textContent = `${data.status}: ${data.progress}/${data.total} — ${data.detail || ""}`;
+        }
+        if (data.status === "done" || data.status === "error") {
+          clearInterval(interval);
+          restartBackendsBtn.disabled = false;
+          restartHearthBtn.disabled = false;
+          if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = false;
+          loadRestartHistory();
+        }
+      } catch (e) {
+        clearInterval(interval);
+      }
+    }, 1000);
+  }
+
   async function adminAction(url, label) {
     if (!window.confirm(`${label}? This may interrupt active requests.`)) return;
     restartResults.textContent = `${label}…`;
@@ -14,19 +100,28 @@
     restartHearthBtn.disabled = true;
     if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = true;
     try {
-      const response = await fetch(url, { method: "POST", headers: { "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content } });
+      let body = {};
+      if (url === "/api/admin/restart-backends") {
+        const checked = [...document.querySelectorAll(".restart-backend-cb:checked")].map(cb => cb.value);
+        body = { backends: checked, preserve_mandatory: preserveMandatoryEl ? preserveMandatoryEl.checked : true };
+      }
+      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content }, body: JSON.stringify(body) });
       const data = await response.json();
-      if (url.endsWith("restart-hearth")) restartResults.textContent = data.message || "Hearth is restarting.";
-      else restartResults.innerHTML = Object.entries(data).map(([name, result]) => `<div>${escapeHtml(name)}: ${result.ok ? "Restart requested" : escapeHtml(result.message)}</div>`).join("");
+      if (url.endsWith("restart-hearth")) {
+        restartResults.textContent = data.message || "Hearth is restarting.";
+        if (data.job_id) pollRestartJob(data.job_id);
+      } else {
+        restartResults.innerHTML = Object.entries(data).filter(([k]) => k !== "_job_id").map(([name, result]) => `<div>${escapeHtml(name)}: ${result.ok ? "Restart requested" : escapeHtml(result.message)}</div>`).join("");
+        if (data._job_id) pollRestartJob(data._job_id);
+      }
     } catch (error) {
       restartResults.textContent = `Could not complete ${label}: ${error.message}`;
-    } finally {
       restartBackendsBtn.disabled = false;
       restartHearthBtn.disabled = false;
       if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = false;
     }
   }
-  restartBackendsBtn?.addEventListener("click", () => adminAction("/api/admin/restart-backends", "Restart all backends"));
+  restartBackendsBtn?.addEventListener("click", () => adminAction("/api/admin/restart-backends", "Restart selected backends"));
   restartQ38rocmBtn?.addEventListener("click", () => adminAction("/api/admin/restart-q38rocm", "Restart q38rocm"));
   restartHearthBtn?.addEventListener("click", () => adminAction("/api/admin/restart-hearth", "Restart Hearth"));
   const settingsLmstudioUrlEl = document.getElementById("settings-lmstudio-url");
@@ -107,6 +202,7 @@
   const settingsChatMaxToolRoundsEl = document.getElementById("settings-chat-max-tool-rounds");
   const settingsOpencodeCompactionKeepTokensEl = document.getElementById("settings-opencode-compaction-keep-tokens");
   const settingsOpencodeCompactionBufferEl = document.getElementById("settings-opencode-compaction-buffer");
+  const settingsOpencodeCompactionAutoEl = document.getElementById("settings-opencode-compaction-auto");
   const settingsOpencodeAdvertiseLoadedContextEl = document.getElementById("settings-opencode-advertise-loaded-context");
   const settingsOpencodeContextFallbackEl = document.getElementById("settings-opencode-context-fallback");
 
@@ -215,6 +311,7 @@
     settingsChatMaxToolRoundsEl.value = data.chat_max_tool_rounds ?? 100;
     settingsOpencodeCompactionKeepTokensEl.value = data.opencode_compaction_keep_tokens ?? 15000;
     settingsOpencodeCompactionBufferEl.value = data.opencode_compaction_buffer ?? "";
+    settingsOpencodeCompactionAutoEl.checked = data.opencode_compaction_auto === true;
     settingsOpencodeAdvertiseLoadedContextEl.checked = data.opencode_advertise_loaded_context ?? true;
     settingsOpencodeContextFallbackEl.value = data.opencode_context_fallback ?? "";
 
@@ -302,6 +399,7 @@
           chat_max_tool_rounds: numOrNull(settingsChatMaxToolRoundsEl),
           opencode_compaction_keep_tokens: numOrNull(settingsOpencodeCompactionKeepTokensEl),
           opencode_compaction_buffer: numOrNull(settingsOpencodeCompactionBufferEl),
+          opencode_compaction_auto: settingsOpencodeCompactionAutoEl.checked,
           opencode_advertise_loaded_context: settingsOpencodeAdvertiseLoadedContextEl.checked,
           opencode_context_fallback: numOrNull(settingsOpencodeContextFallbackEl),
           lemonade_enable_thinking: settingsLemonadeThinkingEl.checked,

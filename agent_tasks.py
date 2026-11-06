@@ -72,6 +72,16 @@ def is_provider_transport_error(error):
             'socket connection was closed unexpectedly' in message)
 
 
+def is_context_overflow(error):
+    """A fixed model window cannot be repaired by retrying the same transcript."""
+    message = json.dumps(error, sort_keys=True).casefold() if isinstance(error, dict) else str(error).casefold()
+    return any(marker in message for marker in (
+        'context_length_exceeded', 'exceed_context_size_error',
+        'exceeds the available context', 'context window exceeded',
+        'prompt is too long', 'maximum context length',
+    ))
+
+
 def is_interrupted_agent_response(error):
     """Recognize an OpenCode turn that ended before producing an answer."""
     if isinstance(error, str):
@@ -1333,6 +1343,16 @@ class Manager:
                             self.save(job)
                             return
                         if latest.get('error'):
+                            if is_context_overflow(latest['error']):
+                                job.update(status='blocked', handled_message=latest['id'],
+                                           pending_prompt={'id': 'msg_'+uuid.uuid4().hex,
+                                                           'text': 'Continue the assigned goal from this exact conversation and the current project files. Preserve completed work and finish the remaining criteria.'},
+                                           error='The selected model reached its loaded context limit. '
+                                                 'Load it with a larger supported ctx-size or choose a larger-window model, '
+                                                 'then continue this assignment. The full conversation was not compacted.')
+                                self.note(job, job['error'])
+                                self.save(job)
+                                return
                             if is_provider_transport_error(latest['error']):
                                 retries = job.get('transport_retries', 0) + 1
                                 if retries > MAX_TRANSPORT_RETRIES:

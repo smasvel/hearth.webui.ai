@@ -171,7 +171,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Use case | Included capabilities |
 |---|---|
 | Local and hosted AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching (local or hosted opencode.ai), and supported reasoning displays |
-| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page |
+| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page. Lemonade load failures that are transient (a `500` during a cold load of a large model, or a connection error while the backend process is spawning) are retried automatically a bounded number of times before surfacing as an error; permanent rejections such as an unknown model or not-enough-RAM fail immediately. Lemonade loads are verified after the API reports success — if the model does not appear in the loaded list (e.g. insufficient memory), a clear error is raised instead of a silent failure. The default context window for Lemonade models is 8192 tokens (previously 65536, which caused load timeouts on large models); users can increase it per-model via the Models page. Backend restarts can be selective (choose which backends to restart) and track progress via `/api/admin/restart-status/<job_id>`; restarts preserve mandatory support models (RAG/embedding, STT, TTS). Hearth no longer auto-loads models on startup or restart; all models must be loaded manually from the Models page (support models still lazy-load on demand). The default LAN model is set to K2-Horizon-MoVA-36B-A4B-GGUF (Lemonade). Service status and restart history are tracked in PostgreSQL tables (`service_status`, `restart_jobs`, `model_load_events`), and model load/unload errors are recorded with full error text for copy/display. On startup, Hearth records its own service status as 'started' and checks all backend services, so stale 'restarting' states from a previous restart are corrected. If Lemonade is temporarily unreachable, a load request for a Lemonade-served model now reports a clear 'Lemonade is unreachable' error instead of silently falling through to LM Studio (which previously produced a confusing 'No model found' message) |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
@@ -225,26 +225,28 @@ Hearth combines **local model discovery, Hugging Face model search, model downlo
 and model management** in one browser interface. Open **Downloads** as an
 administrator to find models, then use **Models** to load and evaluate them.
 
-1. Use **Search all backends** to search LM Studio, Lemonade, vLLM, KoboldCPP,
-   FastFlowLM, and q38rocm together, or search a single backend. Leave the search field
-   empty to browse each backend's available catalog or popular Hugging Face models.
+1. Use **Search all backends** to compare Lemonade, LM Studio, KoboldCPP, and vLLM.
+   Leave the field empty and select **Search all** to browse Lemonade's native catalog,
+   vLLM suggestions, and popular Hugging Face GGUF repos for LM Studio and KoboldCPP.
+   A named search uses Lemonade's catalog plus compatible GGUF repos, GGUF repos for
+   LM Studio and KoboldCPP, and vLLM's supported Hugging Face weight repos. FastFlowLM
+   and q38rocm use their separate fixed catalogs and do not appear in the combined search.
+   Results are paginated with a **Load more** button when more are available.
 2. Compare result cards by backend, model format, execution compatibility, download
    size, task type, update date, popularity, download status, and source link. Each
-   card labels tool-calling support as **yes**, **no**, or **unknown**, based on
-   catalog metadata.
-3. Use **Exclude unknown support** to hide models whose catalog does not say
-   whether they support tool calling; models marked **no** remain visible. The
-   independent **Tool calling filters** restrict selected backends to models whose
-   catalog metadata explicitly declares support. A positive label does not guarantee
-   compatibility with every tool or runtime, so use **Model tests** before relying on it.
+   card shows declared tool-calling support when catalog metadata provides it.
+3. Use **Tool calling only** to restrict every search to models whose catalog metadata
+   explicitly declares tool-calling support; models with unknown or negative support are
+   excluded. A positive label does not guarantee compatibility with every tool or runtime,
+   so use **Model tests** before relying on it.
 4. Filter by parameter count with **Small** (up to 4B), **Medium** (over 4B through
    13B), or **Large** (over 13B). These filters use reported parameter counts or
-   recognizable sizes in model names/descriptions; models without a detectable
+   recognizable sizes in model names; models without a detectable
    count are hidden while a size filter is active. Clear the size checkboxes to
    show all sizes again.
-5. **Downloads** opens with the recommended Lemonade `Ornith-1.5-9B-GGUF` search
-   selected. Review the result and choose Download; Hearth does not download model
-   weights automatically. Follow progress and logs, inspect active downloads, or
+5. **Downloads** opens with Lemonade's catalog, vLLM suggestions, popular GGUF repos
+   for LM Studio and KoboldCPP, and FastFlowLM's catalog. Review a result and choose
+   Download; Hearth does not download model weights automatically. Follow progress and logs, inspect active downloads, or
    cancel a download.
 6. To use a model file already on your device, choose **Upload a local GGUF model**
    on Models, browse to a `.gguf` file, and upload it. Hearth validates the GGUF
@@ -303,23 +305,67 @@ GPU acceleration, then reports whether Vulkan detects the GPU. Additional option
 such as `--skip-browser` are passed to the Hearth installer after the model path.
 
 On Radeon 890M (gfx1150), the build script configures the fork for RADV Vulkan
-hardware acceleration and the service uses the model's native 262,144-token
-context with Q8 KV cache. At that context the KV cache is approximately 8.6 GB;
+hardware acceleration and the service defaults to a 131,072-token loaded
+context (model maximum: 262,144), with FP16 KV cache and the `speed` profile.
+Logical batches are 2,048, physical microbatches are 64 to bound workspace,
+and prompt caching is limited to 2 GiB. Flash Attention is disabled: the pinned
+engine produces corrupted Qwen output with it enabled on this Radeon, including
+with FP16 cache; CPU and Vulkan without Flash Attention return correct calls.
+Hearth disables MTP for this Vulkan
+device: upstream reports roughly 0% MTP draft acceptance on Vulkan0 in the current
+engine, while MTP is supported on ROCm0. The service defaults reasoning off, and
+Hearth can enable it per model and per chat request. Upstream's higher published decode rates
+were measured on a Radeon 8060S, not this 890M, so they do not describe this host's
+expected speed. At the default context the attention KV cache is approximately 8 GiB;
 full-context prefill and generation can be slow, and available shared GPU memory
 determines whether the full window loads successfully. The model
 appears on the Models page; Hearth starts and stops `q38rocm.service` from its
-Load/Unload controls.
+Load/Unload controls. The Models page includes a per-model **Enable thinking**
+toggle for q38rocm. It is off by default and is sent with each Hearth chat
+request, so it can be changed without restarting the backend. q38rocm appears
+in the Model tests selector; compatibility checks still disable reasoning for
+concise, repeatable checks.
+The upstream checkout also provides optional host-level clock and TTM/GTT tuning
+(`sudo bash data/q38rocm/apply_hardware_tweaks.sh`) for systems where GPU memory
+limits constrain allocation. It changes runtime kernel settings and requires root.
 Administrators can also restart a loaded q38rocm service from **Settings → Service
 controls → Restart q38rocm**; the same service is included in **Restart all backends**.
 This backend serves local Hearth chat and model tests, and is not included in
 LAN or Tailscale coding-client configurations. The desktop OpenCode sync adds
 it to `~/.config/opencode/opencode.jsonc` while the model file is installed;
-q38rocm compatibility tests disable extended reasoning and cap every test reply
-at 128 tokens so slow reasoning or an overlong response cannot occupy the
-model-test runner's five-minute request window. Hearth also forwards q38rocm's OpenAI-compatible
+q38rocm uses its service sampling defaults unless a caller supplies an override;
+explicit frequency penalties are supported. Chat and model tests share the same
+request adapter. The model's Qwen XML tool template is supported by the installed
+engine; Hearth keeps OpenAI-shaped messages and schemas on the wire. Named
+function choices use `required` with only the selected tool's schema because this
+server build accepts only auto/none/required choice strings. Thinking preferences
+are passed as boolean `chat_template_kwargs.enable_thinking` values.
+Compatibility tests default reasoning off and preserve each fixture's output
+budget (normally 512 tokens for chat and 2,048 for tool requests); they do not
+silently reduce tool replies to 64 tokens. The large-code fixture is limited to
+about 4K input tokens. Larger output budgets can take several minutes on this GPU.
+The synthetic overflow probe is skipped for this large-context backend because
+building an over-limit prompt requires a costly full-window prefill. Other backends
+keep the full fixture and overflow probe. Hearth also forwards q38rocm's OpenAI-compatible
 tool-choice, parallel-call, and reasoning-template options instead of dropping them.
 Streaming requests ask q38rocm to include usage in its final event so prompt and
 completion token counts appear in Hearth Metrics.
+For standalone checks use `.venv/bin/python -m tools.test_flm_model --backend q38rocm
+--url http://127.0.0.1:8008/v1/chat/completions --model '<served model ID>' --suite core`.
+Read the served ID from `/v1/models`; UI runs resolve it automatically. The
+standalone q38rocm option uses the same adapter and bounded input fixture as UI runs.
+It defaults to the saved q38rocm endpoint and uses its saved API key when targeting
+that endpoint. Deliberately skipped probes do not make the CLI exit with failure.
+Model-test reports retain the backend's decode and prefill timing rates when supplied,
+so prompt-processing time is not counted as token decoding time.
+See the [installed q38rocm schema audit](docs/q38rocm-schema-audit.md) for verified
+model metadata, request compatibility, and the Flash Attention diagnosis.
+Existing installations apply this fix with `bash deploy/install-q38rocm-service.sh`
+followed by `systemctl --user restart q38rocm.service`.
+To request a different window, set `Q38ROCM_CONTEXT` when running the service
+installer (1,024–262,144 tokens). Larger windows require more GPU memory; this
+desktop could not allocate the corrected 262K configuration. Hearth reads the
+loaded window from the backend and retains 262K as the model's maximum.
 Model-test handoff checks read each backend's live inventory, so stale loaded-state
 metadata in the combined Models view does not produce a false setup failure.
 In Hearth chat, structured OpenCode question calls retain the requested single- or
@@ -353,16 +399,20 @@ On **Models**, each model label includes its maximum supported context-token cou
 when the backend reports or Hearth can determine it. This helps compare model
 limits before loading or chatting; the actual usable context may be lower when a
 runtime or backend setting applies a smaller value. Chat models on Lemonade, LM
-Studio, and vLLM also show a **ctx-size** field. Saving it stores the window for
+Studio, vLLM, and KoboldCPP also show a **ctx-size** field. KoboldCPP reads its
+maximum from the installed GGUF metadata. Saving the field stores the window for
 that model and reloads it when it is already loaded; the saved value is reused on
 every later load. Enter the reported maximum (for example a model loaded at 13,835
 of a 131,072-token window) to use the full window. **Set all to max context** saves
-each chat model's reported maximum in one step; it applies to loaded models on their
+each adjustable chat model's reported maximum in one step; it applies to loaded models on their
 next Load. Generated LAN and Tailscale configurations (OpenCode and Continue) use the
-saved value for every backend that supports per-model context, even while a loaded
-model is still running at its previous window; reload the model from Models to make
-the server match. Only select a value your hardware can actually hold in memory;
+actual served window for a loaded model and the saved value for an unloaded model.
+Reload a loaded model from Models to activate its saved maximum. Only select a value your hardware can actually hold in memory;
 larger windows use more memory and can make loads slower or fail.
+FastFlowLM uses per-model NPU kernel limits that Hearth cannot raise. q38rocm uses
+the installed service's context setting; on this desktop its 131,072-token setting
+fits the available GPU memory, while the model's 262,144-token maximum did not.
+Generated desktop OpenCode configuration uses that installed q38rocm setting.
 
 For Lemonade's `Ornith-1.5-35B-A3B-GGUF`, Hearth selects the CPU backend on AMD
 devices with a shared GPU memory pool below 32 GiB to avoid Vulkan memory exhaustion
@@ -570,26 +620,24 @@ performs the same generation when it finds Caddy already present.
 Hearth's compatibility layers handle supported tool-call formats and request
 policies. Generated coding-client configurations account for model context limits;
 Settings also exposes context and OpenCode compaction controls. For compatible
-coding requests, Hearth preserves explicit reasoning preferences, applies its Qwen
-repetition control, and shortens oversized historical tool output while retaining
-its beginning and end. It honors a clear text-only completion instruction without
+coding requests, Hearth preserves explicit reasoning preferences and applies its Qwen
+repetition control. Lemonade's gateway now forwards large file and tool results intact
+so OpenCode can continue with their exact text while the loaded context permits. It honors a clear text-only completion instruction without
 disabling tools when the same turn requests concrete work. These policies help avoid
 unnecessary tool calls and repeated long prefill. Request attribution helps
 distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
 Continue can additionally use a configured embedding model for codebase indexing.
 
-Generated OpenCode configurations cap retained compaction history at one eighth of
-the smallest configured session model's context and bound the compaction buffer
-between one eighth and one quarter of that window, across all backends. If OpenCode
+Generated OpenCode configurations disable automatic compaction by default, so continuing
+a session keeps its exact conversation until the model's loaded window is full. Settings
+can enable automatic compaction; manual compaction remains available. If OpenCode
 reports that a request exceeds the available context, check the model's **loaded**
 context in Models: its maximum supported context can be much larger. Use the
 card's **ctx-size** field to load it at up to that maximum; Hearth advertises the
-new loaded window in the next generated configuration, so compaction happens near
-the real window instead of the old default. Then copy the updated LAN or Tailscale
-configuration from Help, restart OpenCode, and retry in a new session if the old
-transcript still overflows. A 4,096-token runtime can be too small for the Build
-agent's prompt and tools even with compaction; increasing the loaded context is
-necessary in that case.
+new loaded window in the next generated configuration. Then copy the updated LAN or
+Tailscale configuration from Help and restart OpenCode. No model can accept a prompt
+larger than its actual loaded context; an agent assignment stops for review on a
+context overflow so it can continue after you load a larger window or change models.
 
 See [codebase RAG](#codebase-retrieval-for-coding-clients),
 [client attribution](#metrics-and-diagnostics), and
@@ -659,7 +707,7 @@ configured separately. The first-time Hearth installer does not perform that set
 |---|---|---|
 | Local and hosted AI chat | Live answer and reasoning updates, saved conversations, model selection across local backends and the hosted opencode.ai catalog, Markdown and comparison tables, supported reasoning displays, and background replies while navigating | Chat |
 | Model search and downloads | Cross-backend search, source links, model metadata, tool-capability filtering, download progress and cancellation, local GGUF upload to Lemonade | Downloads |
-| Model lifecycle | Installed model inventory, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
+| Model lifecycle | Separate Local models and Online models tabs, local installed inventory, a local-only Loaded now summary, load/unload/delete, loading feedback, memory checks, and backend-specific context controls | Models |
 | Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
@@ -1336,11 +1384,16 @@ cycle, so provider resets do not use up the task's cycle budget. Existing relay 
 are reused across concurrent checks rather than replaced. On Hearth startup, relay
 listeners for saved agent sessions are restored before workers run, so persistent Docker
 containers can reconnect to the host model bridge after an app restart.
-If OpenCode's conversation compaction fails, Hearth starts a fresh session from the
+Automatic OpenCode compaction is off by default for desktop and isolated project agents.
+Continuing an agent assignment reuses its exact OpenCode conversation while it fits the
+selected model's real loaded context. If that context is exceeded, the assignment stops
+for review rather than repeatedly retrying or compacting the same transcript. Reload the
+model with a larger supported window or choose a larger model before continuing.
+When automatic or manual compaction is enabled and fails, Hearth starts a fresh session from the
 saved project checkpoint and retries without advancing the work-cycle counter. Hearth
 interrupts the old runner, forces a current checkpoint before retiring its container,
 and includes the original goal, acceptance criteria, and refinements in the new session.
-Agent compaction settings are bounded by the selected model's actual context window:
+When compaction is enabled, agent compaction settings are bounded by the selected model's actual context window:
 the retained recent-turn budget is capped at one eighth of context up to a 65K-token
 window. Lemonade/Muse-style 65K+ models get a large recent-context budget (`keep.tokens`
 capped at 65,536), but `keep` never equals the window: OpenCode's own compaction sends a

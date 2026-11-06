@@ -25,7 +25,17 @@ _MODEL_PATH = Path(os.environ.get(
     "Q38ROCM_MODEL_PATH",
     Path(__file__).resolve().parent / "data/q38rocm/models" / _HF_FILE,
 ))
-_CONTEXT = 262144
+_CONTEXT = 131072
+
+
+def configured_context() -> int:
+    """Read the installed service window so unloaded models are advertised honestly."""
+    unit = Path.home() / ".config/systemd/user/q38rocm.service"
+    try:
+        match = re.search(r"(?m)^Environment=CTX=(\d+)$", unit.read_text())
+    except OSError:
+        match = None
+    return int(match.group(1)) if match else _CONTEXT
 
 
 class Q38RocmError(RuntimeError):
@@ -238,14 +248,17 @@ def list_models() -> list[dict]:
     if not _MODEL_PATH.is_file():
         return []
     served = _server_model()
+    context = (served or {}).get("meta", {}).get("n_ctx")
+    if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+        context = configured_context()
     return [{
         "id": _MODEL_ID,
         "type": "llm",
         "publisher": "julianmb",
         "state": "loaded" if served else "not-loaded",
         "size_gb": round(_MODEL_PATH.stat().st_size / 1e9, 2),
-        "loaded_context_length": _CONTEXT if served else None,
-        "configured_context_length": _CONTEXT,
+        "loaded_context_length": context if served else None,
+        "configured_context_length": context,
         "max_context_length": 262144,
         "server_model_id": (served or {}).get("id", _MODEL_NAME),
         "compatibility_type": "gguf",
@@ -293,6 +306,37 @@ def unload_model(model_id: str | None = None) -> None:
     _systemctl("stop", timeout=60)
 
 
+def prepare_request(body):
+    """Adapt OpenAI requests to the installed q38rocm llama-server schema.
+
+    Shared by chat and model tests; callers' messages and schemas stay unchanged.
+    """
+    payload = dict(body)
+    template = dict(payload.get("chat_template_kwargs") or {})
+    if "enable_thinking" in payload:
+        thinking = payload.pop("enable_thinking")
+        if not isinstance(thinking, bool):
+            raise Q38RocmError("enable_thinking must be a boolean")
+        template["enable_thinking"] = thinking
+    if template:
+        payload["chat_template_kwargs"] = template
+    if payload.get("stream"):
+        payload["stream_options"] = {**(payload.get("stream_options") or {}), "include_usage": True}
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict):
+        function = choice.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        selected = [tool for tool in payload.get("tools") or []
+                    if (tool.get("function") or {}).get("name") == name]
+        if choice.get("type") != "function" or not name or len(selected) != 1:
+            raise Q38RocmError("Named tool_choice must select one offered function")
+        # This engine has no native named choice. Restricting the offered schema
+        # enforces the name with its supported required mode.
+        payload["tools"] = selected
+        payload["tool_choice"] = "required"
+    return payload
+
+
 def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=None,
                 tools=None, **options):
     payload = {
@@ -304,6 +348,7 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
         # token counts in the Metrics page for this streaming backend.
         "stream_options": {"include_usage": True},
     }
+    # Let the service choose sampling defaults unless the caller overrides them.
     if max_tokens:
         payload["max_tokens"] = max_tokens
     if frequency_penalty is not None:
@@ -316,9 +361,16 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
     for key in (
         "tool_choice", "parallel_tool_calls", "enable_thinking", "chat_template_kwargs",
         "response_format", "stop", "top_p", "presence_penalty", "seed",
+        "reasoning_effort", "reasoning_budget_tokens", "repeat_penalty",
     ):
         if key in options and options[key] is not None:
             payload[key] = options[key]
+    # Verified test repairs also apply to chat, without the test suite's default
+    # reasoning-off setting. Both paths key recipes by the live served ID.
+    import model_test_profiles
+    payload = model_test_profiles.apply_recipe(
+        payload, model_test_profiles.get('q38rocm', payload['model']))
+    payload = prepare_request(payload)
     try:
         with requests.post(
             f"{base_url()}/v1/chat/completions", json=payload,

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import struct
 import subprocess
 import threading
 from pathlib import Path
@@ -49,6 +51,35 @@ _ID_PREFIX = "koboldcpp/"
 
 class KoboldError(Exception):
     pass
+
+
+def _gguf_max_context(path: str | None) -> int | None:
+    """Read the native context limit from a GGUF file's metadata header."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as file:
+            header = file.read(1024 * 1024)
+    except OSError:
+        return None
+    if not header.startswith(b"GGUF"):
+        return None
+    for match in re.finditer(rb"[A-Za-z0-9_.-]+\.context_length", header):
+        start, end = match.span()
+        if start < 8 or end + 8 > len(header):
+            continue
+        if struct.unpack_from("<Q", header, start - 8)[0] != end - start:
+            continue
+        value_type = struct.unpack_from("<I", header, end)[0]
+        if value_type not in (4, 5, 10, 11):
+            continue
+        if value_type in (10, 11) and end + 12 > len(header):
+            continue
+        fmt = "<Q" if value_type in (10, 11) else "<I"
+        value = struct.unpack_from(fmt, header, end + 4)[0]
+        if 512 <= value <= 2_000_000:
+            return value
+    return None
 
 
 def base_url() -> str:
@@ -219,18 +250,18 @@ def list_models() -> list[dict]:
             _save_registry(reg)
     models = []
     for model_id, meta in reg.items():
+        path = meta.get("path")
+        saved = model_metadata_store.get_model_configured_context("kobold", model_id)
+        active_context = (_read_env_context() if path and _read_env_path()
+                          and os.path.realpath(path) == os.path.realpath(_read_env_path()) else None)
         models.append({
             "id": model_id,
             "publisher": "koboldcpp",
             "type": "llm",
             "state": "loaded" if model_id == served_id else "not-loaded",
             "size_gb": meta.get("size_gb"),
-            "configured_context_length": (
-                _read_env_context()
-                if meta.get("path") and _read_env_path()
-                and os.path.realpath(meta["path"]) == os.path.realpath(_read_env_path())
-                else None
-            ),
+            "configured_context_length": saved or active_context,
+            "max_context_length": _gguf_max_context(path),
             # Real --contextsize of the running unit, only for the served model (koboldcpp
             # serves one at a time) — see _read_env_context.
             "loaded_context_length": _read_env_context() if model_id == served_id else None,
@@ -432,7 +463,7 @@ def is_active() -> bool:
     return _systemctl("is-active", timeout=10).strip() == "active"
 
 
-def load_model(model_id: str) -> None:
+def load_model(model_id: str, context_length: int | None = None) -> None:
     """Swap the served GGUF: resolve the model id to its file path, rewrite service.env,
     restart the service, and wait until KoboldCPP reports it loaded."""
     import time
@@ -441,7 +472,10 @@ def load_model(model_id: str) -> None:
     path = meta.get("path") if meta else (model_id if os.path.exists(model_id) else None)
     if not path or not os.path.exists(path):
         raise KoboldError(f"No GGUF on disk for '{model_id}'. Download it first.")
-    _write_service_env(path, model_name=model_id[len(_ID_PREFIX):] if model_id.startswith(_ID_PREFIX) else None)
+    configured = (context_length or model_metadata_store.get_model_configured_context("kobold", model_id)
+                  or _gguf_max_context(path) or _DEFAULT_CONTEXT)
+    _write_service_env(path, model_name=model_id[len(_ID_PREFIX):] if model_id.startswith(_ID_PREFIX) else None,
+                       context=configured)
     if model_id not in reg:
         _register(path)
     _systemctl("restart")

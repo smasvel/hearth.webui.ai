@@ -117,7 +117,8 @@ def compaction_settings() -> dict:
             buffer = int(raw_buffer)
         except (TypeError, ValueError):
             buffer = None
-    return {"keep_tokens": max(0, keep), "buffer": buffer}
+    auto = (settings_store.get("opencode_compaction_auto") or "false") == "true"
+    return {"auto": auto, "keep_tokens": max(0, keep), "buffer": buffer}
 
 
 def opencode_context_settings() -> dict:
@@ -160,6 +161,22 @@ def _advertised_context(be: str, model_id: str, ctx_by_model: dict, fallback: in
     if fallback:
         return fallback
     return _CTX[be]
+
+
+def _configured_or_loaded_context(model: dict) -> int | None:
+    """Advertise only a loaded model's real window; saved values apply on next load."""
+    loaded = model.get("state") == "loaded"
+    context = model.get("loaded_context_length") if loaded else model.get("configured_context_length")
+    if type(context) is int and context > 0:
+        return context
+    if loaded:
+        return None
+    try:
+        context = model_metadata_store.get_model_configured_context(
+            model.get("backend"), model.get("id"))
+    except Exception:
+        return None
+    return context if type(context) is int and context > 0 else None
 
 
 def _advertised_output(be: str, context: int, model_id: str | None = None) -> int:
@@ -540,7 +557,7 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
     # Bound the administrator's compaction settings to the configured model windows
     # below; OpenCode's default retained history can exceed an entire small window.
     compaction = compaction_settings()
-    compaction_block: dict = {"auto": True, "keep": {"tokens": compaction["keep_tokens"]}}
+    compaction_block: dict = {"auto": compaction["auto"], "keep": {"tokens": compaction["keep_tokens"]}}
     if compaction["buffer"] is not None:
         compaction_block["buffer"] = compaction["buffer"]
     cfg = {
@@ -663,23 +680,12 @@ def _build_uncached(app_port: int = 5443) -> dict:
              and m.get("loadable") is not False and m.get("state") == "loaded"]
         for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
     }
-    # Context advertised in generated LAN/Tailscale configs. The admin's saved per-model
-    # value is authoritative because it is what the next Load applies; a live loaded value
-    # is the fallback when nothing has been saved. Without preferring the saved value, a
-    # model running below its configured window (for example while waiting for a reload)
-    # kept advertising the old, smaller window in Help.
+    # A loaded model's active window is authoritative. A saved larger value only takes
+    # effect on the next Load; advertising it early makes OpenCode send oversized turns.
     ctx_by_model = {}
     for m in models:
-        context = m.get("configured_context_length")
-        if not (isinstance(context, int) and context > 0):
-            try:
-                context = model_metadata_store.get_model_configured_context(
-                    m.get("backend"), m.get("id"))
-            except Exception:
-                context = None
-        if not (isinstance(context, int) and context > 0):
-            context = m.get("loaded_context_length")
-        if isinstance(context, int) and context > 0:
+        context = _configured_or_loaded_context(m)
+        if context:
             ctx_by_model[(m.get("backend"), m["id"])] = context
     embed_models = [
         {"id": m["id"], "backend": m.get("backend")}

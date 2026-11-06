@@ -680,12 +680,14 @@ def suggested_models() -> list[dict]:
     return results
 
 
-def search_huggingface(query: str, limit: int = 12) -> list[dict]:
+def search_huggingface(query: str, limit: int = 30) -> list[dict]:
     """Live search against Hugging Face's public model API (no key needed) — vLLM has
     no catalog of its own (unlike Lemonade's curated list), so this is the only
-    search source. Scoped to filter=text-generation (vLLM serves causal-LM repos
-    directly, not GGUF quant files the way llama.cpp-based backends do, so no
-    'gguf' filter here — see lemonade_client.search_huggingface() for that variant).
+    search source. vLLM serves causal-LM / text-generation repos directly (not GGUF
+    quant files the way llama.cpp-based backends do), so the preferred format is
+    text-generation first, then the common formats — a broad search so a single query
+    surfaces many real, current models from many sources instead of a thin slice.
+
     Same shape as lemonade_client.search_huggingface()'s results where the fields
     overlap, so the Downloads page can render both with one code path.
 
@@ -698,8 +700,11 @@ def search_huggingface(query: str, limit: int = 12) -> list[dict]:
     too large to load) — seeing the size up front, before committing to a download,
     is the whole point."""
     try:
+        # vLLM serves full weight repos (safetensors / transformers), not GGUF files the
+        # way llama.cpp-based backends do — so text-generation and the common weight
+        # formats come first. Broad, so a query surfaces many real, current models.
         params = {
-            "filter": "text-generation",
+            "filter": ",".join(dict.fromkeys(["text-generation", "transformers", "safetensors", "gguf"])),
             "limit": limit,
             "sort": "downloads",
             "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],

@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import re
+import random
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,14 @@ import lemonade_thinking
 
 _DEFAULT_BASE_URL = "http://localhost:13305"
 EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-text-v1-GGUF")
+
+# load_model retries transient failures (5xx responses, connection errors) a bounded number of
+# times before surfacing a LemonadeError. A cold load of a large MoE GGUF or a model being
+# evicted in the background returns 500 from /v1/load even when the model is otherwise fine and
+# the next attempt succeeds — see load_model's docstring. Non-5xx responses fail immediately.
+_LOAD_RETRIES = 3
+_LOAD_RETRY_BACKOFF_SECONDS = 2.0
+_LOAD_RETRY_JITTER_SECONDS = 1.0
 
 
 def base_url() -> str:
@@ -511,15 +520,55 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     calling this when it's already true, rather than calling it unconditionally."""
     payload: dict = {"model_name": model_key}
     payload.update(lemonade_templates.load_options(model_key))
-    if context_length:
-        payload["ctx_size"] = context_length
+    # Default to a reasonable context window when none is specified — Lemonade's own
+    # default (1280) is far too small for any real chat and causes
+    # exceed_context_size_error on the first non-trivial request, but 65536 can
+    # take too long to load on large models. 8192 is a safe middle ground.
+    if not context_length:
+        context_length = 8192
+    payload["ctx_size"] = context_length
+
+    # A cold load of a large MoE GGUF (or Lemonade mid-evicting a previous model) can return a
+    # transient 500 even though the model is fine and the very next attempt succeeds — confirmed
+    # live on K2-Horizon-MoVA-36B-A4B-GGUF: first load 500, immediate retry "success". So 5xx and
+    # connection errors get a few retries with backoff. Non-5xx HTTP responses are *not* transient
+    # (an unknown model key / RAM-refusal / bad payload fails identically every attempt) — fail
+    # fast on those rather than burning the whole backoff budget and surfacing a misleading error.
+    last_error = ""
+    for attempt in range(1, _LOAD_RETRIES + 1):
+        try:
+            resp = requests.post(
+                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=300
+            )
+            if resp.status_code < 500:
+                break
+            last_error = f"Server Error (HTTP {resp.status_code}) from url: {resp.url}"
+        except requests.RequestException as exc:
+            # Connection reset / timeout while the backend process is spawning — transient, retry.
+            last_error = str(exc)
+            resp = None
+        if attempt < _LOAD_RETRIES:
+            time.sleep(_LOAD_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, _LOAD_RETRY_JITTER_SECONDS))
+    else:
+        raise LemonadeError(f"Failed to load '{model_key}' on Lemonade after {_LOAD_RETRIES} attempts: {last_error}")
+
+    if resp is None or resp.status_code >= 500:
+        raise LemonadeError(f"Failed to load '{model_key}' on Lemonade: {last_error}")
     try:
-        resp = requests.post(
-            f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=300
-        )
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise LemonadeError(f"Failed to load '{model_key}' on Lemonade: {exc}") from exc
+
+    # Verify the model actually loaded — Lemonade sometimes returns success
+    # without starting the backend (e.g. insufficient memory). Poll briefly.
+    for _ in range(10):
+        if is_model_loaded(model_key):
+            return
+        time.sleep(2)
+    raise LemonadeError(
+        f"Failed to load '{model_key}' on Lemonade: load reported success but "
+        f"the model is not in the loaded list (likely insufficient memory)."
+    )
 
 
 def unload_model(identifier: str) -> None:
@@ -530,6 +579,10 @@ def unload_model(identifier: str) -> None:
             headers=_auth_headers(),
             timeout=60,
         )
+        # A 404 means the model is not currently loaded — that's the desired
+        # end state, so treat it as a no-op success rather than an error.
+        if resp.status_code == 404:
+            return
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise LemonadeError(f"Failed to unload '{identifier}' on Lemonade: {exc}") from exc
@@ -855,21 +908,49 @@ def enrich_with_hf_metadata(results: list[dict], max_fetch: int = 12) -> list[di
     return results
 
 
-def search_huggingface(query: str, limit: int = 12) -> list[dict]:
+# HF's `filter` param accepts a comma-separated list of library/format tags. A single
+# tag (the old `filter=gguf`) locked every search to one narrow slice of Hugging Face,
+# which is why "search all" returned only a handful of results: the official
+# org/model repos that back most GGUF uploads are registered as `transformers` (and
+# often carry no `library_name` at all), so a gguf-only query never surfaced them even
+# though they are the most-downloaded models by far. Listing the common model formats
+# together lets a single search span the official orgs and every quantization publisher
+# (unsloth, mradermacher, byteshape, …) at once, so each backend's search shows many
+# more real, current models from many sources instead of a thin slice. Each backend can
+# append its own preferred format first (GGUF for the llama.cpp-based backends).
+_HF_SEARCH_FORMATS = ["gguf", "safetensors", "transformers"]
+
+
+def _hf_filter_string(extra_formats: list[str] | tuple[str, ...] | None = None) -> str:
+    """The comma-separated `filter` value for an HF model search. `extra_formats` are
+    listed first (a backend's preferred format, e.g. gguf for llama.cpp servers) so the
+    most relevant results sort to the front, then the common formats deduplicated."""
+    seen: list[str] = []
+    for fmt in (*list(extra_formats or []), *_HF_SEARCH_FORMATS):
+        if fmt and fmt not in seen:
+            seen.append(fmt)
+    return ",".join(seen)
+
+
+def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | tuple[str, ...] = ("gguf",),
+                       strict_format: str | None = None) -> list[dict]:
     """Live search against Hugging Face's public model API (no key needed) — the exact
     endpoint Lemonade's own web UI calls from the browser, confirmed by inspecting its
     JS bundle directly rather than guessing: `renderer.bundle.js` calls
-    `https://huggingface.co/api/models?search=...&filter=gguf&sort=downloads`. This is
-    what makes a query like "glm 5.2" actually find something — search_catalog() alone
-    only searches Lemonade's own ~111-entry curated catalog, which doesn't carry every
-    model on Hugging Face (confirmed live: 0 results for "glm 5.2" there, despite
-    several real, popular GGUF repos existing for it).
+    `https://huggingface.co/api/models?search=...&sort=downloads`. This is what makes a
+    query like "glm 5.2" actually find something — search_catalog() alone only searches
+    Lemonade's own ~111-entry curated catalog, which doesn't carry every model on
+    Hugging Face (confirmed live: 0 results for "glm 5.2" there, despite several real,
+    popular GGUF repos existing for it).
 
-    Descriptions are filled in concurrently via each repo's README (see
-    _fetch_readme_description) since the search API itself has no description field."""
+    By default the search spans the common model formats in `_HF_SEARCH_FORMATS`.
+    GGUF-only callers pass `strict_format="gguf"` so their download buttons never
+    point at incompatible weight-only repos. Descriptions are filled in
+    concurrently via each repo's README (see _fetch_readme_description) since the search
+    API itself has no description field."""
     try:
         params = {
-            "filter": "gguf",
+            "filter": strict_format or _hf_filter_string(extra_formats),
             "limit": limit,
             "sort": "downloads",
             "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
@@ -994,7 +1075,7 @@ def _download_size_gb(model_id: str) -> float | None:
     return size_gb
 
 
-def fill_result_sizes(results: list[dict], max_fetch: int = 60) -> list[dict]:
+def fill_result_sizes(results: list[dict], max_fetch: int = 200) -> list[dict]:
     """Concurrently fill size_gb for every search result that's missing it, so the Downloads
     page can always show a real size instead of 'varies by quantization'. Per-repo failures
     just leave that one None (rendered as 'size unknown'); never raises."""

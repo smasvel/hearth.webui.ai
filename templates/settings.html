@@ -51,11 +51,29 @@
           <div class="console-card span-all">
             <h2>Service controls</h2>
             <p class="hint">Restart model backend services if a coding client is stuck. Loaded models may need to be loaded again afterward.</p>
+            <div style="margin-bottom: 10px;">
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="LM Studio" checked /> LM Studio</label>
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="Lemonade" checked /> Lemonade (Ryzen AI)</label>
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="vLLM" checked /> vLLM</label>
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="KoboldCPP" checked /> KoboldCPP</label>
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="q38rocm" checked /> q38rocm</label>
+              <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="FastFlowLM" checked /> FastFlowLM</label>
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+              <input id="restart-preserve-mandatory" type="checkbox" checked />
+              Preserve mandatory models (RAG, STT, TTS)
+            </label>
             <div class="download-row">
-              <button id="restart-backends" class="panel-btn" type="button">Restart all backends</button>
+              <button id="restart-backends" class="panel-btn" type="button">Restart selected backends</button>
               <button id="restart-hearth" class="panel-btn" type="button">Restart Hearth</button>
             </div>
+            <div id="restart-status" class="hint" aria-live="polite" style="margin-top: 8px;"></div>
             <div id="restart-results" class="hint" aria-live="polite"></div>
+            <div id="restart-history" class="hint" style="margin-top: 8px; max-height: 200px; overflow-y: auto;"></div>
+            <div style="margin-top: 12px;">
+              <h3 style="margin-bottom: 8px;">Individual backend controls</h3>
+              <div id="backend-controls" class="hint"></div>
+            </div>
           </div>
           <div class="console-card span-all">
             <h2>LM Studio</h2>
@@ -106,7 +124,7 @@
             <div class="download-row">
               <button id="restart-q38rocm" class="panel-btn" type="button">Restart q38rocm</button>
             </div>
-            <p class="hint">Hearth starts and stops the local q38rocm service from Models. Restart it here after a backend issue; an unloaded service stays unloaded. This Radeon 890M Vulkan build supports a 262,144-token context for local Hearth chat and model tests.</p>
+            <p class="hint">Hearth starts and stops the local q38rocm service from Models. Restart it here after a backend issue; an unloaded service stays unloaded. The default loaded context is 131,072 tokens; the model maximum is 262,144. Models shows the runtime's current window.</p>
           </div>
 
           <div class="console-card span-all">
@@ -366,15 +384,14 @@
           <div class="console-card span-all">
             <h2>OpenCode compaction</h2>
             <p class="hint">
-              Baked into the OpenCode config the Help page generates. When a session nears the
-              model's context limit, OpenCode summarizes older conversation and keeps
-              <strong>Keep tokens</strong> of recent turns beside the summary. On a small-context
-              model the summarization request itself can overflow ("cannot be reduced further
-              without losing the latest exchange") — lower Keep tokens to leave more room for the
-              summary. <strong>Buffer</strong> starts automatic compaction earlier; leave it blank
-              to use OpenCode's own default (10% of the model's limit).
+              Automatic compaction is off by default so OpenCode keeps the exact conversation
+              when you continue a task. A model still has a finite context window; if a turn
+              exceeds its loaded limit, use a larger model or start a fresh session. Turn
+              compaction on here if you want OpenCode to summarize older turns automatically.
+              Keep tokens and Buffer apply when compaction is enabled or requested manually.
             </p>
             <div class="download-row">
+              <label class="hint"><input id="settings-opencode-compaction-auto" type="checkbox" /> Automatically compact OpenCode conversations</label>
               <label class="hint">
                 Keep tokens
                 <input id="settings-opencode-compaction-keep-tokens" class="panel-input" type="number"
