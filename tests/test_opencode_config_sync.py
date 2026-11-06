@@ -38,6 +38,7 @@ class CompactionForWindowTests(unittest.TestCase):
 
 class SyncConfigTests(unittest.TestCase):
     def _run(self, existing, generated):
+        import io
         import sys as _sys
         tempfile = __import__('tempfile')
         from pathlib import Path
@@ -51,8 +52,14 @@ class SyncConfigTests(unittest.TestCase):
             with patch.object(sync, 'CONFIG_PATH', config_path), \
                  patch.object(sync.help_data, 'build',
                               return_value={'opencode_config': json.dumps(generated)}):
-                sync.main()
-            return config_path.read_text()
+                old_stdout = _sys.stdout
+                _sys.stdout = io.StringIO()
+                try:
+                    sync.main()
+                    output = _sys.stdout.getvalue()
+                finally:
+                    _sys.stdout = old_stdout
+            return output
 
     def test_selected_model_and_compaction_are_derived_and_preserved(self):
         existing = {'model': f'{BE}/{MODEL}',

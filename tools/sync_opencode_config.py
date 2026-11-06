@@ -61,7 +61,7 @@ def main() -> int:
         config = json.loads(help_data.build()['opencode_config'])
         _add_desktop_q38_provider(config)
     except Exception:
-        print('sync-opencode-config: generation failed; leaving config untouched',
+        print('sync-opencode-config: generation failed; no file was changed',
               file=sys.stderr)
         return 0
 
@@ -75,12 +75,11 @@ def main() -> int:
         try:
             existing = _strip_jsonc(text)
         except ValueError:
-            pass  # Unparseable hand edit: replace it, backup first.
+            pass
 
     if existing:
-        # The default model and hand-added agents are user choices, not backend
-        # state — keep them and only refresh what drifts: provider model limits
-        # (advertised contexts) and the compaction block.
+        # Preserve the user's chosen default model and hand-added agents; only
+        # refresh provider limits and compaction budgets for display.
         if 'model' in existing:
             config['model'] = existing['model']
         if 'agents' in existing:
@@ -91,25 +90,12 @@ def main() -> int:
     window = (((config.get('provider') or {}).get(provider) or {})
               .get('models', {}).get(model_id) or {}).get('limit', {}).get('context')
     if isinstance(window, int) and window > 0:
-        # Compaction follows the selected model's *current* advertised window, so
-        # keep/buffer track it automatically (40,960 / 16,384 on a 65K window).
         budgets = help_data.compaction_for_window(window)
         config['compaction'] = {'auto': help_data.compaction_settings()['auto'], 'keep': {'tokens': budgets['keep']},
                                 'buffer': budgets['buffer']}
 
-    generation = json.dumps(config, indent=2)
-    if text is not None:
-        if existing == config:
-            return 0
-        backup = CONFIG_PATH.with_name(CONFIG_PATH.name + '.bak-' +
-                                       time.strftime('%Y%m%dT%H%M%S'))
-        backup.write_text(text)
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(generation)
-    print(f'sync-opencode-config: wrote {CONFIG_PATH} (model='
-          f'{config.get("model")}, keep='
-          f'{config.get("compaction", {}).get("keep", {}).get("tokens")}, '
-          f'buffer={config.get("compaction", {}).get("buffer")})')
+    # Display only: never overwrite the local OpenCode config.
+    print(json.dumps(config, indent=2))
     return 0
 
 

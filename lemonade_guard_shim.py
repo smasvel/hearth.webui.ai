@@ -483,7 +483,7 @@ def _unload_before_implicit_load(model_id: str) -> None:
             if entry.get("model_name") == model_id and entry.get("loaded", True):
                 options = lemonade_templates.load_options(model_id, entry.get("recipe_options"))
                 if options and options != entry.get("recipe_options"):
-                    resp = requests.post(f"{LEMONADE_BASE}/v1/load", json={"model_name": model_id, **options}, timeout=300)
+                    resp = requests.post(f"{LEMONADE_BASE}/v1/load", json={"model_name": model_id, **options}, timeout=600)
                     resp.raise_for_status()
                 return
         for entry in models:
@@ -500,7 +500,7 @@ def _unload_before_implicit_load(model_id: str) -> None:
                 resp.raise_for_status()
         options = lemonade_templates.load_options(model_id)
         if options:
-            resp = requests.post(f"{LEMONADE_BASE}/v1/load", json={"model_name": model_id, **options}, timeout=300)
+            resp = requests.post(f"{LEMONADE_BASE}/v1/load", json={"model_name": model_id, **options}, timeout=600)
             resp.raise_for_status()
     except requests.RequestException as exc:
         # Unlike the cross-NPU cleanup, this ordering guarantee must not fail open:

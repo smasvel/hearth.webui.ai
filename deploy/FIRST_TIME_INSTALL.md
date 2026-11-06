@@ -509,15 +509,12 @@ and fail the session). Smaller windows still
 scale to one eighth of their context. The selected model's own context is the
 floor, too: a smaller sibling in the shared config cannot leave a larger-window
 assignment with only a tiny retained history.
-This formula lives in one place (`help_data.compaction_for_window`), and the
-desktop `~/.config/opencode/opencode.jsonc` is kept aligned automatically:
-`tools/sync_opencode_config.py` regenerates provider model limits and re-derives
-`keep`/`buffer` from the selected model's current advertised window (preserving
-the chosen default model and hand-added agents, writing only real changes with a
-timestamped backup). The installer registers it as the `opencode-config-sync.timer`
-systemd user timer, running every two minutes, so a model that loads with a
-different context size updates OpenCode's budget on the next tick. Run
-`python3 tools/sync_opencode_config.py` manually any time to force a refresh.
+This formula lives in one place (`help_data.compaction_for_window`). Hearth now
+shows the generated OpenCode config in Help for manual copy/save and no longer
+rewrites `~/.config/opencode/opencode.jsonc` automatically. Run
+`python3 tools/sync_opencode_config.py` to print the current generated config;
+save it manually when you want OpenCode to use the updated model limits and
+compaction budgets.
 This prevents the agent repeatedly re-reading the same large file after compaction.
 Completion markers attached to future plans or implementation placeholders are
 ignored; Hearth keeps the assignment running until the agent reports actual work.

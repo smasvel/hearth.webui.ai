@@ -5,7 +5,7 @@ from pathlib import Path
 import psutil
 from jinja2 import Environment, TemplateError
 
-DEFAULT_CONTEXT = 8192
+DEFAULT_CONTEXT = 65536
 RESERVE = 256
 MODEL_CONTEXTS = {
     'qwen3-it:4b': 32768,  # Installed FLM catalog default; larger windows need validation.

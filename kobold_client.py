@@ -45,7 +45,7 @@ _registry_migrated = False
 _registry_migration_lock = threading.Lock()
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:5001"
-_DEFAULT_CONTEXT = 8192
+_DEFAULT_CONTEXT = 65536
 _ID_PREFIX = "koboldcpp/"
 
 

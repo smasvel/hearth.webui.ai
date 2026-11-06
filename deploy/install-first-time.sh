@@ -109,12 +109,9 @@ fi
 # only writes when the generated config differs from the current file.
 if [[ $install_service -eq 1 && -d /run/systemd/system ]]; then
   mkdir -p "$HOME/.config/systemd/user"
-  sed "s|__HEARTH_DIR__|$project_dir|g" deploy/opencode-config-sync.service \
-    > "$HOME/.config/systemd/user/opencode-config-sync.service"
-  cp deploy/opencode-config-sync.timer "$HOME/.config/systemd/user/opencode-config-sync.timer"
-  systemctl --user daemon-reload
-  systemctl --user enable --now opencode-config-sync.timer
-  echo 'OpenCode config auto-sync timer installed (opencode-config-sync.timer).'
+  # Hearth no longer auto-updates the local OpenCode config. The generated config
+  # is shown in Help for manual copy/save.
+  echo 'OpenCode config auto-sync is disabled; use Help to copy the generated config.'
 fi
 # When Caddy is installed (the full backend setup), generate the gateway bearer tokens and
 # local CA too. The basic install does not install Caddy, so this is a no-op unless the
