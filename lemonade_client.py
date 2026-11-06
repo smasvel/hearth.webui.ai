@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import concurrent.futures
 import base64
+import html
 import json
 import os
 import re
 import random
 import shutil
 import subprocess
+import threading
 import tempfile
 import time
 
@@ -41,6 +43,10 @@ import lemonade_templates
 import lemonade_thinking
 
 _DEFAULT_BASE_URL = "http://localhost:13305"
+_HF_SEARCH_CACHE_TTL = 180
+_HF_SEARCH_CACHE: dict[tuple[str, str], tuple[float, int, list[dict]]] = {}
+_HF_SEARCH_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
+_HF_SEARCH_CACHE_LOCK = threading.Lock()
 EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-text-v1-GGUF")
 
 # load_model retries transient failures (5xx responses, connection errors) a bounded number of
@@ -932,6 +938,111 @@ def _hf_filter_string(extra_formats: list[str] | tuple[str, ...] | None = None) 
     return ",".join(seen)
 
 
+def _cached_hf_model_search(query: str, limit: int, filter_value: str) -> list[dict]:
+    """Share broad Hugging Face searches across backend panels and pagination requests."""
+    key = (query.strip().casefold(), filter_value)
+    while True:
+        with _HF_SEARCH_CACHE_LOCK:
+            cached = _HF_SEARCH_CACHE.get(key)
+            now = time.monotonic()
+            if cached and cached[0] + _HF_SEARCH_CACHE_TTL > now and cached[1] >= limit:
+                return [dict(row) for row in cached[2][:limit]]
+            event = _HF_SEARCH_INFLIGHT.get(key)
+            owner = event is None
+            if owner:
+                event = threading.Event()
+                _HF_SEARCH_INFLIGHT[key] = event
+        if owner:
+            break
+        event.wait(timeout=15)
+
+    params = {
+        "filter": filter_value,
+        "limit": limit,
+        "sort": "downloads",
+        "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
+    }
+    if query.strip():
+        params["search"] = query
+    try:
+        response = requests.get("https://huggingface.co/api/models", params=params, timeout=10)
+        response.raise_for_status()
+        rows = [row for row in response.json() if isinstance(row, dict)]
+    except Exception as api_error:
+        rows = None
+        if filter_value == "gguf":
+            try:
+                rows = _search_hf_gguf_html(query, limit)
+            except Exception:
+                rows = None
+        if rows is None:
+            with _HF_SEARCH_CACHE_LOCK:
+                cached = _HF_SEARCH_CACHE.get(key)
+                _HF_SEARCH_INFLIGHT.pop(key, None)
+                event.set()
+            if cached:
+                # A stale page is more useful than hiding both compatible backends during
+                # a transient Hugging Face rate limit or outage.
+                return [dict(row) for row in cached[2][:limit]]
+            raise
+
+    with _HF_SEARCH_CACHE_LOCK:
+        previous = _HF_SEARCH_CACHE.get(key)
+        if previous and previous[1] > limit:
+            rows = previous[2]
+            covered_limit = previous[1]
+        else:
+            covered_limit = limit
+        _HF_SEARCH_CACHE[key] = (time.monotonic(), covered_limit, rows)
+        while len(_HF_SEARCH_CACHE) > 32:
+            _HF_SEARCH_CACHE.pop(next(iter(_HF_SEARCH_CACHE)))
+        _HF_SEARCH_INFLIGHT.pop(key, None)
+        event.set()
+    return [dict(row) for row in rows[:limit]]
+
+
+def _search_hf_gguf_html(query: str, limit: int) -> list[dict]:
+    """Fallback to Hugging Face's public model listing when its JSON API is rate-limited."""
+    base_url = "https://huggingface.co/models"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; HearthModelSearch/1.0)"}
+
+    def page_rows(page: int) -> tuple[list[dict], int, int]:
+        params = {"library": "gguf", "sort": "downloads", "p": page}
+        if query.strip():
+            params["search"] = query
+        response = requests.get(base_url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        match = re.search(r'data-target="ModelList" data-props="(.*?)">', response.text)
+        if not match:
+            raise ValueError("Hugging Face model listing did not contain model data")
+        props = json.loads(html.unescape(match.group(1)))
+        initial = props.get("initialValues") or {}
+        models = initial.get("models") or []
+        rows = [{
+            "id": model.get("id"),
+            "lastModified": model.get("lastModified"),
+            "likes": model.get("likes"),
+            "downloads": model.get("downloads"),
+            "pipeline_tag": model.get("pipeline_tag"),
+            "tags": model.get("tags") or [],
+            "numParameters": model.get("numParameters"),
+        } for model in models if model.get("id")]
+        return rows, int(initial.get("numTotalItems") or len(rows)), int(initial.get("numItemsPerPage") or 30)
+
+    first_rows, total, page_size = page_rows(0)
+    target = min(limit, total)
+    page_count = min(17, (target + page_size - 1) // page_size)
+    if page_count <= 1:
+        return first_rows[:limit]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(page_rows, page) for page in range(1, page_count)]
+        later_pages = [future.result(timeout=15)[0] for future in futures]
+    rows = first_rows[:]
+    for page in later_pages:
+        rows.extend(page)
+    return rows[:limit]
+
+
 def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | tuple[str, ...] = ("gguf",),
                        strict_format: str | None = None, include_descriptions: bool = True) -> list[dict]:
     """Live search against Hugging Face's public model API (no key needed) — the exact
@@ -949,25 +1060,14 @@ def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | t
     concurrently via each repo's README (see _fetch_readme_description) since the search
     API itself has no description field."""
     try:
-        params = {
-            "filter": strict_format or _hf_filter_string(extra_formats),
-            "limit": limit,
-            "sort": "downloads",
-            "expand[]": ["lastModified", "likes", "downloads", "pipeline_tag", "tags"],
-        }
-        if query.strip():
-            params["search"] = query
-        resp = requests.get(
-            "https://huggingface.co/api/models",
-            params=params,
-            timeout=10,
+        raw_results = _cached_hf_model_search(
+            query, limit, strict_format or _hf_filter_string(extra_formats)
         )
-        resp.raise_for_status()
     except requests.RequestException as exc:
         raise LemonadeError(f"Hugging Face search failed: {exc}") from exc
 
     results = []
-    for m in resp.json():
+    for m in raw_results:
         repo_id = m.get("id")
         if not repo_id:
             continue

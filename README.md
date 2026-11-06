@@ -231,8 +231,10 @@ administrator to find models, then use **Models** to load and evaluate them.
    A named search uses Lemonade's catalog plus compatible GGUF repos, GGUF repos for
    LM Studio and KoboldCPP, and vLLM's supported Hugging Face weight repos. FastFlowLM
    and q38rocm use their separate fixed catalogs and do not appear in the combined search.
-   Results are paginated with a **Load more** button. Each page fetches a larger
-   upstream result window, so later pages include additional Hugging Face matches.
+   Results are paginated with a **Load more** button. Search loads a broad upstream
+   window of up to 500 models per backend, and reuses Hugging Face results across pages
+   and compatible backends to avoid repeated requests. If Hugging Face rate-limits its
+   model API, GGUF search falls back to the public model listing.
    Active size and tool-calling filters scan forward when a page has too few matches,
    so filtered searches do not show an empty page while matching models remain.
 2. Compare result cards by backend, model format, execution compatibility, download

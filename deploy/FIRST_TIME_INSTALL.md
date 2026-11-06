@@ -46,8 +46,10 @@ path. Use **Tool calling only** to show models with declared support, and the **
 (up to 4B), **Medium** (over 4B through 13B), and **Large** (over 13B) checkboxes
 to filter by parameter count. Models without a detectable count are hidden while a
 size checkbox is active. Filtered searches continue through later pages when the current
-page has too few matches. **Load more** fetches additional upstream results rather than
-re-slicing the initial batch.
+page has too few matches. **Load more** reveals later results from a broad upstream
+search window (up to 500 results per backend); Hugging Face results are briefly reused
+across pages and compatible backends to avoid redundant requests. GGUF searches use
+Hugging Face's public model listing if its API rate-limits a request.
 Restart Hearth after updating to load the new Downloads page and search behavior.
 When loading a model, Hearth checks whether currently available RAM can fit the new
 model's known weight size plus 1 GB headroom. If it fits, the currently loaded model
