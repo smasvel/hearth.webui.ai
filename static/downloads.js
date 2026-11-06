@@ -63,6 +63,11 @@
     for (const [container, cached] of searchResults) {
       renderResults(cached.results, { container, onDownload: cached.onDownload });
       appendLoadMore(container);
+      const page = searchPages.get(container);
+      if (page && filteredResults(cached.results).length < SEARCH_PAGE_SIZE &&
+          page.offset + SEARCH_PAGE_SIZE < page.total) {
+        searchPageNext(page.backend, page.query, container, page.offset + SEARCH_PAGE_SIZE);
+      }
     }
   }
   toolsOnlyEl.addEventListener("change", reapplyFilters);
@@ -190,6 +195,26 @@
     if (more) container.appendChild(more);
   }
 
+  function filteredResults(results) {
+    let visible = results;
+    if (toolsOnlyEl.checked) visible = visible.filter((r) => r.supports_tool_calling === true);
+    const activeBands = new Set(parameterFilterEls.filter((el) => el.checked).map((el) => el.dataset.parameterBand));
+    if (activeBands.size) visible = visible.filter((r) => {
+      const count = parameterCountBillions(r);
+      if (count == null) return false;
+      return activeBands.has(count <= 4 ? "small" : count <= 13 ? "medium" : "large");
+    });
+    return visible;
+  }
+
+  async function fetchSearchPage(backend, query, offset) {
+    const params = new URLSearchParams({ backend, q: query, max_results: String(SEARCH_PAGE_SIZE), offset: String(offset) });
+    const res = await fetch(`/api/models/search?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "search failed");
+    return data;
+  }
+
   async function searchPage({ backend, query, container, onDownload, loadingHint }) {
     // Start a fresh page (offset=0) and cache it so filter toggles + load more work off it.
     const params = new URLSearchParams({ backend, q: query, max_results: String(SEARCH_PAGE_SIZE), offset: "0" });
@@ -197,18 +222,41 @@
     let data;
     try {
       const res = await fetch(`/api/models/search?${params.toString()}`);
-      const parsed = await res.json();
-      if (!res.ok) throw new Error(parsed.error || "search failed");
-      data = parsed;
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || "search failed");
     } catch (err) {
       container.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
       return;
     }
-    const results = data.results || [];
+    let results = data.results || [];
+    let offset = 0;
+    let total = data.total ?? results.length;
+    // Filters are applied in the browser because parameter counts aren't consistently
+    // available to the API. Walk later result pages when the current page has no matches,
+    // so an active filter doesn't leave an empty grid beside a misleading Load more button.
+    while (filteredResults(results).length < SEARCH_PAGE_SIZE && offset + SEARCH_PAGE_SIZE < total) {
+      offset += SEARCH_PAGE_SIZE;
+      try {
+        data = await fetchSearchPage(backend, query, offset);
+      } catch (err) {
+        data.filter_error = err.message;
+        break;
+      }
+      const known = new Set(results.map((r) => `${r.backend}:${r.id}`));
+      results = results.concat((data.results || []).filter((r) => !known.has(`${r.backend}:${r.id}`)));
+      total = data.total ?? total;
+      if (!(data.results || []).length) break;
+    }
     searchResults.set(container, { results, onDownload });
-    searchPages.set(container, { backend, query, total: data.total ?? results.length, offset: 0 });
+    searchPages.set(container, { backend, query, total, offset });
     renderResults(results, { container, onDownload });
     appendLoadMore(container);
+    if (data.filter_error) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = `Could not continue searching for filtered results: ${data.filter_error}`;
+      container.prepend(note);
+    }
     if (data.backend_errors?.length) {
       const note = document.createElement("p");
       note.className = "hint";
@@ -220,17 +268,25 @@
   async function searchPageNext(backend, query, container, offset) {
     // Append the next page to the cached results so "load more" accumulates rather than
     // replacing what's already visible. Filters stay applied on top of the cache.
-    const params = new URLSearchParams({ backend, q: query, max_results: String(SEARCH_PAGE_SIZE), offset: String(offset) });
     try {
-      const res = await fetch(`/api/models/search?${params.toString()}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "search failed");
+      let data = await fetchSearchPage(backend, query, offset);
       const state = searchPageState(container);
-      const existing = new Set(state.results.map((r) => `${r.backend}:${r.id}`));
-      const fresh = (data.results || []).filter((r) => !existing.has(`${r.backend}:${r.id}`));
-      state.results = state.results.concat(fresh);
+      let allResults = state.results.slice();
+      let nextOffset = offset;
+      let total = data.total ?? allResults.length;
+      const previousVisible = filteredResults(allResults).length;
+      while (true) {
+        const existing = new Set(allResults.map((r) => `${r.backend}:${r.id}`));
+        allResults = allResults.concat((data.results || []).filter((r) => !existing.has(`${r.backend}:${r.id}`)));
+        total = data.total ?? total;
+        if (filteredResults(allResults).length >= previousVisible + SEARCH_PAGE_SIZE ||
+            nextOffset + SEARCH_PAGE_SIZE >= total || !(data.results || []).length) break;
+        nextOffset += SEARCH_PAGE_SIZE;
+        data = await fetchSearchPage(backend, query, nextOffset);
+      }
+      state.results = allResults;
       searchResults.set(container, state);
-      searchPages.set(container, { backend, query, total: data.total ?? state.results.length, offset });
+      searchPages.set(container, { backend, query, total, offset: nextOffset });
       renderResults(state.results, { container, onDownload: state.onDownload });
       appendLoadMore(container);
     } catch (err) {
@@ -301,15 +357,9 @@
 
   function renderResults(results, { container, onDownload }) {
     searchResults.set(container, { results, onDownload });
-    if (toolsOnlyEl.checked) results = results.filter((r) => r.supports_tool_calling === true);
-    const activeBands = new Set(parameterFilterEls.filter((el) => el.checked).map((el) => el.dataset.parameterBand));
-    if (activeBands.size) results = results.filter((r) => {
-      const count = parameterCountBillions(r);
-      if (count == null) return false;
-      return activeBands.has(count <= 4 ? "small" : count <= 13 ? "medium" : "large");
-    });
+    results = filteredResults(results);
     if (results.length === 0) {
-      container.innerHTML = `<p class="hint">No matches. Try a different search term or adjust the filters.</p>`;
+      container.innerHTML = `<p class="hint">No models on this page match the selected filters. Clear a filter or load more to keep searching.</p>`;
       return;
     }
     container.innerHTML = "";

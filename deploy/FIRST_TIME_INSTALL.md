@@ -45,7 +45,8 @@ through `lms get`; Lemonade uses its native catalog download or its GGUF registr
 path. Use **Tool calling only** to show models with declared support, and the **Small**
 (up to 4B), **Medium** (over 4B through 13B), and **Large** (over 13B) checkboxes
 to filter by parameter count. Models without a detectable count are hidden while a
-size checkbox is active. **Load more** fetches additional upstream results rather than
+size checkbox is active. Filtered searches continue through later pages when the current
+page has too few matches. **Load more** fetches additional upstream results rather than
 re-slicing the initial batch.
 Restart Hearth after updating to load the new Downloads page and search behavior.
 When loading a model, Hearth checks whether currently available RAM can fit the new
