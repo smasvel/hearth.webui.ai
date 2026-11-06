@@ -1315,7 +1315,7 @@ def api_restart_backends():
                     try:
                         # Best-effort unload; don't block restart on failure
                         pass
-                    except Exception:
+                    except Exception as exc:
                         pass
         except Exception:
             pass
@@ -4260,10 +4260,10 @@ def api_search_models():
     # Combined search includes several backends, so its available result count can be
     # much larger than any one backend's page. Allow the UI to page through it.
     offset = _int_arg(request.args.get("offset"), default=0, maximum=5000)
-    # Fetch one item past the requested window so the UI can tell whether another page
-    # exists. HF's /api/models supports large limit values; each request grows the fetched
-    # prefix as the user pages, instead of repeatedly slicing the old fixed 30-result set.
-    search_limit = min(offset + max_results + 1, 500)
+    # Fetch a broad, bounded upstream prefix once and let the UI page through it. The
+    # Hugging Face client caches this shared 500-result window across backends/pages,
+    # avoiding repeated identical requests that trigger anonymous API rate limits.
+    search_limit = 500
     min_size_gb = _positive_float(request.args.get("min_size_gb"))
     max_size_gb = _positive_float(request.args.get("max_size_gb"))
     include_details = min_size_gb is not None or max_size_gb is not None
@@ -4277,7 +4277,10 @@ def api_search_models():
             backend_errors = []
             # These backends can download the models returned by this combined search.
             # FastFlowLM has a separate NPU catalog; q38rocm has one supported model.
-            combined_backends = ("lemonade", "lmstudio", "kobold", "vllm")
+            # LM Studio and KoboldCPP both consume the same GGUF Hugging Face search.
+            # Fetch it once here to avoid sending duplicate broad requests to HF when
+            # the Downloads page also starts their individual browse panels.
+            combined_backends = ("lemonade", "vllm")
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(combined_backends)) as pool:
                 futures = {
                     pool.submit(_search_models_for_backend, name, query, search_limit, include_details): name
@@ -4286,9 +4289,20 @@ def api_search_models():
                 for future, name in futures.items():
                     try:
                         results.extend(future.result(timeout=30))
-                    except Exception:
-                        # One unavailable backend must not erase useful results from four others.
+                    except Exception as exc:
+                        app.logger.warning("Downloads search failed for %s: %s", name, exc)
                         backend_errors.append(name)
+            try:
+                gguf_results = lemonade.search_huggingface(
+                    query, limit=search_limit, strict_format="gguf", include_descriptions=include_details
+                )
+                if include_details:
+                    lemonade.fill_result_sizes(gguf_results)
+                for name in ("lmstudio", "kobold"):
+                    results.extend(_normalize_model_results(gguf_results, name))
+            except Exception as exc:
+                app.logger.warning("Downloads GGUF search failed for LM Studio and KoboldCPP: %s", exc)
+                backend_errors.extend(("lmstudio", "kobold"))
             order = {name: i for i, name in enumerate(valid)}
             # Stable sort by (backend order, downloads desc) so the pagination window is
             # consistent across "load more" calls with the same filters.
