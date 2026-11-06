@@ -641,7 +641,7 @@ def _fill_sizes(results: list[dict]) -> None:
     place; any per-repo failure just leaves size_gb as-is (None)."""
     if not results:
         return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(results)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(results), 16)) as pool:
         future_to_idx = {pool.submit(_hf_repo_size_bytes, r["id"]): i for i, r in enumerate(results)}
         for fut, idx in future_to_idx.items():
             try:

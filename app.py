@@ -4150,12 +4150,12 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
     return normalized
 
 
-def _search_models_for_backend(backend: str, query: str) -> list[dict]:
+def _search_models_for_backend(backend: str, query: str, limit: int = 30) -> list[dict]:
     if backend == "vllm":
-        results = vllm.search_huggingface(query, limit=30) if query else vllm.suggested_models()
+        results = vllm.search_huggingface(query, limit=limit) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
     if backend in ("lmstudio", "kobold"):
-        results = lemonade.search_huggingface(query, limit=30, strict_format="gguf")
+        results = lemonade.search_huggingface(query, limit=limit, strict_format="gguf")
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
@@ -4163,10 +4163,10 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "q38rocm":
         return _normalize_model_results(q38rocm.search_catalog(query), backend)
     if backend == "lemonade":
-        results = lemonade.search_catalog(query, limit=500 if not query else 40)
+        results = lemonade.search_catalog(query, limit=500 if not query else limit)
         if query:
             results = lemonade.enrich_with_hf_metadata(results)
-            results += lemonade.search_huggingface(query, limit=30, strict_format="gguf")
+            results += lemonade.search_huggingface(query, limit=limit, strict_format="gguf")
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")
@@ -4237,7 +4237,13 @@ def api_search_models():
         return out[offset: offset + max_results], total
 
     max_results = _int_arg(request.args.get("max_results"), default=100, minimum=1, maximum=500)
-    offset = _int_arg(request.args.get("offset"), default=0)
+    # Combined search includes several backends, so its available result count can be
+    # much larger than any one backend's page. Allow the UI to page through it.
+    offset = _int_arg(request.args.get("offset"), default=0, maximum=5000)
+    # Fetch one item past the requested window so the UI can tell whether another page
+    # exists. HF's /api/models supports large limit values; each request grows the fetched
+    # prefix as the user pages, instead of repeatedly slicing the old fixed 30-result set.
+    search_limit = min(offset + max_results + 1, 500)
     min_size_gb = _positive_float(request.args.get("min_size_gb"))
     max_size_gb = _positive_float(request.args.get("max_size_gb"))
 
@@ -4253,7 +4259,7 @@ def api_search_models():
             combined_backends = ("lemonade", "lmstudio", "kobold", "vllm")
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(combined_backends)) as pool:
                 futures = {
-                    pool.submit(_search_models_for_backend, name, query): name
+                    pool.submit(_search_models_for_backend, name, query, search_limit): name
                     for name in combined_backends
                 }
                 for future, name in futures.items():
@@ -4274,7 +4280,7 @@ def api_search_models():
                 "max_results": max_results,
                 "backend_errors": backend_errors,
             })
-        single_results = _search_models_for_backend(backend, query)
+        single_results = _search_models_for_backend(backend, query, search_limit)
         windowed, total = _apply_filters(single_results, offset, max_results)
         return jsonify({
             "results": windowed,
