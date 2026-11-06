@@ -3,6 +3,9 @@
 (() => {
   const el = (id) => document.getElementById(id);
   const groupsEl = el("model-groups");
+  const localToolsEl = el("local-model-tools");
+  const toolbarEl = el("model-toolbar");
+  const viewTabs = [...document.querySelectorAll(".model-view-tab")];
   const summaryEl = el("model-summary");
   const searchEl = el("model-search");
   const warningsOnlyEl = el("model-warnings-only");
@@ -107,8 +110,10 @@
   const NON_CHAT = ["embeddings", "transcription", "tts", "image", "video"];
 
   let models = [];
+  let activeView = "local";
   let fetchingModels = false;
   let busy = false;
+  let isEditingContext = false;
   let busyModelId = null;   // which card is mid-load/unload/delete, so it can show that visibly
   let busyLabel = "";       // "Loading" / "Unloading" / "Deleting", shown on the card + toast
 
@@ -157,7 +162,7 @@
   }
 
   function renderSummary() {
-    const loaded = models.filter((m) => m.state === "loaded");
+    const loaded = models.filter((m) => m.backend !== "opencode" && m.state === "loaded");
     const totalGb = models.reduce((s, m) => s + (m.size_gb || 0), 0);
     const chip = (val, label) =>
       `<div class="model-sum-chip"><div class="model-sum-val">${val}</div><div class="model-sum-label">${esc(label)}</div></div>`;
@@ -217,7 +222,7 @@
     }
     // Editable served context for backends that take ctx-size at load time. The saved
     // value is reused on every later Load, so an unloaded model keeps the chosen window.
-    const contextEditable = ["lemonade", "lmstudio", "vllm"].includes(m.backend);
+    const contextEditable = ["lemonade", "lmstudio", "vllm", "kobold"].includes(m.backend);
     if (contextEditable && m.type && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       const activeContext = Number(m.configured_context_length || m.loaded_context_length || m.context_window_tokens);
       const loadedContext = Number(m.loaded_context_length);
@@ -242,7 +247,9 @@
           ctxInput.title += ` Currently loaded at ${loadedContext.toLocaleString()} tokens; the saved value applies on the next Load.`;
         }
         ctxInput.setAttribute("aria-label", `Context size in tokens for ${m.id}`);
-        ctxInput.addEventListener("change", () => updateContextLength(m, ctxInput));
+        ctxInput.addEventListener("focus", () => { isEditingContext = true; });
+      ctxInput.addEventListener("blur", () => { isEditingContext = false; });
+      ctxInput.addEventListener("change", () => { isEditingContext = false; updateContextLength(m, ctxInput); });
         ctxField.append(fieldLabel, ctxInput);
         metaEl.appendChild(ctxField);
       }
@@ -285,7 +292,20 @@
       label.textContent = "⚠ Latest load failed";
       const message = document.createElement("div");
       message.textContent = m.load_status.error || "The model could not be loaded.";
-      box.append(label, message);
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "panel-btn";
+      copyBtn.type = "button";
+      copyBtn.textContent = "Copy error";
+      copyBtn.style.marginTop = "4px";
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(m.load_status.error || "The model could not be loaded.").then(() => {
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => { copyBtn.textContent = "Copy error"; }, 1500);
+        }).catch(() => {
+          copyBtn.textContent = "Copy failed";
+        });
+      });
+      box.append(label, message, copyBtn);
       actions.appendChild(box);
     }
     // Disabled (not just hidden) while this specific card has an operation in flight, so a
@@ -322,7 +342,7 @@
     if (!managedAutomatically && !externallyManaged && m.type !== "embeddings" && m.deletable !== false) {
       actions.appendChild(btn("Delete", "danger", () => deleteModel(m.id), isBusy));
     }
-    if (["lemonade", "lmstudio"].includes(m.backend) && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
+    if (["lemonade", "lmstudio", "q38rocm"].includes(m.backend) && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       const thinkingLabel = document.createElement("label");
       thinkingLabel.className = "model-thinking-toggle";
       const thinkingInput = document.createElement("input");
@@ -414,15 +434,18 @@
     let shown = 0;
     const ordered = [...GROUPS, ...[...new Set(models.map((m) => m.backend))]
       .filter((k) => !LABEL[k]).map((k) => ({ key: k, label: k || "Other" }))];
+    const activeModels = models.filter((m) => activeView === "online"
+      ? m.backend === "opencode" : m.backend !== "opencode");
+    const matching = activeModels.filter((m) =>
+      (!q || (m.id || "").toLowerCase().includes(q)) &&
+      (!warningsOnlyEl?.checked || m.resource_warning || m.load_status?.state === "error"));
+    shown = matching.length;
     for (const g of ordered) {
-      let list = models.filter((m) => m.backend === g.key);
-      if (q) list = list.filter((m) => (m.id || "").toLowerCase().includes(q));
-      if (warningsOnlyEl?.checked) list = list.filter(m => m.resource_warning || m.load_status?.state === "error");
+      const list = matching.filter((m) => m.backend === g.key);
       if (!list.length) continue;
-      shown += list.length;
       const section = document.createElement("div");
       section.className = "console-card span-all model-group";
-      section.innerHTML = `<h2>${esc(g.label)} <span class="hint">· ${list.length}</span></h2>`;
+      section.innerHTML = `<h3>${esc(g.label)} <span class="hint">· ${list.length}</span></h3>`;
       const grid = document.createElement("div");
       grid.className = "model-card2-grid";
       list.forEach((m) => grid.appendChild(card(m)));
@@ -433,11 +456,25 @@
       groupsEl.innerHTML = warningsOnlyEl?.checked
         ? `<p class="hint">No models with recorded resource warnings match this filter.</p>` : q
         ? `<p class="hint">No models match “${esc(q)}”.</p>`
-        : `<p class="hint">No models on disk. Get one from the <a href="/downloads">Downloads page</a>.</p>`;
+        : (activeView === "online"
+          ? `<p class="hint">No online models are available. Configure the hosted provider in Settings.</p>`
+          : `<p class="hint">No local models match this view. Get one from the <a href="/downloads">Downloads page</a>.</p>`);
     }
   }
 
   warningsOnlyEl?.addEventListener("change", renderGroups);
+  viewTabs.forEach((tab) => tab.addEventListener("click", () => {
+    activeView = tab.dataset.modelView;
+    viewTabs.forEach((item) => {
+      const selected = item === tab;
+      item.classList.toggle("active", selected);
+      item.setAttribute("aria-selected", String(selected));
+    });
+    localToolsEl.hidden = activeView !== "local";
+    toolbarEl.hidden = activeView === "online";
+    document.querySelector(".model-resource-hint").hidden = activeView === "online";
+    renderGroups();
+  }));
 
   maxContextBtn?.addEventListener("click", async () => {
     if (!confirm("Save every chat model's maximum reported context as its configured ctx-size? Loaded models apply it on their next Load.")) return;
@@ -602,6 +639,6 @@
   searchEl.addEventListener("input", renderGroups);
   fetchModels();
   setInterval(() => {
-    if (document.visibilityState === "visible") fetchModels();
+    if (document.visibilityState === "visible" && !isEditingContext && !busy) fetchModels();
   }, 5000);
 })();

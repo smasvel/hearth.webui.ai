@@ -219,6 +219,8 @@ class Registry:
                             cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case),
                             guarded=backend == 'fastflowlm', backend=backend,
                             perf_url=kobold_client.base_url() if backend == 'kobold' else None,
+                            large_input_context=4096 if backend == 'q38rocm' else None,
+                            skip_context_overflow=backend == 'q38rocm',
                             profile=lambda body: profiles.apply(body, backend))
                         # A failed workflow step marks its dependents as skipped. Those
                         # blocked steps are visible in the report, but are not checks
@@ -245,7 +247,10 @@ class Registry:
                                     cancel=cancel, on_result=lambda r: record(r, 2), on_case=lambda case: update(current_check=case),
                                     guarded=backend == 'fastflowlm', backend=backend,
                                     perf_url=kobold_client.base_url() if backend == 'kobold' else None,
-                                    profile=lambda body: profiles.apply_recipe(body, profiles.RECIPE))
+                                    large_input_context=4096 if backend == 'q38rocm' else None,
+                                    skip_context_overflow=backend == 'q38rocm',
+                                    profile=lambda body: profiles.apply(
+                                        profiles.apply_recipe(body, profiles.RECIPE), backend))
                                 # Keep a recipe only when at least one original assertion now passes.
                                 remaining = {(r['name'], r.get('stream', False)) for r in retried
                                              if not r['passed'] and not r.get('skipped')}

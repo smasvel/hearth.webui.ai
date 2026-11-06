@@ -28,10 +28,6 @@
   const npuSearchInput = document.getElementById("npu-search-input");
   const npuResultsEl = document.getElementById("npu-results");
 
-  const q38SearchForm = document.getElementById("q38-search-form");
-  const q38SearchInput = document.getElementById("q38-search-input");
-  const q38ResultsEl = document.getElementById("q38-results");
-
   const progressWrap = document.getElementById("download-progress");
   const progressTitle = document.getElementById("download-progress-title");
   const progressPct = document.getElementById("download-progress-pct");
@@ -39,44 +35,38 @@
   const progressDetail = document.getElementById("download-progress-detail");
   const progressLog = document.getElementById("download-progress-log");
   const cancelBtn = document.getElementById("download-cancel-btn");
+
   // Production may retain an older Jinja template until the server restarts.
   // Keep the versioned script compatible with that page during active downloads.
-  let toolFilterEls = [...document.querySelectorAll("[data-tools-backend]")];
-  let unknownToolFilterEl = document.querySelector("[data-exclude-unknown-tools]");
-  if (!toolFilterEls.length) {
+  let toolsOnlyEl = document.getElementById("tools-only");
+  const filterContainer = toolsOnlyEl ? toolsOnlyEl.closest(".console-head") : (document.querySelector(".console-head") || document.body);
+  if (!toolsOnlyEl) {
     const filter = document.createElement("div");
-    filter.className = "download-tool-filters";
-    filter.innerHTML = '<strong>Tool calling filters:</strong>' +
-      '<label><input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support</label>' +
-      [['lemonade','Lemonade'],['vllm','vLLM'],['lmstudio','LM Studio'],['kobold','KoboldCPP'],['fastflowlm','FastFlowLM'],['q38rocm','q38rocm']]
-        .map(([key,label]) => `<label><input data-tools-backend="${key}" type="checkbox" /> ${label}</label>`).join("") +
-      '<strong>Model size:</strong>' +
+    filter.innerHTML = '<label><input id="tools-only" type="checkbox" /> Tool calling only (all searches)</label><p class="hint">Shows declared tool calling support. Models with unknown support are excluded. Backend configuration may also be required.</p>';
+    filterContainer.appendChild(filter);
+    toolsOnlyEl = filter.querySelector("input");
+  }
+  let parameterFilterEls = [...document.querySelectorAll("[data-parameter-band]")];
+  if (!parameterFilterEls.length) {
+    const filter = document.createElement("div");
+    filter.className = "download-size-filters";
+    filter.innerHTML = '<strong>Model size:</strong>' +
       [['small','Small (up to 4B)'],['medium','Medium (over 4B to 13B)'],['large','Large (over 13B)']]
         .map(([key,label]) => `<label><input data-parameter-band="${key}" type="checkbox" /> ${label}</label>`).join("");
-    document.querySelector(".console-head").appendChild(filter);
-    toolFilterEls = [...filter.querySelectorAll("[data-tools-backend]")];
-    unknownToolFilterEl = filter.querySelector("[data-exclude-unknown-tools]");
+    filterContainer.appendChild(filter);
+    parameterFilterEls = [...filter.querySelectorAll("[data-parameter-band]")];
   }
-  if (!unknownToolFilterEl) {
-    const filter = document.querySelector(".download-tool-filters");
-    if (filter) {
-      const label = document.createElement("label");
-      label.innerHTML = '<input data-exclude-unknown-tools type="checkbox" /> Exclude unknown support';
-      const firstBackendLabel = toolFilterEls[0]?.closest("label");
-      filter.insertBefore(label, firstBackendLabel || filter.firstChild);
-      unknownToolFilterEl = label.querySelector("[data-exclude-unknown-tools]");
-    }
-  }
+
   const searchResults = new Map();
-  const parameterFilterEls = [...document.querySelectorAll("[data-parameter-band]")];
-  // Browsers may restore checkbox state after a reload. Start a fresh page view with
-  // unfiltered catalogs so an empty Search all submission really shows every model.
-  for (const filter of [...toolFilterEls, ...parameterFilterEls, unknownToolFilterEl].filter(Boolean)) filter.checked = false;
-  for (const filter of [...toolFilterEls, ...parameterFilterEls, unknownToolFilterEl].filter(Boolean)) filter.addEventListener("change", () => {
+  const searchPages = new Map();
+  function reapplyFilters() {
     for (const [container, cached] of searchResults) {
       renderResults(cached.results, { container, onDownload: cached.onDownload });
+      appendLoadMore(container);
     }
-  });
+  }
+  toolsOnlyEl.addEventListener("change", reapplyFilters);
+  parameterFilterEls.forEach((el) => el.addEventListener("change", reapplyFilters));
 
   let busy = false;
   let currentDownload = null;
@@ -172,42 +162,91 @@
     }
   }
 
-  async function searchCatalog(query) {
-    resultsEl.innerHTML = `<p class="hint">Searching&hellip;</p>`;
+  // Search pages are cached so filters can change without losing the Load more control.
+  const SEARCH_PAGE_SIZE = 60;
+  function searchPageState(container) { return searchResults.get(container) || { results: [], onDownload: null }; }
+
+  function loadMoreButton(container, total, offset, pageSize, fetchNextPage) {
+    if (offset + pageSize >= total) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "load-more-wrap";
+    const inner = document.createElement("button");
+    inner.className = "panel-btn load-more-btn";
+    const remaining = total - (offset + pageSize);
+    inner.textContent = `Load ${Math.min(pageSize, remaining)} more (${remaining} more available)`;
+    inner.addEventListener("click", () => {
+      inner.disabled = true;
+      fetchNextPage(offset + pageSize).finally(() => { inner.disabled = false; });
+    });
+    wrap.appendChild(inner);
+    return wrap;
+  }
+
+  function appendLoadMore(container) {
+    const page = searchPages.get(container);
+    if (!page) return;
+    const more = loadMoreButton(container, page.total, page.offset, SEARCH_PAGE_SIZE,
+      (offset) => searchPageNext(page.backend, page.query, container, offset));
+    if (more) container.appendChild(more);
+  }
+
+  async function searchPage({ backend, query, container, onDownload, loadingHint }) {
+    // Start a fresh page (offset=0) and cache it so filter toggles + load more work off it.
+    const params = new URLSearchParams({ backend, q: query, max_results: String(SEARCH_PAGE_SIZE), offset: "0" });
+    container.innerHTML = `<p class="hint">${loadingHint}</p>`;
+    let data;
     try {
-      const res = await fetch(`/api/models/search?backend=lemonade&q=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "search failed");
-      renderResults(data.results || [], { container: resultsEl, onDownload: downloadCatalogModel });
+      const res = await fetch(`/api/models/search?${params.toString()}`);
+      const parsed = await res.json();
+      if (!res.ok) throw new Error(parsed.error || "search failed");
+      data = parsed;
     } catch (err) {
-      resultsEl.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
+      container.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    const results = data.results || [];
+    searchResults.set(container, { results, onDownload });
+    searchPages.set(container, { backend, query, total: data.total ?? results.length, offset: 0 });
+    renderResults(results, { container, onDownload });
+    appendLoadMore(container);
+    if (data.backend_errors?.length) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = `Some backends could not be searched: ${data.backend_errors.join(", ")}.`;
+      container.prepend(note);
     }
   }
 
-  async function searchAll(query) {
-    allResultsEl.innerHTML = `<p class="hint">Searching all backends&hellip;</p>`;
+  async function searchPageNext(backend, query, container, offset) {
+    // Append the next page to the cached results so "load more" accumulates rather than
+    // replacing what's already visible. Filters stay applied on top of the cache.
+    const params = new URLSearchParams({ backend, q: query, max_results: String(SEARCH_PAGE_SIZE), offset: String(offset) });
     try {
-      const res = await fetch(`/api/models/search?backend=all&q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/models/search?${params.toString()}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "search failed");
-      if (!data.results?.length && data.backend_errors?.length) {
-        allResultsEl.innerHTML = `<p class="hint">No models could be loaded. Backend search failed: ${data.backend_errors.map(escapeHtml).join(", ")}.</p>`;
-        return;
-      }
-      renderResults(data.results || [], {
-        container: allResultsEl,
-        onDownload: downloadAllBackendModel,
-        backendErrors: data.backend_errors || [],
-      });
-      if (data.results?.length && data.backend_errors?.length) {
-        const note = document.createElement("p");
-        note.className = "hint";
-        note.textContent = `Some backends could not be searched: ${data.backend_errors.join(", ")}.`;
-        allResultsEl.prepend(note);
-      }
+      const state = searchPageState(container);
+      const existing = new Set(state.results.map((r) => `${r.backend}:${r.id}`));
+      const fresh = (data.results || []).filter((r) => !existing.has(`${r.backend}:${r.id}`));
+      state.results = state.results.concat(fresh);
+      searchResults.set(container, state);
+      searchPages.set(container, { backend, query, total: data.total ?? state.results.length, offset });
+      renderResults(state.results, { container, onDownload: state.onDownload });
+      appendLoadMore(container);
     } catch (err) {
-      allResultsEl.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = `Could not load more: ${escapeHtml(err.message)}`;
+      container.appendChild(p);
     }
+  }
+
+  async function searchCatalog(query) {
+    return searchPage({ backend: "lemonade", query, container: resultsEl, onDownload: downloadCatalogModel, loadingHint: "Searching…" });
+  }
+
+  async function searchAll(query) {
+    return searchPage({ backend: "all", query, container: allResultsEl, onDownload: downloadAllBackendModel, loadingHint: "Searching all backends…" });
   }
 
   async function searchVllm(query) {
@@ -216,41 +255,27 @@
     // GGUF), shown first the way Lemonade's catalog is. A real query does a live HF
     // search. Both render as the same cards ("staff pick" + description marks the
     // suggested ones).
-    vllmResultsEl.innerHTML = query
-      ? `<p class="hint">Searching&hellip;</p>`
-      : `<p class="hint">Loading suggested models&hellip;</p>`;
-    try {
-      const res = await fetch(`/api/models/search?backend=vllm&q=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "search failed");
-      renderResults(data.results || [], { container: vllmResultsEl, onDownload: downloadVllmModel });
-    } catch (err) {
-      vllmResultsEl.innerHTML = `<p class="hint">Could not load: ${escapeHtml(err.message)}</p>`;
-    }
+    return searchPage({ backend: "vllm", query, container: vllmResultsEl, onDownload: downloadVllmModel, loadingHint: query ? "Searching…" : "Loading suggested models…" });
   }
 
   // Generic backend search → cards. Used by LM Studio / KoboldCPP (both search the HF
-  // GGUF index server-side) and FastFlowLM (its own NPU catalog). Empty query browses each
-  // backend's available catalog/popular Hugging Face results.
+  // model index server-side) and FastFlowLM (its own NPU catalog). An empty query
+  // browses popular GGUF repos for LM Studio/Kobold and the native NPU catalog.
   async function searchBackend(query, { backend, container, input, onDownload, browseHint, emptyIsCatalog }) {
-    container.innerHTML = `<p class="hint">Searching&hellip;</p>`;
-    try {
-      const res = await fetch(`/api/models/search?backend=${backend}&q=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "search failed");
-      renderResults(data.results || [], { container, onDownload });
-    } catch (err) {
-      container.innerHTML = `<p class="hint">Could not search: ${escapeHtml(err.message)}</p>`;
+    if (!query && !emptyIsCatalog) {
+      container.innerHTML = `<p class="hint">${browseHint}</p>`;
+      return;
     }
+    return searchPage({ backend, query, container, onDownload, loadingHint: "Searching…" });
   }
 
   const searchLmstudio = (q) => searchBackend(q, {
-    backend: "lmstudio", container: lmResultsEl, input: lmSearchInput,
+    backend: "lmstudio", container: lmResultsEl, input: lmSearchInput, emptyIsCatalog: true,
     onDownload: (id, _src, btn, sizeGb) => downloadFreeformCard(id, "lmstudio", btn, () => searchLmstudio(lmSearchInput.value.trim()), sizeGb),
     browseHint: "Search Hugging Face for a GGUF model to download.",
   });
   const searchKobold = (q) => searchBackend(q, {
-    backend: "kobold", container: koboldResultsEl, input: koboldSearchInput,
+    backend: "kobold", container: koboldResultsEl, input: koboldSearchInput, emptyIsCatalog: true,
     onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(id, "kobold", btn, () => searchKobold(koboldSearchInput.value.trim()), sizeGb),
     browseHint: "Search Hugging Face for a GGUF model to download.",
   });
@@ -258,13 +283,6 @@
     backend: "fastflowlm", container: npuResultsEl, input: npuSearchInput, emptyIsCatalog: true,
     onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(id, "fastflowlm", btn, () => searchFastflow(npuSearchInput.value.trim()), sizeGb),
     browseHint: "Search FastFlowLM's NPU catalog.",
-  });
-  const searchQ38 = (q) => searchBackend(q, {
-    backend: "q38rocm", container: q38ResultsEl, input: q38SearchInput,
-    onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(
-      id, "q38rocm", btn, () => searchQ38(q38SearchInput.value.trim()), sizeGb,
-    ),
-    browseHint: "Browse q38rocm's supported local Vulkan GGUF.",
   });
 
   function formatDate(iso) {
@@ -281,29 +299,17 @@
     return `${n}`;
   }
 
-  function renderResults(results, { container, onDownload, backendErrors = [] }) {
+  function renderResults(results, { container, onDownload }) {
     searchResults.set(container, { results, onDownload });
-    const activeFilters = new Set(toolFilterEls.filter((el) => el.checked).map((el) => el.dataset.toolsBackend));
-    results = results.filter((r) => !activeFilters.has(r.backend) || r.supports_tool_calling === true);
-    if (unknownToolFilterEl?.checked) {
-      results = results.filter((r) => r.supports_tool_calling !== null && r.supports_tool_calling !== undefined);
-    }
+    if (toolsOnlyEl.checked) results = results.filter((r) => r.supports_tool_calling === true);
     const activeBands = new Set(parameterFilterEls.filter((el) => el.checked).map((el) => el.dataset.parameterBand));
-    if (activeBands.size) {
-      results = results.filter((r) => {
-        const count = parameterCountBillions(r);
-        if (count == null) return false;
-        const band = count <= 4 ? "small" : count <= 13 ? "medium" : "large";
-        return activeBands.has(band);
-      });
-    }
+    if (activeBands.size) results = results.filter((r) => {
+      const count = parameterCountBillions(r);
+      if (count == null) return false;
+      return activeBands.has(count <= 4 ? "small" : count <= 13 ? "medium" : "large");
+    });
     if (results.length === 0) {
-      const detail = searchResults.get(container).results.length
-        ? "No models match the selected filters. Clear or adjust the tool calling and model size filters."
-        : backendErrors.length
-          ? `No models returned. Backend search failed: ${backendErrors.map(escapeHtml).join(", ")}.`
-          : "No models were returned by the available catalogs.";
-      container.innerHTML = `<p class="hint">${detail}</p>`;
+      container.innerHTML = `<p class="hint">No matches. Try a different search term or adjust the filters.</p>`;
       return;
     }
     container.innerHTML = "";
@@ -328,8 +334,6 @@
       if (r.source === "huggingface") metaParts.push("Hugging Face");
       if (r.format) metaParts.push(r.format);
       if (r.compatibility) metaParts.push(r.compatibility);
-      const contextTokens = Number(r.max_context_length || r.context_window_tokens || r.context_length || r.max_position_embeddings || 0);
-      if (Number.isSafeInteger(contextTokens) && contextTokens > 0) metaParts.push(`max ${contextTokens.toLocaleString()} tokens`);
       const metaHtml = metaParts.map(escapeHtml).join(" &middot; ");
 
       const descHtml = r.description
@@ -340,10 +344,6 @@
       // comma-separated meta line — the whole point of flagging a suggested/curated model is
       // to make it easy to spot at a glance for someone who doesn't know what to pick yet.
       const pickBadge = r.suggested ? `<span class="badge staff-pick">staff pick</span>` : "";
-      const toolSupport = r.supports_tool_calling === true
-        ? "yes"
-        : r.supports_tool_calling === false ? "no" : "unknown";
-      const toolBadge = `<span class="badge" title="${r.supports_tool_calling === true || r.supports_tool_calling === false ? "Reported by model catalog metadata." : "The catalog does not report tool calling support."}">tool calling: ${toolSupport}</span>`;
       card.innerHTML = `
         <div class="model-card-top">
           <div>
@@ -353,7 +353,6 @@
           </div>
           <div class="model-card-badges">
             ${pickBadge}
-            ${toolBadge}
             <span class="badge ${r.downloaded ? "loaded" : "not-loaded"}">${r.downloaded ? "downloaded" : "not downloaded"}</span>
           </div>
         </div>
@@ -389,8 +388,8 @@
   function parameterCountBillions(result) {
     const explicit = result.parameter_count_billions ?? result.parameters_billions;
     if (Number.isFinite(Number(explicit)) && Number(explicit) > 0) return Number(explicit);
-    const text = [result.parameter_size, result.id, result.description].filter(Boolean).join(" ");
-    const match = text.match(/(?:^|[^\d])(\d+(?:\.\d+)?)\s*(?:billion\b|b\b)/i);
+    const name = [result.parameter_size, result.id].filter(Boolean).join(" ");
+    const match = name.match(/(?:^|[^\d])(\d+(?:\.\d+)?)\s*(?:billion\b|b\b)/i);
     return match ? Number(match[1]) : null;
   }
 
@@ -620,26 +619,21 @@
     searchFastflow(npuSearchInput.value.trim());
   });
 
-  q38SearchForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    searchQ38(q38SearchInput.value.trim());
-  });
-
   vllmSearchForm.addEventListener("submit", (e) => {
     e.preventDefault();
     searchVllm(vllmSearchInput.value.trim());
   });
 
-  // Start with the recommended Lemonade chat model so a new installation has a
-  // clear first choice; users can edit the query to browse other catalog entries.
-  searchCatalog(searchInput.value.trim());
+  // Initial load: empty query returns the catalog's first 40 entries (server-capped),
+  // so there's something to browse before typing anything.
+  searchCatalog("");
   // vLLM: empty query loads the curated suggestions (models vetted to load on vLLM),
   // shown first the way Lemonade's catalog is.
   searchVllm("");
-  // FastFlowLM has a fixed NPU catalog, so its empty query loads the whole thing to browse
-  // (installed first). LM Studio / Kobold have no catalog — they wait for a search term.
+  // Browse popular GGUF repos and the native NPU catalog without typing a query.
+  searchLmstudio("");
+  searchKobold("");
   searchFastflow("");
-  searchQ38(q38SearchInput.value.trim());
 
   // Shared by both "exact name" forms (LM Studio's fuzzy resolve, and Ryzen AI NPU's
   // exact-tag registration) — both go through /api/models/download and only ever yield

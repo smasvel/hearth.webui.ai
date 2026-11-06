@@ -1769,6 +1769,9 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 }
 
 .result-grid > .hint { grid-column: 1 / -1; }
+/* "Load more" footer for paginated search results — spans the whole grid, centered. */
+.load-more-wrap { grid-column: 1 / -1; display: flex; justify-content: center; margin-top: 4px; }
+.load-more-btn { min-width: 220px; }
 .download-tool-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0; }
 .download-tool-filters label { display: inline-flex; align-items: center; gap: 5px; }
 .download-tool-filters input { accent-color: var(--accent); }
@@ -2605,7 +2608,12 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .model-load-opts-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 
 .model-groups { display: flex; flex-direction: column; gap: 16px; }
-.model-group h2 { display: flex; align-items: baseline; gap: 8px; }
+.model-view-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
+.model-view-tab { color: var(--text-dim); border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 10px 14px; cursor: pointer; font: inherit; }
+.model-view-tab:hover { color: var(--text); }
+.model-view-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
+.model-group h3 { display: flex; align-items: baseline; gap: 8px; }
+.model-group h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 15px; }
 .model-card2-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; margin-top: 4px; }
 .model-card2 {
   display: grid; grid-template-columns: 1fr auto; grid-template-areas: "main badge" "actions actions";

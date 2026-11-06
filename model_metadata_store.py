@@ -45,6 +45,38 @@ def init_db():
         """)
         conn.execute("CREATE TABLE IF NOT EXISTS model_metadata_migrations (key TEXT PRIMARY KEY, migrated_at DOUBLE PRECISION NOT NULL)")
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS service_status (
+                service TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                detail TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS restart_jobs (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at DOUBLE PRECISION NOT NULL,
+                finished_at DOUBLE PRECISION,
+                progress INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                detail TEXT,
+                error TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_load_events (
+                id SERIAL PRIMARY KEY,
+                backend TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT,
+                recorded_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS model_configured_context (
                 backend TEXT NOT NULL,
                 model_id TEXT NOT NULL,
@@ -68,6 +100,16 @@ def init_db():
         """)
 
 
+def downloaded_backend(model_id):
+    """Return the backend a model was downloaded under, or None if unknown."""
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT backend FROM model_registry WHERE model_id = %s AND payload LIKE %s",
+            (model_id, '%downloaded%'),
+        ).fetchone()
+    return row["backend"] if row else None
+
+
 def registry(backend):
     with database.connect() as conn:
         rows = conn.execute("SELECT model_id, payload FROM model_registry WHERE backend = %s", (backend,)).fetchall()
@@ -78,6 +120,20 @@ def registry(backend):
         except (TypeError, ValueError):
             continue
     return result
+
+
+def mark_model_downloaded(backend, model_id):
+    """Record which backend a model was downloaded under, so the backend can be
+    identified even when the live catalog is unreachable (e.g. Lemonade is down)."""
+    payload = json.dumps({"downloaded": True})
+    now = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            """INSERT INTO model_registry (backend, model_id, payload, updated_at)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (backend, model_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at""",
+            (backend, model_id, payload, now),
+        )
 
 
 def save_registry(backend, values):
@@ -258,3 +314,78 @@ def successful_model_loads():
     with database.connect() as conn:
         rows = conn.execute("SELECT backend, model_id FROM model_load_successes").fetchall()
     return {(row['backend'], str(row['model_id']).casefold()) for row in rows}
+
+
+def record_service_status(service, status, detail=None):
+    now = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            """INSERT INTO service_status (service, status, updated_at, detail)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (service) DO UPDATE SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, detail = EXCLUDED.detail""",
+            (service, status, now, detail),
+        )
+
+
+def get_service_status(service=None):
+    with database.connect() as conn:
+        if service:
+            row = conn.execute("SELECT * FROM service_status WHERE service = %s", (service,)).fetchone()
+            return dict(row) if row else None
+        rows = conn.execute("SELECT * FROM service_status ORDER BY service").fetchall()
+        return [dict(r) for r in rows]
+
+
+def create_restart_job(job_id, scope, total):
+    now = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO restart_jobs (id, scope, status, started_at, progress, total) VALUES (%s, %s, %s, %s, %s, %s)",
+            (job_id, scope, "running", now, 0, total),
+        )
+
+
+def update_restart_job(job_id, progress=None, status=None, detail=None, error=None):
+    now = time.time()
+    with database.connect() as conn:
+        parts = []
+        params = []
+        if progress is not None:
+            parts.append("progress = %s")
+            params.append(progress)
+        if status is not None:
+            parts.append("status = %s")
+            params.append(status)
+            if status in ("done", "error"):
+                parts.append("finished_at = %s")
+                params.append(now)
+        if detail is not None:
+            parts.append("detail = %s")
+            params.append(detail)
+        if error is not None:
+            parts.append("error = %s")
+            params.append(error)
+        if parts:
+            params.append(job_id)
+            conn.execute("UPDATE restart_jobs SET " + ", ".join(parts) + " WHERE id = %s", params)
+
+
+def get_restart_job(job_id):
+    with database.connect() as conn:
+        row = conn.execute("SELECT * FROM restart_jobs WHERE id = %s", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_restart_jobs(limit=20):
+    with database.connect() as conn:
+        rows = conn.execute("SELECT * FROM restart_jobs ORDER BY started_at DESC LIMIT %s", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_model_load_event(backend, model_id, event, status, error=None):
+    now = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO model_load_events (backend, model_id, event, status, error, recorded_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            (backend, model_id, event, status, error, now),
+        )

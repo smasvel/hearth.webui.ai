@@ -346,6 +346,18 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.client.create.call_count, 2)
         self.assertEqual(self.client.prompt.call_count, 2)
 
+    def test_context_overflow_blocks_without_compacting_or_retrying(self):
+        key = self.create()
+        self.snap['messages'] = [assistant('too-long', '', error={
+            'type': 'provider.error', 'message': 'request exceeds the available context size'})]
+        self.manager.tick()
+        self.manager.tick()
+        blocked = self.manager.get(key)
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertEqual(blocked['session_id'], 'ses_fixture')
+        self.assertEqual(self.client.prompt.call_count, 1)
+        self.assertIn('larger supported ctx-size', blocked['error'])
+
     def test_compaction_failure_recovery_supports_lemonade_muse_models(self):
         self.client.models.return_value = [{'providerID': 'lemonade', 'id': 'Muse-Glimmer-30B-GGUF',
                                             'usable': True, 'context': 65536}]

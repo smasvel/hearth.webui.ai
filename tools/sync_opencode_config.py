@@ -49,8 +49,8 @@ def _add_desktop_q38_provider(config: dict) -> None:
         'models': {
             model: {
                 'name': model + ' (local RADV Vulkan)',
-                'limit': {'context': q38rocm_client._CONTEXT,
-                          'output': q38rocm_client._CONTEXT // 2},
+                'limit': {'context': q38rocm_client.configured_context(),
+                          'output': q38rocm_client.configured_context() // 2},
             },
         },
     }
@@ -94,7 +94,7 @@ def main() -> int:
         # Compaction follows the selected model's *current* advertised window, so
         # keep/buffer track it automatically (40,960 / 16,384 on a 65K window).
         budgets = help_data.compaction_for_window(window)
-        config['compaction'] = {'auto': True, 'keep': {'tokens': budgets['keep']},
+        config['compaction'] = {'auto': help_data.compaction_settings()['auto'], 'keep': {'tokens': budgets['keep']},
                                 'buffer': budgets['buffer']}
 
     generation = json.dumps(config, indent=2)

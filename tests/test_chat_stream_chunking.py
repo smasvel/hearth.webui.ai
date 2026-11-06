@@ -39,6 +39,7 @@ class ChatStreamChunkingTests(unittest.TestCase):
                 patch.object(q38rocm_client.requests, "post", return_value=post_response) as post:
             self.assertEqual(list(q38rocm_client.chat_stream([], "q38rocm/test")), ["data: [DONE]"])
         self.assertEqual(post.call_args.kwargs["json"]["stream_options"], {"include_usage": True})
+        self.assertNotIn("frequency_penalty", post.call_args.kwargs["json"])
         response.iter_lines.assert_called_once_with(chunk_size=1)
 
     def test_kobold_chat_requests_stream_usage_for_metrics(self):

@@ -65,7 +65,7 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(result['model'], f'{BE}/{MODEL}')
         self.assertIn('custom', result.get('agents', {}))
         self.assertEqual(result['compaction'],
-                         {'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384})
+                         {'auto': False, 'keep': {'tokens': 40960}, 'buffer': 16384})
 
     def test_idempotent_when_config_matches_generation(self):
         first = self._run(

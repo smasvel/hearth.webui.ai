@@ -629,7 +629,7 @@ class ContainerOpenCode(OpenCode):
             'enable_thinking': enable_thinking}
         provider['options']['extraBody'] = extra_body
         provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
-        comp = copy.deepcopy(original.get('compaction') or {'auto': True})
+        comp = copy.deepcopy(original.get('compaction') or {'auto': False})
         model_config = (provider.get('models') or {}).get(model_id) or {}
         model_limit = model_config.get('limit') or {}
         context_limit = model_limit.get('context')

@@ -21,18 +21,14 @@ def set_profile(backend, model, value):
 
 def apply(body, backend):
     if backend == 'q38rocm':
-        # This slow local Vulkan backend needs compact, answer-focused checks.
-        # Qwen 3.8 may spend the completion budget in its reasoning phase even
-        # when the template flag is supplied, so bound every check's reply.
+        import q38rocm_client
+        # Use the same wire schema as chat. Keep the test's declared budget:
+        # truncating tool/workflow arguments creates artificial failures.
         template = dict(body.get('chat_template_kwargs') or {})
         template['enable_thinking'] = False
         result = {**body, 'enable_thinking': False, 'chat_template_kwargs': template}
-        requested = body.get('max_tokens', 128)
-        if isinstance(requested, int) and not isinstance(requested, bool):
-            # Tool contracts need only short JSON arguments; chat checks are
-            # likewise short and should not spend minutes generating a long reply.
-            result['max_tokens'] = min(requested, 128)
-        return result
+        result = apply_recipe(result, get(backend, body.get('model', '')))
+        return q38rocm_client.prepare_request(result)
     if not body.get('tools') or body.get('tool_choice') == 'none':
         return body
     return apply_recipe(body, get(backend, body.get('model', '')))

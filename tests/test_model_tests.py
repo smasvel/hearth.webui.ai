@@ -223,6 +223,11 @@ class RegistryTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(profiles, 'get', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_q38rocm_catalog_uses_real_hugging_face_repository_id(self):
         import q38rocm_client
         result = q38rocm_client.search_catalog('julianmb')
@@ -230,15 +235,16 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(result[0]['id'], 'julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF')
         self.assertEqual(result[0]['repo_id'], result[0]['id'])
 
-    def test_q38rocm_tests_disable_thinking_and_bound_all_replies(self):
+    def test_q38rocm_tests_disable_thinking_and_preserve_declared_budgets(self):
         chat = {'model': 'q38', 'max_tokens': 512, 'messages': []}
         tools = {'model': 'q38', 'max_tokens': 2048, 'messages': [], 'tools': [{'type': 'function'}]}
-        self.assertEqual(profiles.apply(chat, 'q38rocm')['max_tokens'], 128)
-        self.assertEqual(profiles.apply(tools, 'q38rocm')['max_tokens'], 128)
+        self.assertEqual(profiles.apply(chat, 'q38rocm')['max_tokens'], 512)
+        self.assertEqual(profiles.apply(tools, 'q38rocm')['max_tokens'], 2048)
         for body in (chat, tools):
             updated = profiles.apply(body, 'q38rocm')
-            self.assertFalse(updated['enable_thinking'])
+            self.assertNotIn('enable_thinking', updated)
             self.assertFalse(updated['chat_template_kwargs']['enable_thinking'])
+            self.assertNotIn('frequency_penalty', updated)
 
     def test_q38rocm_profile_preserves_lower_reply_limit_and_template_options(self):
         body = {'max_tokens': 32, 'chat_template_kwargs': {'custom': True}}
@@ -381,7 +387,7 @@ class ModelHandoffTests(unittest.TestCase):
             stack.enter_context(patch.object(app.fastflowlm, '_PAUSED_FILE', root / 'paused'))
             stack.enter_context(patch.object(app.fastflowlm, '_systemctl'))
             stack.enter_context(patch.object(app.fastflowlm, '_write_active'))
-            for client in (app.lms, app.lemonade, app.vllm, app.kobold):
+            for client in (app.lms, app.lemonade, app.vllm, app.kobold, app.q38rocm):
                 stack.enter_context(patch.object(client, 'list_models', return_value=[]))
             stack.enter_context(patch.object(app.fastflowlm, 'list_models', return_value=[
                 {'id':'flm/previous','state':'loaded','type':'llm'}]))
@@ -397,7 +403,7 @@ class ModelHandoffTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             directory = stack.enter_context(tempfile.TemporaryDirectory())
             stack.enter_context(patch.object(app.fastflowlm, '_PAUSED_FILE', Path(directory) / 'paused'))
-            for client in (app.lms, app.lemonade, app.vllm, app.kobold):
+            for client in (app.lms, app.lemonade, app.vllm, app.kobold, app.q38rocm):
                 stack.enter_context(patch.object(client, 'list_models', return_value=[]))
             stack.enter_context(patch.object(app.fastflowlm, 'list_models', return_value=[
                 {'id':'flm/previous','state':'loaded','type':'llm'}]))

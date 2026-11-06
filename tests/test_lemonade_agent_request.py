@@ -5,6 +5,12 @@ import lemonade_guard_shim as shim
 
 
 class AgentRequestTests(unittest.TestCase):
+    def test_large_tool_result_is_preserved_for_continuation(self):
+        content = "start\n" + "source line\n" * 1200 + "end\n"
+        body = {"tools": [{}], "messages": [{"role": "tool", "content": content}]}
+        prepared = shim._prepare_agent_request(body)
+        self.assertEqual(prepared["messages"][-1]["content"], content)
+
     def test_tool_request_sets_template_thinking_flag_without_mutating_input(self):
         body = {'tools': [{'type': 'function'}], 'messages': [{'role': 'user', 'content': 'Inspect project'}]}
         original = copy.deepcopy(body)

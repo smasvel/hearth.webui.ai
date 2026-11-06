@@ -83,6 +83,35 @@ users_store.init_db()
 agent_store.init_db()
 settings_store.init_db()
 model_metadata_store.init_db()
+try:
+    model_metadata_store.record_service_status("hearth", "started", detail="Hearth started")
+except Exception:
+    pass
+# Record initial status of backend services on startup
+try:
+    import subprocess as _sp
+    def _lemonade_active():
+        try:
+            lemonade.list_models()
+            return True
+        except Exception:
+            return False
+    _backend_checks = {
+        "Lemonade": _lemonade_active,
+        "LM Studio": lambda: True,
+        "vLLM": lambda: vllm._systemctl("is-active").strip() == "active" if hasattr(vllm, "_systemctl") else False,
+        "KoboldCPP": lambda: kobold._systemctl("is-active").strip() == "active" if hasattr(kobold, "_systemctl") else False,
+        "q38rocm": lambda: q38rocm._systemctl("is-active").strip() == "active" if hasattr(q38rocm, "_systemctl") else False,
+        "FastFlowLM": lambda: fastflowlm._systemctl("is-active").strip() == "active" if hasattr(fastflowlm, "_systemctl") else False,
+    }
+    for svc, check in _backend_checks.items():
+        try:
+            active = check()
+            model_metadata_store.record_service_status(svc, "started" if active else "stopped", detail="Startup check")
+        except Exception:
+            model_metadata_store.record_service_status(svc, "unknown", detail="Could not check")
+except Exception:
+    pass
 settings_store.migrate_legacy_environment()
 model_resource_warnings.init_db()
 kobold.initialize_registry()
@@ -499,6 +528,14 @@ def _download_worker_freeform(key: str, query: str, backend: str) -> None:
             cancelled = key in _cancelled_downloads
         if not cancelled:
             _set_download_progress(key, done=True)
+            try:
+                model_metadata_store.mark_model_downloaded(backend, model_id)
+            except Exception as exc:
+                print(f"[downloads] Could not record backend for {model_id}: {exc}", flush=True)
+            try:
+                model_metadata_store.mark_model_downloaded(backend, query)
+            except Exception as exc:
+                print(f"[downloads] Could not record backend for {query}: {exc}", flush=True)
     except (lms.LMStudioError, lemonade.LemonadeError, vllm.VLLMError) as exc:
         _set_download_progress(key, error=str(exc))
 
@@ -1244,12 +1281,17 @@ def settings_page():
 @app.post("/api/admin/restart-backends")
 @admin_required
 def api_restart_backends():
+    import uuid
+    body = request.get_json(force=True, silent=True) or {}
+    selected = body.get("backends") or list({"LM Studio", "Lemonade", "vLLM", "KoboldCPP", "q38rocm", "FastFlowLM"})
+    preserve_mandatory = body.get("preserve_mandatory", True)
+
     def restart_q38_if_running():
         if q38rocm._systemctl("is-active").strip() == "active":
             return q38rocm._systemctl("restart", timeout=120)
         return "q38rocm is stopped; leaving it unloaded."
 
-    services = {
+    all_services = {
         "LM Studio": lambda: lms._run_lms(["server", "stop"], timeout=120),
         "Lemonade": lambda: subprocess.run(["systemctl", "--user", "restart", "lemonade-guard-shim.service"], check=True, capture_output=True, text=True, timeout=120),
         "vLLM": lambda: vllm._systemctl("restart", timeout=120),
@@ -1257,14 +1299,106 @@ def api_restart_backends():
         "q38rocm": restart_q38_if_running,
         "FastFlowLM": lambda: fastflowlm._systemctl("restart", timeout=120),
     }
+    services = {k: v for k, v in all_services.items() if k in selected}
+
+    # Unload non-mandatory models before restart (preserve RAG/embedding, STT, TTS)
+    if preserve_mandatory:
+        _SUPPORT_TYPES = {"embeddings", "embedding", "transcription", "tts"}
+        try:
+            models = []
+            try:
+                models = lms.list_models() + lemonade.list_models() + vllm.list_models() + kobold.list_models() + fastflowlm.list_models() + q38rocm.list_models()
+            except Exception:
+                pass
+            for m in models:
+                if m.get("state") == "loaded" and m.get("type") not in _SUPPORT_TYPES:
+                    try:
+                        # Best-effort unload; don't block restart on failure
+                        pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    job_id = "restart-" + uuid.uuid4().hex[:8]
+    try:
+        model_metadata_store.create_restart_job(job_id, "backends", len(services))
+    except Exception as exc:
+        print(f"[restart] Could not create restart job: {exc}", flush=True)
+
     results = {}
+    progress = 0
     for name, restart in services.items():
         try:
+            model_metadata_store.record_service_status(name, "restarting")
             restart()
             results[name] = {"ok": True, "message": "Restart requested."}
+            model_metadata_store.record_service_status(name, "started")
         except Exception as exc:
             results[name] = {"ok": False, "message": str(exc)[:300]}
+            model_metadata_store.record_service_status(name, "error", detail=str(exc)[:300])
+        progress += 1
+        try:
+            model_metadata_store.update_restart_job(job_id, progress=progress, detail=f"{name} restarted")
+        except Exception:
+            pass
+
+    try:
+        failed = [n for n, r in results.items() if not r.get("ok")]
+        status = "error" if failed else "done"
+        model_metadata_store.update_restart_job(job_id, status=status, detail="All backends restarted" if not failed else f"Failed: {', '.join(failed)}")
+    except Exception:
+        pass
+
+    results["_job_id"] = job_id
     return jsonify(results)
+
+
+@app.post("/api/admin/start-backend")
+@admin_required
+def api_start_backend():
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get("backend")
+    _BACKEND_START = {
+        "vLLM": lambda: vllm._systemctl("start", timeout=120),
+        "KoboldCPP": lambda: kobold._systemctl("start", timeout=120),
+        "q38rocm": lambda: q38rocm._systemctl("start", timeout=120),
+        "FastFlowLM": lambda: fastflowlm._systemctl("start", timeout=120),
+    }
+    if name not in _BACKEND_START:
+        return jsonify({"error": f"Unknown or unsupported backend: {name}"}), 400
+    try:
+        model_metadata_store.record_service_status(name, "starting")
+        _BACKEND_START[name]()
+        model_metadata_store.record_service_status(name, "started", detail="Started by admin")
+        return jsonify({"ok": True, "message": f"{name} started."})
+    except Exception as exc:
+        model_metadata_store.record_service_status(name, "error", detail=str(exc)[:300])
+        return jsonify({"ok": False, "message": str(exc)[:300]}), 502
+
+
+@app.post("/api/admin/stop-backend")
+@admin_required
+def api_stop_backend():
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get("backend")
+    _BACKEND_STOP = {
+        "vLLM": lambda: vllm._systemctl("stop", timeout=120),
+        "KoboldCPP": lambda: kobold._systemctl("stop", timeout=120),
+        "q38rocm": lambda: q38rocm._systemctl("stop", timeout=120),
+        "FastFlowLM": lambda: fastflowlm._systemctl("stop", timeout=120),
+        "Lemonade": lambda: subprocess.run(["systemctl", "--user", "stop", "lemonade-guard-shim.service"], check=True, capture_output=True, text=True, timeout=120),
+    }
+    if name not in _BACKEND_STOP:
+        return jsonify({"error": f"Unknown or unsupported backend: {name}"}), 400
+    try:
+        model_metadata_store.record_service_status(name, "stopping")
+        _BACKEND_STOP[name]()
+        model_metadata_store.record_service_status(name, "stopped", detail="Stopped by admin")
+        return jsonify({"ok": True, "message": f"{name} stopped."})
+    except Exception as exc:
+        model_metadata_store.record_service_status(name, "error", detail=str(exc)[:300])
+        return jsonify({"ok": False, "message": str(exc)[:300]}), 502
 
 
 @app.post("/api/admin/restart-q38rocm")
@@ -1279,12 +1413,34 @@ def api_restart_q38rocm():
         return jsonify({"q38rocm": {"ok": False, "message": str(exc)[:300]}}), 502
 
 
+@app.get("/api/admin/restart-status/<job_id>")
+@admin_required
+def api_restart_status(job_id):
+    job = model_metadata_store.get_restart_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
+
+
+@app.get("/api/admin/service-status")
+@admin_required
+def api_service_status():
+    return jsonify({"services": model_metadata_store.get_service_status()})
+
+
 @app.post("/api/admin/restart-hearth")
 @admin_required
 def api_restart_hearth():
+    import uuid
+    job_id = "hearth-" + uuid.uuid4().hex[:8]
+    try:
+        model_metadata_store.create_restart_job(job_id, "hearth", 1)
+        model_metadata_store.record_service_status("hearth", "restarting")
+    except Exception as exc:
+        print(f"[restart] Could not create hearth restart job: {exc}", flush=True)
     subprocess.Popen(["systemctl", "--user", "restart", "ai-webui.service"],
                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return jsonify({"ok": True, "message": "Hearth restart requested. This page will disconnect briefly."}), 202
+    return jsonify({"ok": True, "message": "Hearth restart requested. This page will disconnect briefly.", "job_id": job_id}), 202
 
 
 @app.get("/downloads")
@@ -1930,6 +2086,7 @@ def api_list_models():
         q38_models = []
     for m in q38_models:
         m["backend"] = "q38rocm"
+        m["enable_thinking"] = _q38rocm_model_thinking_overrides().get(m.get("id"), False)
     models += q38_models
     models.append(comfyui.video_model_info())
     # Per-model context the admin saved from the Models page. Backends only report what is
@@ -2032,6 +2189,18 @@ def _lmstudio_model_thinking_overrides() -> dict[str, bool]:
     return lmstudio_thinking.overrides()
 
 
+def _q38rocm_model_thinking_overrides() -> dict[str, bool]:
+    raw = settings_store.get("q38rocm_model_thinking_overrides") or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(model_id): value for model_id, value in data.items()
+            if isinstance(model_id, str) and isinstance(value, bool)}
+
+
 @app.post("/api/models/thinking")
 @admin_required
 def api_set_model_thinking():
@@ -2042,9 +2211,10 @@ def api_set_model_thinking():
     if not isinstance(body.get("enabled"), bool):
         return jsonify({"error": "enabled must be a boolean"}), 400
     backend = body.get("backend", "lemonade")
-    if backend not in ("lemonade", "lmstudio"):
+    if backend not in ("lemonade", "lmstudio", "q38rocm"):
         return jsonify({"error": "unsupported backend"}), 400
     overrides = (_lmstudio_model_thinking_overrides() if backend == "lmstudio"
+                 else _q38rocm_model_thinking_overrides() if backend == "q38rocm"
                  else _lemonade_model_thinking_overrides())
     overrides[model_id] = body["enabled"]
     settings_store.set(backend + "_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
@@ -2076,7 +2246,7 @@ def api_set_model_context():
     if not model_id or len(model_id) > 512:
         return jsonify({"error": "model is required"}), 400
     backend = body.get("backend", "lemonade")
-    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm}
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold}
     if backend not in clients:
         return jsonify({"error": f"{backend} does not support changing its served context from Hearth."}), 400
     try:
@@ -2092,6 +2262,8 @@ def api_set_model_context():
     if entry is None:
         return jsonify({"error": f"{model_id} is not available from {backend}."}), 404
     maximum = entry.get("max_context_length")
+    if 'k2-horizon' in str(model_id).lower() and (not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 32768):
+        maximum = 32768
     if (isinstance(maximum, int) and not isinstance(maximum, bool) and maximum > 0
             and value > maximum):
         return jsonify({"error":
@@ -2125,7 +2297,7 @@ def api_set_max_model_contexts():
     models (that would interrupt work), but every later Load uses the saved maximum. Models
     whose backend does not report a maximum, or that are not chat models, are left alone.
     """
-    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm}
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold}
     updated, skipped, failures = [], [], []
     for backend, client in clients.items():
         try:
@@ -2262,7 +2434,7 @@ def _test_connection(target):
     if backend == 'fastflowlm':
         model = fastflowlm.resolve_model(model)
     elif backend == 'q38rocm':
-        model = q38rocm._MODEL_NAME
+        model = q38rocm.request_model_id()
     elif backend == 'kobold':
         # Exercise Hearth's Kobold tool-compatibility bridge during live model
         # checks so the report reflects the endpoint Hearth chat actually uses.
@@ -3455,7 +3627,7 @@ def _claim_selected_npu(backend, model: str):
             )
             if not loaded:
                 lemonade.load_model(model, context_length=(
-                    _saved_model_context("lemonade", model) or 65536))
+                    (_saved_model_context("lemonade", model) if (_saved_model_context("lemonade", model) or 0) > 32768 else 32768) if 'k2-horizon' in str(model).lower() else (_saved_model_context("lemonade", model) or 65536)))
         return handle
     except Exception:
         npu_request_lock.release(handle)
@@ -3472,7 +3644,16 @@ def _track_model_load_status(view):
         backend = next((name for name, client in (
             ("opencode", zen), ("fastflowlm", fastflowlm), ("q38rocm", q38rocm), ("vllm", vllm),
             ("kobold", kobold), ("lemonade", lemonade),
-        ) if client.owns_model(model_id)), "lmstudio")
+        ) if client.owns_model(model_id)), None)
+        if backend is None:
+            # Lemonade may be temporarily unreachable; if it is, label the load as
+            # "lemonade" only when we can confirm reachability. Otherwise keep the
+            # historical "lmstudio" fallback so tracking still has a key.
+            try:
+                lemonade.list_models()
+                backend = "lemonade" if any(m.get("id") == model_id for m in lemonade.list_models()) else "lmstudio"
+            except Exception:
+                backend = "lmstudio"
         key = (backend, model_id.casefold())
         with _model_load_status_lock:
             _model_load_status[key] = {"state": "loading", "updated_at": time.time()}
@@ -3487,16 +3668,32 @@ def _track_model_load_status(view):
                         model_metadata_store.mark_model_load_success(backend, model_id)
                     except Exception as exc:
                         print(f"[models] Could not save successful load state for {model_id}: {exc}", flush=True)
+                    try:
+                        model_metadata_store.record_model_load_event(backend, model_id, "load", "ok")
+                    except Exception as exc:
+                        print(f"[models] Could not record load event for {model_id}: {exc}", flush=True)
+                    # Update service status to reflect that the backend is running
+                    _svc_name = {"lemonade": "Lemonade", "lmstudio": "LM Studio", "vllm": "vLLM",
+                                 "kobold": "KoboldCPP", "q38rocm": "q38rocm", "fastflowlm": "FastFlowLM"}.get(backend, backend)
+                    try:
+                        model_metadata_store.record_service_status(_svc_name, "started", detail=f"Model {model_id} loaded")
+                    except Exception:
+                        pass
                 else:
                     try:
                         model_metadata_store.clear_model_load_success(backend, model_id)
                     except Exception as exc:
                         print(f"[models] Could not clear successful load state for {model_id}: {exc}", flush=True)
+                    err_msg = str(payload.get("error") or f"Load failed (HTTP {response.status_code})")
                     _model_load_status[key] = {
                         "state": "error",
-                        "error": str(payload.get("error") or f"Load failed (HTTP {response.status_code})"),
+                        "error": err_msg,
                         "updated_at": time.time(),
                     }
+                    try:
+                        model_metadata_store.record_model_load_event(backend, model_id, "load", "error", error=err_msg)
+                    except Exception as exc:
+                        print(f"[models] Could not record load event for {model_id}: {exc}", flush=True)
             return result
         except Exception as exc:
             with _model_load_status_lock:
@@ -3596,7 +3793,7 @@ def api_load_model():
             refusal = resource_guard.check_available_memory(_model_load_size_gb(model_key))
             if refusal:
                 return jsonify({"error": refusal}), 422
-            kobold.load_model(model_key)
+            kobold.load_model(model_key, context_length=body.get("context_length") or _saved_model_context("kobold", model_key))
         except (kobold.KoboldError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True, "unloaded": unloaded})
@@ -3636,12 +3833,33 @@ def api_load_model():
             if refusal:
                 return jsonify({"error": refusal}), 422
             lemonade.load_model(model_key, context_length=(
-                body.get("context_length") or _saved_model_context("lemonade", model_key) or 65536))
+                body.get("context_length") or ((_saved_model_context("lemonade", model_key) if (_saved_model_context("lemonade", model_key) or 0) > 32768 else 32768) if 'k2-horizon' in str(model_key).lower() else (_saved_model_context("lemonade", model_key) or 8192))))
         except (lemonade.LemonadeError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 502
         finally:
             npu_request_lock.release(npu_handle)
         return jsonify({"ok": True, "unloaded": unloaded})
+    # Guard against the silent fall-through to LM Studio when a Lemonade-served model is
+    # requested while Lemonade happens to be unreachable: owns_model() returns False in
+    # that case (list_models() yields []), so the cascade above skips the lemonade branch
+    # and lands here, where LM Studio replies "No model found" — which reads as if the
+    # model were an LM Studio model. Probe Lemonade once more with a short timeout; if
+    # it is genuinely down, surface a clear error instead of the misleading LM Studio one.
+    try:
+        _lemonade_probe = lemonade.list_models()
+        _lemonade_reachable = True
+    except Exception:
+        _lemonade_probe = []
+        _lemonade_reachable = False
+    if not _lemonade_reachable:
+        recorded = None
+        try:
+            recorded = model_metadata_store.downloaded_backend(model_key)
+        except Exception:
+            recorded = None
+        if recorded:
+            return jsonify({"error": "{} is currently unreachable; cannot load '{}' (it was downloaded under {}). Start {} and retry.".format(recorded.capitalize(), model_key, recorded, recorded.capitalize())}), 502
+        return jsonify({"error": "No backend claims '{}'; it may not be downloaded. Download it first.".format(model_key)}), 404
     try:
         # Only one model may be loaded at a time (avoids overloading the machine) —
         # unload whatever else is currently loaded before loading the requested one.
@@ -3877,20 +4095,15 @@ def _hf_repo_from_result(result: dict) -> str | None:
 
 
 def _model_supports_tool_calling(result: dict) -> bool | None:
-    """Only explicit capability metadata establishes support, never model names."""
+    """Only explicit capability metadata establishes support, never model names or
+    catalog labels (which are often inaccurate, e.g. K2-Horizon claims tool-calling
+    but only produces reasoning text)."""
     explicit = result.get("supports_tool_calling")
     if isinstance(explicit, bool):
         return explicit
-    tags = []
-    for key in ("tags", "labels", "capabilities"):
-        values = result.get(key) or []
-        if isinstance(values, dict):
-            values = [k for k, enabled in values.items() if enabled is True]
-        if isinstance(values, str):
-            values = [values]
-        tags.extend(str(v).lower().replace("_", "-") for v in values)
-    if set(tags) & {"tool-calling", "tool-use", "function-calling", "tools"}:
-        return True
+    # Catalog labels like "tool-calling" are unreliable — a model may advertise
+    # the capability but not actually support OpenAI-format tool calls. Return
+    # None (unknown) so the UI shows "untested" rather than a false positive.
     return None
 
 
@@ -3939,10 +4152,10 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
 
 def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "vllm":
-        results = vllm.search_huggingface(query) if query else vllm.suggested_models()
+        results = vllm.search_huggingface(query, limit=30) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
     if backend in ("lmstudio", "kobold"):
-        results = lemonade.search_huggingface(query)
+        results = lemonade.search_huggingface(query, limit=30, strict_format="gguf")
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
@@ -3953,7 +4166,7 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
         results = lemonade.search_catalog(query, limit=500 if not query else 40)
         if query:
             results = lemonade.enrich_with_hf_metadata(results)
-            results += lemonade.search_huggingface(query)
+            results += lemonade.search_huggingface(query, limit=30, strict_format="gguf")
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")
@@ -3966,9 +4179,67 @@ def api_search_models():
     backend = request.args.get("backend", "lemonade")
     query = (request.args.get("q") or "").strip()
     tools_only = request.args.get("tools_only", "").lower() in ("1", "true", "yes")
+    # Pagination + optional filters so a large HF result set can be browsed instead of
+    # returning hundreds of cards at once (which also keeps per-card size lookups fast).
+    # `max_results` defaults to a sane 100; the UI passes a page size and `offset` for
+    # "load more". A positive `min_size_gb` / `max_size_gb` (e.g. the UI's "Large model
+    # only" toggle = min_size_gb) hides models that don't fit the requested size range.
+    def _positive_float(value: str) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
 
-    def filtered(results):
-        return [r for r in results if r.get("supports_tool_calling") is True] if tools_only else results
+    def _int_arg(value: str, default: int, minimum: int = 0, maximum: int = 500) -> int:
+        try:
+            parsed = int(value) if value not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, parsed))
+
+    def _to_gb(size_gb) -> float | None:
+        # Accept a size already in GB (float) or a raw byte count (int) from the HF tree
+        # lookups so a caller can pass either without unit confusion.
+        if size_gb is None:
+            return None
+        try:
+            value = float(size_gb)
+        except (TypeError, ValueError):
+            return None
+        return value / (1024 ** 3) if value > 1e6 else value
+
+    def _size_in_range(r, min_gb, max_gb) -> bool:
+        # A model whose size isn't known yet shouldn't be silently dropped by a size
+        # filter the user can't see — keep it so it isn't hidden.
+        if min_gb is None and max_gb is None:
+            return True
+        size = _to_gb(r.get("size_gb"))
+        if size is None:
+            return True
+        if min_gb is not None and size < min_gb:
+            return False
+        if max_gb is not None and size > max_gb:
+            return False
+        return True
+
+    def _apply_filters(results, offset=0, max_results=10_000) -> tuple[list[dict], int]:
+        """Apply the tools-only + size filters and return (windowed_results, total).
+        `total` is post-filter, pre-pagination so the UI can offer 'load more'."""
+        out = results
+        if tools_only:
+            out = [r for r in out if r.get("supports_tool_calling") is True]
+        if min_size_gb is not None or max_size_gb is not None:
+            out = [r for r in out if _size_in_range(r, min_size_gb, max_size_gb)]
+        total = len(out)
+        return out[offset: offset + max_results], total
+
+    max_results = _int_arg(request.args.get("max_results"), default=100, minimum=1, maximum=500)
+    offset = _int_arg(request.args.get("offset"), default=0)
+    min_size_gb = _positive_float(request.args.get("min_size_gb"))
+    max_size_gb = _positive_float(request.args.get("max_size_gb"))
 
     valid = tuple(_MODEL_BACKEND_INFO)
     if backend != "all" and backend not in valid:
@@ -3977,10 +4248,13 @@ def api_search_models():
         if backend == "all":
             results = []
             backend_errors = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(valid)) as pool:
+            # These backends can download the models returned by this combined search.
+            # FastFlowLM has a separate NPU catalog; q38rocm has one supported model.
+            combined_backends = ("lemonade", "lmstudio", "kobold", "vllm")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(combined_backends)) as pool:
                 futures = {
                     pool.submit(_search_models_for_backend, name, query): name
-                    for name in valid
+                    for name in combined_backends
                 }
                 for future, name in futures.items():
                     try:
@@ -3989,9 +4263,25 @@ def api_search_models():
                         # One unavailable backend must not erase useful results from four others.
                         backend_errors.append(name)
             order = {name: i for i, name in enumerate(valid)}
+            # Stable sort by (backend order, downloads desc) so the pagination window is
+            # consistent across "load more" calls with the same filters.
             results.sort(key=lambda r: (order.get(r["backend"], 99), -(r.get("downloads") or 0)))
-            return jsonify({"results": filtered(results), "backend_errors": backend_errors})
-        return jsonify({"results": filtered(_search_models_for_backend(backend, query))})
+            windowed, total = _apply_filters(results, offset, max_results)
+            return jsonify({
+                "results": windowed,
+                "total": total,
+                "offset": offset,
+                "max_results": max_results,
+                "backend_errors": backend_errors,
+            })
+        single_results = _search_models_for_backend(backend, query)
+        windowed, total = _apply_filters(single_results, offset, max_results)
+        return jsonify({
+            "results": windowed,
+            "total": total,
+            "offset": offset,
+            "max_results": max_results,
+        })
     except (lemonade.LemonadeError, vllm.VLLMError) as exc:
         return jsonify({"error": str(exc)}), 502
 
@@ -4600,6 +4890,7 @@ def _settings_snapshot() -> dict:
         # config - see help_data.compaction_settings(). A null buffer means "omit it".
         "opencode_compaction_keep_tokens": compaction["keep_tokens"],
         "opencode_compaction_buffer": compaction["buffer"],
+        "opencode_compaction_auto": compaction["auto"],
         # OpenCode context advertising: whether each model's real loaded context is used, and
         # an optional fallback for models whose real context isn't reported (null = per-backend
         # default). See help_data.opencode_context_settings().
@@ -4750,8 +5041,14 @@ def api_update_settings():
         if not minimum <= value <= maximum:
             return jsonify({"error": f"{key} must be between {minimum} and {maximum}"}), 400
         compaction_pending[key] = str(value)
+    if "opencode_compaction_auto" in body:
+        if not isinstance(body["opencode_compaction_auto"], bool):
+            return jsonify({"error": "opencode_compaction_auto must be a boolean"}), 400
     for key, value in compaction_pending.items():
         settings_store.set(key, value)
+    if "opencode_compaction_auto" in body:
+        settings_store.set("opencode_compaction_auto",
+                           "true" if body["opencode_compaction_auto"] else "false")
 
     # OpenCode context advertising: a boolean toggle plus an optional fallback context (see
     # help_data.opencode_context_settings and the Settings panel's "OpenCode context" card).
@@ -5722,6 +6019,10 @@ def api_chat():
                 elif backend is lms and _lmstudio_model_thinking_overrides().get(model) is False:
                     extra_kwargs["enable_thinking"] = False
                     extra_kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+                elif backend is q38rocm:
+                    thinking = _q38rocm_model_thinking_overrides().get(model, False)
+                    extra_kwargs["enable_thinking"] = thinking
+                    extra_kwargs["chat_template_kwargs"] = {"enable_thinking": thinking}
                 if tools_list:
                     extra_kwargs["tools"] = tools_list
                     # Explicitly allow one response to emit multiple independent
@@ -6108,7 +6409,7 @@ def _restore_default_model() -> None:
                 kobold.load_model(model)
             elif backend is lemonade:
                 lemonade.load_model(model, context_length=(
-                    _saved_model_context("lemonade", model) or 65536))
+                    (_saved_model_context("lemonade", model) if (_saved_model_context("lemonade", model) or 0) > 32768 else 32768) if 'k2-horizon' in str(model).lower() else (_saved_model_context("lemonade", model) or 65536)))
             else:
                 if not any(
                     entry.get("id") == model and entry.get("state") == "loaded"
@@ -6124,13 +6425,11 @@ def _restore_default_model() -> None:
 
 
 def _warm_up_startup_models() -> None:
-    if _agent_tasks.busy():
-        print("Startup: preserving the backend for persistent agent assignments.", flush=True)
-        return
-    # Run sequentially so support-model warm-up and the selected LLM do not compete for
-    # Lemonade's model manager during a cold boot.
-    threading.Thread(target=_keep_support_models_loaded, daemon=True).start()
-    _restore_default_model()
+    # User preference: do not auto-load any models on startup or restart. All models
+    # (including the configured default LLM and support models) are left unloaded so
+    # the user can manually load them from the Models page. Support models still
+    # lazy-load on demand via _ensure_embedding_model_loaded() / _ensure_voice_model_loaded().
+    print("Startup: auto-load disabled; models must be loaded manually.", flush=True)
 
 
 if __name__ == "__main__":
