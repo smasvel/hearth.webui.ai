@@ -7,7 +7,7 @@ import app
 
 class DownloadSearchTests(unittest.TestCase):
     def test_empty_combined_search_uses_only_compatible_backends(self):
-        def result(backend, query, limit):
+        def result(backend, query, limit, include_details=True):
             self.assertEqual(query, "")
             return [{"backend": backend, "id": f"{backend}/model-{n}", "downloads": limit - n}
                     for n in range(limit)]
@@ -19,11 +19,12 @@ class DownloadSearchTests(unittest.TestCase):
         self.assertEqual({call.args[0] for call in search.call_args_list},
                          {"lemonade", "lmstudio", "kobold", "vllm"})
         self.assertEqual({call.args[2] for call in search.call_args_list}, {101})
+        self.assertEqual({call.args[3] for call in search.call_args_list}, {False})
         self.assertEqual(len(data["results"]), 100)
         self.assertEqual(data["total"], 404)
 
     def test_later_page_fetches_a_larger_backend_prefix(self):
-        def result(backend, query, limit):
+        def result(backend, query, limit, include_details=True):
             return [{"backend": backend, "id": f"{backend}/model-{n}", "downloads": limit - n}
                     for n in range(limit)]
 
@@ -35,6 +36,19 @@ class DownloadSearchTests(unittest.TestCase):
         self.assertEqual(len(data["results"]), 60)
         self.assertEqual({call.args[2] for call in search.call_args_list}, {181})
         self.assertEqual({call.args[1] for call in search.call_args_list}, {"large"})
+
+    def test_broad_search_enriches_only_the_returned_page(self):
+        def result(backend, query, limit, include_details=True):
+            return [{"backend": backend, "id": f"{backend}/model-{n}", "downloads": limit - n}
+                    for n in range(limit)]
+
+        with app.app.test_request_context("/api/models/search?backend=all&q=large&max_results=3"):
+            with patch.object(app, "_search_models_for_backend", side_effect=result), \
+                 patch.object(app, "_enrich_search_page") as fill_sizes:
+                response = app.api_search_models.__wrapped__()
+        self.assertEqual(len(response.get_json()["results"]), 3)
+        fill_sizes.assert_called_once()
+        self.assertEqual(len(fill_sizes.call_args.args[0]), 3)
 
     def test_gguf_backends_request_only_gguf_from_hugging_face(self):
         model = {"id": "publisher/model-GGUF", "source": "huggingface"}

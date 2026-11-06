@@ -652,7 +652,7 @@ def _fill_sizes(results: list[dict]) -> None:
                 results[idx]["size_gb"] = size_bytes / 1e9
 
 
-def suggested_models() -> list[dict]:
+def suggested_models(include_sizes: bool = True) -> list[dict]:
     """The curated _SUGGESTED_MODELS as search-result dicts (same shape
     search_huggingface() returns), so the Downloads page renders them with the same
     card code. Shown when the vLLM search box is empty — the 'browse suggestions' case
@@ -676,11 +676,12 @@ def suggested_models() -> list[dict]:
         }
         for repo_id, desc in _SUGGESTED_MODELS
     ]
-    _fill_sizes(results)
+    if include_sizes:
+        _fill_sizes(results)
     return results
 
 
-def search_huggingface(query: str, limit: int = 30) -> list[dict]:
+def search_huggingface(query: str, limit: int = 30, include_sizes: bool = True) -> list[dict]:
     """Live search against Hugging Face's public model API (no key needed) — vLLM has
     no catalog of its own (unlike Lemonade's curated list), so this is the only
     search source. vLLM serves causal-LM / text-generation repos directly (not GGUF
@@ -742,7 +743,8 @@ def search_huggingface(query: str, limit: int = 30) -> list[dict]:
             }
         )
 
-    _fill_sizes(results)
+    if include_sizes:
+        _fill_sizes(results)
     return results
 
 
