@@ -933,7 +933,7 @@ def _hf_filter_string(extra_formats: list[str] | tuple[str, ...] | None = None) 
 
 
 def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | tuple[str, ...] = ("gguf",),
-                       strict_format: str | None = None) -> list[dict]:
+                       strict_format: str | None = None, include_descriptions: bool = True) -> list[dict]:
     """Live search against Hugging Face's public model API (no key needed) — the exact
     endpoint Lemonade's own web UI calls from the browser, confirmed by inspecting its
     JS bundle directly rather than guessing: `renderer.bundle.js` calls
@@ -990,13 +990,30 @@ def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | t
             }
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(results), 16) or 1) as pool:
-        future_to_idx = {pool.submit(_fetch_readme_description, r["id"]): i for i, r in enumerate(results)}
-        for fut, idx in future_to_idx.items():
+    if include_descriptions:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(results), 16) or 1) as pool:
+            future_to_idx = {pool.submit(_fetch_readme_description, r["id"]): i for i, r in enumerate(results)}
+            for fut, idx in future_to_idx.items():
+                try:
+                    results[idx]["description"] = fut.result(timeout=6)
+                except Exception:
+                    results[idx]["description"] = None
+    return results
+
+
+def fill_result_descriptions(results: list[dict], max_fetch: int = 60) -> list[dict]:
+    """Best-effort README summaries for the visible Hugging Face results page."""
+    targets = [(i, r) for i, r in enumerate(results)
+               if r.get("source") == "huggingface" and not r.get("description") and r.get("id")][:max_fetch]
+    if not targets:
+        return results
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
+        future_to_idx = {pool.submit(_fetch_readme_description, r["id"]): i for i, r in targets}
+        for future, index in future_to_idx.items():
             try:
-                results[idx]["description"] = fut.result(timeout=6)
+                results[index]["description"] = future.result(timeout=6)
             except Exception:
-                results[idx]["description"] = None
+                results[index]["description"] = None
     return results
 
 

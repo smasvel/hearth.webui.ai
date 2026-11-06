@@ -4150,13 +4150,17 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
     return normalized
 
 
-def _search_models_for_backend(backend: str, query: str, limit: int = 30) -> list[dict]:
+def _search_models_for_backend(backend: str, query: str, limit: int = 30,
+                               include_details: bool = True) -> list[dict]:
     if backend == "vllm":
-        results = vllm.search_huggingface(query, limit=limit) if query else vllm.suggested_models()
+        results = (vllm.search_huggingface(query, limit=limit, include_sizes=include_details)
+                   if query else vllm.suggested_models(include_sizes=include_details))
         return _normalize_model_results(results, backend)
     if backend in ("lmstudio", "kobold"):
-        results = lemonade.search_huggingface(query, limit=limit, strict_format="gguf")
-        lemonade.fill_result_sizes(results)
+        results = lemonade.search_huggingface(query, limit=limit, strict_format="gguf",
+                                              include_descriptions=include_details)
+        if include_details:
+            lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     if backend == "fastflowlm":
         return _normalize_model_results(fastflowlm.search_catalog(query, limit=500 if not query else 80), backend)
@@ -4165,11 +4169,27 @@ def _search_models_for_backend(backend: str, query: str, limit: int = 30) -> lis
     if backend == "lemonade":
         results = lemonade.search_catalog(query, limit=500 if not query else limit)
         if query:
-            results = lemonade.enrich_with_hf_metadata(results)
-            results += lemonade.search_huggingface(query, limit=limit, strict_format="gguf")
-        lemonade.fill_result_sizes(results)
+            if include_details:
+                results = lemonade.enrich_with_hf_metadata(results)
+            results += lemonade.search_huggingface(query, limit=limit, strict_format="gguf",
+                                                    include_descriptions=include_details)
+        if include_details:
+            lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")
+
+
+def _enrich_search_page(results: list[dict]) -> None:
+    """Fill sizes and summaries only for the visible page, keeping broad searches responsive."""
+    by_backend: dict[str, list[dict]] = {}
+    for result in results:
+        by_backend.setdefault(result.get("backend", ""), []).append(result)
+    for backend, items in by_backend.items():
+        if backend == "vllm":
+            vllm._fill_sizes(items)
+        elif backend in ("lemonade", "lmstudio", "kobold"):
+            lemonade.fill_result_sizes(items)
+            lemonade.fill_result_descriptions(items)
 
 
 @app.get("/api/models/search")
@@ -4246,6 +4266,7 @@ def api_search_models():
     search_limit = min(offset + max_results + 1, 500)
     min_size_gb = _positive_float(request.args.get("min_size_gb"))
     max_size_gb = _positive_float(request.args.get("max_size_gb"))
+    include_details = min_size_gb is not None or max_size_gb is not None
 
     valid = tuple(_MODEL_BACKEND_INFO)
     if backend != "all" and backend not in valid:
@@ -4259,7 +4280,7 @@ def api_search_models():
             combined_backends = ("lemonade", "lmstudio", "kobold", "vllm")
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(combined_backends)) as pool:
                 futures = {
-                    pool.submit(_search_models_for_backend, name, query, search_limit): name
+                    pool.submit(_search_models_for_backend, name, query, search_limit, include_details): name
                     for name in combined_backends
                 }
                 for future, name in futures.items():
@@ -4273,6 +4294,8 @@ def api_search_models():
             # consistent across "load more" calls with the same filters.
             results.sort(key=lambda r: (order.get(r["backend"], 99), -(r.get("downloads") or 0)))
             windowed, total = _apply_filters(results, offset, max_results)
+            if not include_details:
+                _enrich_search_page(windowed)
             return jsonify({
                 "results": windowed,
                 "total": total,
@@ -4280,8 +4303,10 @@ def api_search_models():
                 "max_results": max_results,
                 "backend_errors": backend_errors,
             })
-        single_results = _search_models_for_backend(backend, query, search_limit)
+        single_results = _search_models_for_backend(backend, query, search_limit, include_details)
         windowed, total = _apply_filters(single_results, offset, max_results)
+        if not include_details:
+            _enrich_search_page(windowed)
         return jsonify({
             "results": windowed,
             "total": total,
