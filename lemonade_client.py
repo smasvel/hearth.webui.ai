@@ -896,7 +896,7 @@ def enrich_with_hf_metadata(results: list[dict], max_fetch: int = 12) -> list[di
         meta["description"] = _fetch_readme_description(repo_id)
         return meta
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
         future_to_idx = {
             pool.submit(_fetch_one, _hf_repo_id_from_checkpoint(r["checkpoint"])): i for i, r in targets
         }
@@ -990,7 +990,7 @@ def search_huggingface(query: str, limit: int = 30, extra_formats: list[str] | t
             }
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(results) or 1) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(results), 16) or 1) as pool:
         future_to_idx = {pool.submit(_fetch_readme_description, r["id"]): i for i, r in enumerate(results)}
         for fut, idx in future_to_idx.items():
             try:
