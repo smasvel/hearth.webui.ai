@@ -203,11 +203,11 @@ screenshots show their empty states.
 
 | Evaluate model behavior | Set up an agent task |
 |---|---|
-| ![Hearth model tests and saved results](docs/screenshots/model-tests.png) | ![Hearth agent task editor](docs/screenshots/agents.png) |
+| ![Hearth model tests and saved results](docs/screenshots/model-tests.png?v=2) | ![Hearth agent task editor](docs/screenshots/agents.png) |
 
 | Review performance metrics | Inspect live request logs |
 |---|---|
-| ![Hearth performance metrics dashboard with model test report and recommendation](docs/screenshots/metrics.png) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
+| ![Hearth performance metrics dashboard with model test report and recommendation](docs/screenshots/metrics.png?v=2) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
 
 | Review AI browser history |
 |---|
