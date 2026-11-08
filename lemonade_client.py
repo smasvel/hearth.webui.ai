@@ -555,6 +555,12 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
         if attempt < _LOAD_RETRIES:
             time.sleep(_LOAD_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, _LOAD_RETRY_JITTER_SECONDS))
     else:
+        if "exited before becoming healthy" in last_error or "llama-server" in last_error:
+            raise LemonadeError(
+                f"Failed to load '{model_key}' on Lemonade after {_LOAD_RETRIES} attempts: "
+                f"the backend (llama-server) crashed during loading. Free up RAM or check "
+                f"the model file integrity and retry."
+            )
         raise LemonadeError(f"Failed to load '{model_key}' on Lemonade after {_LOAD_RETRIES} attempts: {last_error}")
 
     if resp is None or resp.status_code >= 500:
@@ -562,6 +568,13 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     try:
         resp.raise_for_status()
     except requests.RequestException as exc:
+        msg = str(exc)
+        if "exited before becoming healthy" in msg or "llama-server" in msg:
+            raise LemonadeError(
+                f"Failed to load '{model_key}' on Lemonade: the backend (llama-server) "
+                f"crashed during loading. This usually means insufficient memory or a "
+                f"corrupted model file. Free up RAM and retry."
+            ) from exc
         raise LemonadeError(f"Failed to load '{model_key}' on Lemonade: {exc}") from exc
 
     # Verify the model actually loaded — Lemonade sometimes returns success
