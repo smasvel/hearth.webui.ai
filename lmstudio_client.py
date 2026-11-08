@@ -61,6 +61,13 @@ def _run_lms(args: list[str], timeout: int = 120) -> str:
         raise LMStudioError(f"'lms {' '.join(args)}' timed out") from exc
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "lms command failed").strip()
+        if "exited before becoming healthy" in message or "llama-server" in message:
+            message = (
+                f"LM Studio's internal llama-server crashed while loading '{args[1] if len(args) > 1 else 'model'}'. "
+                f"This usually means the model file is corrupted, incompatible, or there is "
+                f"insufficient memory. Free up RAM or re-download the model. "
+                f"Original error: {message[:300]}"
+            )
         raise LMStudioError(message)
     return result.stdout
 

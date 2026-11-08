@@ -547,12 +547,26 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
             )
             if resp.status_code < 500:
                 break
-            last_error = f"Server Error (HTTP {resp.status_code}) from url: {resp.url}"
+            # Include the response body so crash details (e.g. "exited before
+            # becoming healthy") are available for the error message below.
+            try:
+                body_text = resp.text[:500]
+            except Exception:
+                body_text = ""
+            last_error = f"Server Error (HTTP {resp.status_code}) from url: {resp.url}: {body_text}"
         except requests.RequestException as exc:
             # Connection reset / timeout while the backend process is spawning — transient, retry.
             last_error = str(exc)
             resp = None
         if attempt < _LOAD_RETRIES:
+            # If Lemonade is down (service crashed), don't retry — it won't help.
+            try:
+                requests.get(f"{base_url()}/v1/health", headers=_auth_headers(), timeout=5).raise_for_status()
+            except requests.RequestException:
+                raise LemonadeError(
+                    f"Failed to load '{model_key}' on Lemonade: the backend service "
+                    f"went down during loading. Restart Lemonade and retry."
+                )
             time.sleep(_LOAD_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, _LOAD_RETRY_JITTER_SECONDS))
     else:
         if "exited before becoming healthy" in last_error or "llama-server" in last_error:
