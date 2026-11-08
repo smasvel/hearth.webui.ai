@@ -209,6 +209,10 @@ screenshots show their empty states.
 |---|---|
 | ![Hearth performance metrics dashboard with model test report and recommendation](docs/screenshots/metrics.png?v=2) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
 
+| Model test report and recommendation |
+|---|
+| ![Hearth model test report table with pass/fail/skip counts and recommended model](docs/screenshots/metrics.png?v=2) |
+
 | Review AI browser history |
 |---|
 | ![Hearth AI browser history page showing its empty history table](docs/screenshots/browse-history.png) |
