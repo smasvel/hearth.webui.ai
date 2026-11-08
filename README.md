@@ -213,7 +213,7 @@ screenshots show their empty states.
 
 | Review performance metrics | Inspect live request logs |
 |---|---|
-| ![Hearth performance metrics dashboard](docs/screenshots/metrics.png) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
+| ![Hearth performance metrics dashboard with model test report and recommendation](docs/screenshots/metrics.png) | ![Hearth live developer logs waiting for inference traffic](docs/screenshots/live-logs.png) |
 
 | Review AI browser history |
 |---|
