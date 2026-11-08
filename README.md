@@ -195,9 +195,9 @@ agent task editor, performance metrics, live request logs, and AI browser histor
 Chat and agent setup use fictional demo text. Metrics, live-log, and browser-history
 screenshots show their empty states.
 
-| Sign in to Hearth |
+| Agents moving between workflow steps |
 |---|
-| ![Hearth animated AI login page screenshot](docs/screenshots/login.png) |
+| ![Animated preview of robot agents travelling along connected paths on the Hearth login page](docs/screenshots/login-animation.gif) |
 
 | Find and download a model |
 |---|
