@@ -5095,7 +5095,15 @@ def api_list_users():
 @app.get("/api/auth-events")
 @admin_required
 def api_auth_events():
-    return jsonify({"events": users_store.list_auth_events()})
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page", 50))
+    except ValueError:
+        per_page = 50
+    return jsonify(users_store.list_auth_events(page=page, per_page=per_page))
 
 
 @app.post("/api/users")

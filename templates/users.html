@@ -66,7 +66,20 @@
           <div class="console-card span-all">
             <div class="users-list-header"><h2>Login and password history</h2><button id="refresh-auth-events" class="icon-btn" title="Refresh history">&#8635;</button></div>
             <p class="hint">Successful and failed sign-ins, plus password creation and reset events. Password resets identify the administrator who performed them. Passwords and hashes are never shown.</p>
-            <div id="auth-events-list" class="model-list"><p class="hint">Loading history&hellip;</p></div>
+            <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Login history table.">
+              <table class="console-table metric-table">
+                <thead><tr><th>Time</th><th>Username</th><th>Event</th><th>Result</th><th>IP address</th><th>Changed by</th></tr></thead>
+                <tbody id="auth-events-list"><tr><td colspan="6" class="hint">Loading history&hellip;</td></tr></tbody>
+              </table>
+            </div>
+            <div class="metric-pagination">
+              <span id="auth-events-count" class="hint"></span>
+              <div class="metric-pagination-controls">
+                <button id="auth-events-prev" class="panel-btn" type="button">&larr; Prev</button>
+                <span id="auth-events-page" class="hint"></span>
+                <button id="auth-events-next" class="panel-btn" type="button">Next &rarr;</button>
+              </div>
+            </div>
           </div>
 
           <div id="caddy-snippet-card" class="console-card span-all hidden">

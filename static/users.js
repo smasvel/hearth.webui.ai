@@ -93,16 +93,34 @@
     }
   }
 
-  async function fetchAuthEvents() {
+  let authEventsPage = 1;
+  async function fetchAuthEvents(page) {
+    if (page) authEventsPage = page;
     try {
-      const res = await fetch('/api/auth-events'); const data = await res.json();
+      const res = await fetch(`/api/auth-events?page=${authEventsPage}&per_page=20`); const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'failed to load history');
-      authEventsEl.innerHTML = (data.events || []).map(e => {
+      const events = data.events || [];
+      authEventsEl.innerHTML = events.map(e => {
         const label = e.event_type === 'login' ? (e.succeeded ? 'Sign-in succeeded' : 'Sign-in failed') : e.event_type === 'password_created' ? 'Password created' : 'Password changed';
-        const actor = e.actor_username ? ` · changed by ${escapeHtml(e.actor_username)}` : '';
-        return `<div class="model-row"><div><strong>${escapeHtml(e.username)}</strong><div class="hint">${escapeHtml(label)}${actor} · ${escapeHtml(new Date(e.created_at * 1000).toLocaleString())}</div></div><span class="hint">${escapeHtml(e.remote_addr || 'unknown address')}</span></div>`;
-      }).join('') || '<p class="hint">No authentication events recorded yet.</p>';
-    } catch (err) { authEventsEl.innerHTML = `<p class="hint">Could not load history.<br>${escapeHtml(err.message)}</p>`; }
+        const resultClass = e.event_type === 'login' ? (e.succeeded ? 'ok' : 'err') : '';
+        return `<tr>
+          <td class="num">${escapeHtml(new Date(e.created_at * 1000).toLocaleString())}</td>
+          <td>${escapeHtml(e.username)}</td>
+          <td>${escapeHtml(label)}</td>
+          <td class="num ${resultClass}">${e.event_type === 'login' ? (e.succeeded ? 'OK' : 'Failed') : '—'}</td>
+          <td>${escapeHtml(e.remote_addr || 'unknown')}</td>
+          <td>${e.actor_username ? escapeHtml(e.actor_username) : '—'}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="hint">No authentication events recorded yet.</td></tr>';
+      const countEl = document.getElementById('auth-events-count');
+      const pageEl = document.getElementById('auth-events-page');
+      if (countEl) countEl.textContent = `${data.total} events`;
+      if (pageEl) pageEl.textContent = `Page ${data.page} of ${data.total_pages}`;
+      const prevBtn = document.getElementById('auth-events-prev');
+      const nextBtn = document.getElementById('auth-events-next');
+      if (prevBtn) prevBtn.disabled = data.page <= 1;
+      if (nextBtn) nextBtn.disabled = data.page >= data.total_pages;
+    } catch (err) { authEventsEl.innerHTML = `<tr><td colspan="6" class="hint">Could not load history.<br>${escapeHtml(err.message)}</td></tr>`; }
   }
 
   function renderUsersList(users) {
@@ -242,14 +260,14 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "reset failed");
       addSystemMessage(`Password reset for ${username}`);
-      fetchAuthEvents();
+      fetchAuthEvents(1);
     } catch (err) {
       addSystemMessage(`Failed to reset password for ${username}: ${err.message}`, true);
     }
   }
 
   refreshUsersBtn.addEventListener("click", () => fetchUsers(currentPage));
-  refreshAuthEventsBtn.addEventListener("click", fetchAuthEvents);
+  refreshAuthEventsBtn.addEventListener("click", () => fetchAuthEvents(1));
 
   newRoleEl.addEventListener("change", () => {
     newAgentWorkflowEl.value = newRoleEl.value === "admin" ? "true" : "false";
@@ -279,7 +297,7 @@
       newRoleEl.value = "user";
       newAgentWorkflowEl.value = "false";
       await fetchUsers(1);
-      await fetchAuthEvents();
+      await fetchAuthEvents(1);
     } catch (err) {
       addSystemMessage(`Failed to add user: ${err.message}`, true);
     } finally {
@@ -288,5 +306,7 @@
   });
 
   fetchUsers();
-  fetchAuthEvents();
+  fetchAuthEvents(1);
+  document.getElementById('auth-events-prev')?.addEventListener('click', () => fetchAuthEvents(authEventsPage - 1));
+  document.getElementById('auth-events-next')?.addEventListener('click', () => fetchAuthEvents(authEventsPage + 1));
 })();

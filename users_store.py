@@ -78,10 +78,14 @@ def record_auth_event(username, event_type, succeeded, user_id=None, remote_addr
     with _connect() as conn:
         conn.execute("INSERT INTO auth_events (user_id, username, event_type, succeeded, remote_addr, actor_username, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)", (user_id, username, event_type, succeeded, remote_addr, actor_username, time.time()))
 
-def list_auth_events(limit=200):
+def list_auth_events(page: int = 1, per_page: int = 50) -> dict:
+    page = max(1, page)
+    per_page = max(1, min(per_page, 200))
+    offset = (page - 1) * per_page
     with _connect() as conn:
-        rows = conn.execute("SELECT id, username, event_type, succeeded, remote_addr, actor_username, created_at FROM auth_events ORDER BY created_at DESC LIMIT %s", (max(1, min(limit, 500)),)).fetchall()
-    return [dict(row) for row in rows]
+        total = conn.execute("SELECT COUNT(*) FROM auth_events").fetchone()[0]
+        rows = conn.execute("SELECT id, username, event_type, succeeded, remote_addr, actor_username, created_at FROM auth_events ORDER BY created_at DESC LIMIT %s OFFSET %s", (per_page, offset)).fetchall()
+    return {"events": [dict(row) for row in rows], "total": total, "page": page, "per_page": per_page, "total_pages": (total + per_page - 1) // per_page}
 
 
 def count_users() -> int:
