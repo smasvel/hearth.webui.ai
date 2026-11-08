@@ -244,6 +244,10 @@ account and its salted, one-way password hash are stored in PostgreSQL. Backend
 endpoints and credentials edited in **Settings** are stored in PostgreSQL as well;
 API keys are encrypted with a key derived from the PostgreSQL connection password.
 
+## Shared admin data
+
+Model test runs and performance metrics are stored in PostgreSQL and shared across all admin users. Any admin can view, cancel, or delete test runs started by another admin. The metrics page aggregates data from all users.
+
 ## Model test report
 
 The metrics page includes a model test report table aggregating results from all model test runs. It shows pass/fail/skip counts, pass rate, and a composite score (pass rate × coverage). The top-scoring model is recommended for best results.
