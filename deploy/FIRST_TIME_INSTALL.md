@@ -231,6 +231,8 @@ addresses, or tailnet names in files or commit history. To audit the entire loca
 history and working tree, run
 `python3 tools/check_push_secrets.py --all-history --working-tree`. Resolve any
 findings before pushing and do not use `git push --no-verify`.
+Placeholder exceptions apply to credential values, and sensitive filenames are
+checked in test files too.
 
 ### Initial administrator account
 

@@ -1052,6 +1052,8 @@ tailnet names. Run `python3 tools/check_push_secrets.py --all-history --working-
 to audit all reachable commits and current files. Resolve findings before pushing;
 do not bypass the hook with `--no-verify`. The release workflow also checks source
 history before it packages or publishes artifacts.
+Placeholder exceptions apply to credential values, and sensitive filenames are
+checked in test files too.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain

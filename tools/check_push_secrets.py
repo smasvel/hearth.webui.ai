@@ -77,7 +77,10 @@ def scan_content(data: bytes, path: str) -> list[str]:
                     digest = hashlib.sha256(match.group(0)).hexdigest()
                     if digest in FIXTURE_IP_HASHES[path]:
                         continue
-                if label in {'provider-token', 'private-key', 'bearer-token', 'private-ip'} or not PLACEHOLDER.search(match.group(0)):
+                # For assignments, inspect only the captured value. A variable
+                # named example_api_key must not exempt a real credential.
+                candidate = match.group(1) if label in {'credential-assignment', 'credential-env'} else match.group(0)
+                if label in {'provider-token', 'private-key', 'bearer-token', 'private-ip'} or not PLACEHOLDER.search(candidate):
                     findings.append(f'{path}:{number}: {label}')
     return findings
 
@@ -91,7 +94,7 @@ def scan_objects(objects: dict[str, set[str]]) -> list[str]:
         for path in paths:
             if not path:
                 continue
-            if SENSITIVE_NAME.search(path) and path != '.env.example' and not path.startswith('tests/'):
+            if SENSITIVE_NAME.search(path) and path != '.env.example':
                 findings.append(f'{path} @ {sha[:12]}: sensitive filename')
             findings.extend(f'{item} @ {sha[:12]}' for item in scan_content(data, path))
     return findings
@@ -109,7 +112,7 @@ def scan_working_tree() -> list[str]:
         file = ROOT / path
         if not file.is_file() or file.is_symlink():
             continue
-        if SENSITIVE_NAME.search(path) and path != '.env.example' and not path.startswith('tests/'):
+        if SENSITIVE_NAME.search(path) and path != '.env.example':
             findings.append(f'{path}: sensitive filename')
         findings.extend(scan_content(file.read_bytes(), path))
     return findings

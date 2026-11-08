@@ -20,3 +20,11 @@ class PushSecretCheckTests(unittest.TestCase):
         data = b'host = "10.' + b'44.55.66"\n'
         self.assertEqual(scanner.scan_content(data, 'settings.txt'),
                          ['settings.txt:1: private-ip'])
+
+    def test_placeholder_in_variable_name_does_not_exempt_credential(self):
+        data = b'api_key_example = "' + b'actual-private-' + b'value-123456"\n'
+        self.assertEqual(scanner.scan_content(data, 'settings.py'),
+                         ['settings.py:1: credential-assignment'])
+
+    def test_sensitive_filename_in_tests_is_not_exempt(self):
+        self.assertTrue(scanner.SENSITIVE_NAME.search('tests/production-credentials'))
