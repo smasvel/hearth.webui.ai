@@ -5,7 +5,7 @@ from pathlib import Path
 import psutil
 from jinja2 import Environment, TemplateError
 
-DEFAULT_CONTEXT = 65536
+DEFAULT_CONTEXT = 8192
 RESERVE = 256
 MODEL_CONTEXTS = {
     'qwen3-it:4b': 32768,  # Installed FLM catalog default; larger windows need validation.
@@ -39,6 +39,16 @@ def _model_aware_service():
 
 
 def context_limit(model=None):
+    try:
+        import model_metadata_store
+        mid = str(model or '').removeprefix('flm/')
+        saved = model_metadata_store.get_model_configured_context('fastflowlm', f'flm/{mid}' if model else mid)
+        if not isinstance(saved, int) or isinstance(saved, bool) or saved <= 0:
+            saved = model_metadata_store.get_model_configured_context('fastflowlm', str(model or ''))
+        if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0:
+            return saved
+    except Exception:
+        pass
     aware = _model_aware_service()
     try:
         active = (Path.home() / '.config/fastflowlm/active').read_text().strip()

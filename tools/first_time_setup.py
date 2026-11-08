@@ -1,6 +1,7 @@
 """Initialize a new Hearth installation without overwriting existing data or secrets."""
 import argparse
 import getpass
+import math
 import os
 from pathlib import Path
 import re
@@ -8,6 +9,8 @@ import secrets
 import shutil
 import subprocess
 import sys
+
+import psutil
 
 from dotenv import dotenv_values, set_key, unset_key
 
@@ -157,6 +160,64 @@ def install_service():
     subprocess.run(['loginctl', 'enable-linger', getpass.getuser()], check=True)
 
 
+def offer_initial_model_download(input_fn=input):
+    """Offer a catalog model before the app service starts, with local resource checks."""
+    import lemonade_client as lemonade
+
+    model_id = 'Ornith-1.5-9B-GGUF'
+    try:
+        matches = lemonade.search_catalog(model_id)
+    except lemonade.LemonadeError as exc:
+        print(f'Lemonade is unavailable; skipping initial model download: {exc}')
+        return False
+    model = next((entry for entry in matches if entry['id'] == model_id), None)
+    if not model:
+        print(f'{model_id} is absent from the Lemonade catalog; use Downloads after setup.')
+        return False
+    if model['downloaded']:
+        print(f'{model_id} is already downloaded.')
+        return True
+    size_gb = model.get('size_gb')
+    if not isinstance(size_gb, (int, float)) or not math.isfinite(size_gb) or size_gb <= 0:
+        print(f'Lemonade did not report a reliable size for {model_id}; use Downloads after setup.')
+        return False
+    # Lemonade may use a separate cache volume. This checks the installation user's
+    # home filesystem; the server remains responsible for checking its own cache.
+    free_bytes = shutil.disk_usage(Path.home()).free
+    available_ram = psutil.virtual_memory().available
+    required_bytes = math.ceil(size_gb * 1_000_000_000) + 2 * 1024**3
+    print(f'Initial model: {model_id} ({size_gb:.2f} GB download).')
+    print(f'Machine check: {free_bytes / 1e9:.1f} GB free on home filesystem; '
+          f'{available_ram / 1e9:.1f} GB available RAM.')
+    print(f'At 25 Mbps, the transfer alone takes about {math.ceil(size_gb * 8000 / 25 / 60)} minutes; '
+          'your internet speed and server cache location may differ.')
+    if free_bytes < required_bytes:
+        print(f'Skipping download: need at least {required_bytes / 1e9:.1f} GB free including 2 GiB headroom.')
+        return False
+    if available_ram < size_gb * 1_000_000_000 + 1024**3:
+        print('Skipping download: available RAM is below model size plus 1 GiB headroom.')
+        return False
+    try:
+        answer = input_fn('Download this model before Hearth starts? [y/N]: ').strip().lower()
+    except EOFError:
+        answer = ''
+    if answer not in ('y', 'yes'):
+        print('Initial model download skipped. Use Downloads later.')
+        return False
+    print(f'Downloading {model_id}...')
+    for progress in lemonade.pull_catalog_model(model_id):
+        if progress.get('done'):
+            break
+        if progress.get('percent') is not None:
+            print(f"  {progress.get('file') or model_id}: {progress['percent']}%", flush=True)
+    else:
+        raise RuntimeError(f'Lemonade did not confirm completion of {model_id}.')
+    import model_metadata_store
+    model_metadata_store.mark_model_downloaded('lemonade', model_id)
+    print(f'Downloaded {model_id}. Load it from Models after signing in.')
+    return True
+
+
 def validate_existing_installation():
     existing = dotenv_values(ROOT / '.env')
     if not existing.get('DATABASE_URL') and has_sqlite_data():
@@ -170,6 +231,8 @@ def main():
     parser.add_argument('--project-name', help='Optional separate Compose project name')
     parser.add_argument('--rebuild-agent-image', action='store_true',
                         help='Rebuild the isolated agent image even if it is already installed')
+    parser.add_argument('--skip-model-download', action='store_true',
+                        help='Do not offer the initial Lemonade model download')
     from tools import backend_installer
     backend_installer.add_arguments(parser)
     args = parser.parse_args()
@@ -198,6 +261,11 @@ def main():
     user_count = initialize_application_storage()
     from local_tls import ensure_certificate
     ensure_certificate(ROOT / 'certs')
+    if not args.skip_model_download:
+        try:
+            offer_initial_model_download()
+        except Exception as exc:
+            print(f'Initial model download failed: {exc}. Use Downloads after setup.')
     if user_count == 0:
         print('No users exist. The first page visit will prompt you to create the administrator account.')
     else:

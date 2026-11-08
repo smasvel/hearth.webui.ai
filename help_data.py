@@ -468,12 +468,13 @@ def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_labe
     return "\n".join(lines)
 
 
-def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_override=None, network_label="LAN", ctx_by_model=None) -> str:
+def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_override=None, network_label="LAN", ctx_by_model=None, max_ctx_by_model=None) -> str:
     # network_label: see build_continue_yaml's docstring comment — same reasoning, cosmetic only.
     # ctx_by_model: {(backend, model_id): context_to_advertise} resolved by build() from the
     # admin's saved per-model ctx-size (preferred) or the live loaded context. This keeps a
     # generated client config current even before a running model has been reloaded.
     ctx_by_model = dict(ctx_by_model or {})
+    max_ctx_by_model = dict(max_ctx_by_model or {})
     context_settings = opencode_context_settings()
     if not context_settings["advertise_loaded"]:
         ctx_by_model = {}
@@ -481,7 +482,7 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
     for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm"):
         models = {}
         for mid in chat_by_be.get(be, []):
-            ctx = _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
+            ctx = (65536 if max_ctx_by_model.get((be, mid), 0) >= 65536 else 8192) if max_ctx_by_model else _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
             models[mid] = {
                 "name": f"{mid} ({_LABELS[be]}, {network_label})",
                 "limit": {"context": ctx, "output": _advertised_output(be, ctx, mid)},
@@ -683,10 +684,14 @@ def _build_uncached(app_port: int = 5443) -> dict:
     # A loaded model's active window is authoritative. A saved larger value only takes
     # effect on the next Load; advertising it early makes OpenCode send oversized turns.
     ctx_by_model = {}
+    max_ctx_by_model = {}
     for m in models:
         context = _configured_or_loaded_context(m)
         if context:
             ctx_by_model[(m.get("backend"), m["id"])] = context
+        maximum = m.get("max_context_length")
+        if type(maximum) is int and maximum > 0:
+            max_ctx_by_model[(m.get("backend"), m["id"])] = maximum
     embed_models = [
         {"id": m["id"], "backend": m.get("backend")}
         for m in models if m.get("type") == "embeddings"
@@ -733,6 +738,7 @@ def _build_uncached(app_port: int = 5443) -> dict:
         ts_opencode_config = build_opencode_config(
             ts_ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
             network_label="Tailscale", ctx_by_model=ctx_by_model,
+            max_ctx_by_model=max_ctx_by_model,
         )
         # A device reachable only over Tailscale can't necessarily reach the LAN IP either —
         # that's the whole point of needing Tailscale — so Step 1's CA-trust command (which
@@ -776,5 +782,6 @@ def _build_uncached(app_port: int = 5443) -> dict:
         "opencode_config": build_opencode_config(
             ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
             ctx_by_model=ctx_by_model,
+            max_ctx_by_model=max_ctx_by_model,
         ),
     }

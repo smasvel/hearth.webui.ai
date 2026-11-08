@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlsplit
 
 import psutil
 import requests
+import public_model_catalog
 from dotenv import dotenv_values, load_dotenv, unset_key
 from flask import Flask, Response, copy_current_request_context, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
@@ -1425,7 +1426,20 @@ def api_restart_status(job_id):
 @app.get("/api/admin/service-status")
 @admin_required
 def api_service_status():
-    return jsonify({"services": model_metadata_store.get_service_status()})
+    services = model_metadata_store.get_service_status()
+    # Verify LM Studio reachability instead of trusting a stale stored state.
+    try:
+        import requests
+        resp = requests.get("http://localhost:1234/api/v0/models", timeout=3)
+        lm_ok = resp.status_code < 400
+    except Exception:
+        lm_ok = False
+    for svc in services:
+        if svc.get("service") == "lmstudio":
+            svc["status"] = "ok" if lm_ok else "error"
+            if not lm_ok:
+                svc["detail"] = "LM Studio API server is not reachable on port 1234."
+    return jsonify({"services": services})
 
 
 @app.post("/api/admin/restart-hearth")
@@ -2246,7 +2260,7 @@ def api_set_model_context():
     if not model_id or len(model_id) > 512:
         return jsonify({"error": "model is required"}), 400
     backend = body.get("backend", "lemonade")
-    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold}
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold, "q38rocm": q38rocm, "fastflowlm": fastflowlm}
     if backend not in clients:
         return jsonify({"error": f"{backend} does not support changing its served context from Hearth."}), 400
     try:
@@ -2297,7 +2311,7 @@ def api_set_max_model_contexts():
     models (that would interrupt work), but every later Load uses the saved maximum. Models
     whose backend does not report a maximum, or that are not chat models, are left alone.
     """
-    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold}
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold, "q38rocm": q38rocm, "fastflowlm": fastflowlm}
     updated, skipped, failures = [], [], []
     for backend, client in clients.items():
         try:
@@ -3429,6 +3443,48 @@ def api_model_tests_get(job_id):
     return response
 
 
+@app.get('/api/metrics/model-test-report')
+@admin_required
+def api_model_test_report():
+    """Aggregate model test results into a decision table for the metrics page."""
+    jobs = _model_test_registry.list()
+    # Group by model (backend/id), keeping the latest run per model.
+    latest_by_model = {}
+    for job in jobs:
+        for target in (job.get('targets') or []):
+            key = (target.get('backend'), target.get('id'))
+            if key not in latest_by_model or (job.get('started_at') or 0) > (latest_by_model[key].get('started_at') or 0):
+                latest_by_model[key] = job
+    rows = []
+    for (backend, model_id), job in latest_by_model.items():
+        results = job.get('results') or []
+        # Filter results for this specific model.
+        model_results = [r for r in results if r.get('backend') == backend and r.get('model') == model_id]
+        total = len(model_results)
+        passed = sum(1 for r in model_results if r.get('passed'))
+        failed = sum(1 for r in model_results if not r.get('passed') and not r.get('skipped'))
+        skipped = sum(1 for r in model_results if r.get('skipped'))
+        pass_rate = round(passed / total * 100, 1) if total else 0
+        # Recommendation score: pass rate weighted by total coverage.
+        score = round(pass_rate * (total / 135), 1) if total else 0
+        rows.append({
+            'backend': backend,
+            'model': model_id,
+            'total': total,
+            'passed': passed,
+            'failed': failed,
+            'skipped': skipped,
+            'pass_rate': pass_rate,
+            'score': score,
+            'run_id': job.get('id'),
+            'run_date': job.get('started_at'),
+        })
+    rows.sort(key=lambda r: (-r['score'], -r['pass_rate']))
+    # Recommend the top model.
+    recommended = rows[0] if rows else None
+    return jsonify({'rows': rows, 'recommended': recommended})
+
+
 @app.post('/api/model-tests/<job_id>/cancel')
 @admin_required
 def api_model_tests_cancel(job_id):
@@ -4122,8 +4178,12 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
     """Give every backend result the same complete, linkable metadata contract."""
     label, model_format, compatibility = _MODEL_BACKEND_INFO[backend]
     normalized = []
+    seen_ids = set()
     for raw in results:
         result = dict(raw)
+        model_id = str(result.get("id") or "").casefold()
+        if not model_id or model_id in seen_ids:
+            continue
         repo = _hf_repo_from_result(result)
         existing_url = str(result.get("source_url") or "")
         if existing_url.startswith(("https://huggingface.co/", "https://github.com/")):
@@ -4147,6 +4207,7 @@ def _normalize_model_results(results: list[dict], backend: str) -> list[dict]:
             "download_query": source_url if backend == "lmstudio" else result.get("id"),
         })
         normalized.append(result)
+        seen_ids.add(model_id)
     return normalized
 
 
@@ -4154,7 +4215,20 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "vllm":
         results = vllm.search_huggingface(query) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
-    if backend in ("lmstudio", "kobold"):
+    if backend == "lmstudio":
+        try:
+            results = public_model_catalog.lmstudio_gguf(query)
+        except (requests.RequestException, ValueError):
+            results = []
+        try:
+            broader = lemonade.search_huggingface(query)
+            known = {item.get("id", "").casefold() for item in results}
+            results.extend(item for item in broader if item["id"].casefold() not in known)
+        except lemonade.LemonadeError:
+            pass
+        lemonade.fill_result_sizes(results)
+        return _normalize_model_results(results, backend)
+    if backend == "kobold":
         results = lemonade.search_huggingface(query)
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
@@ -4163,10 +4237,22 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "q38rocm":
         return _normalize_model_results(q38rocm.search_catalog(query), backend)
     if backend == "lemonade":
-        results = lemonade.search_catalog(query, limit=500 if not query else 40)
+        try:
+            results = lemonade.search_catalog(query, limit=500 if not query else 40)
+        except lemonade.LemonadeError:
+            results = []
+        try:
+            known = {value.split(":", 1)[0] for item in results
+                     for value in (item.get("id") or "", item.get("checkpoint") or "")}
+            results += public_model_catalog.lemonade_gguf(query, known)
+        except (requests.RequestException, ValueError, KeyError):
+            pass
         if query:
             results = lemonade.enrich_with_hf_metadata(results)
-            results += lemonade.search_huggingface(query)
+            try:
+                results += lemonade.search_huggingface(query)
+            except lemonade.LemonadeError:
+                pass
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")
@@ -6348,11 +6434,21 @@ def _restore_default_model() -> None:
 
 
 def _warm_up_startup_models() -> None:
-    # User preference: do not auto-load any models on startup or restart. All models
-    # (including the configured default LLM and support models) are left unloaded so
-    # the user can manually load them from the Models page. Support models still
-    # lazy-load on demand via _ensure_embedding_model_loaded() / _ensure_voice_model_loaded().
-    print("Startup: auto-load disabled; models must be loaded manually.", flush=True)
+    # Auto-load support models on startup/restart so voice, memory, and media tools
+    # are ready without manual loading. Chat models remain unloaded.
+    try:
+        _ensure_embedding_model_loaded()
+    except Exception as exc:
+        print(f"Startup support model: embedding failed: {exc}", flush=True)
+    try:
+        lemonade._ensure_voice_model_loaded(lemonade.STT_MODEL_ID)
+    except Exception as exc:
+        print(f"Startup support model: STT failed: {exc}", flush=True)
+    try:
+        lemonade._ensure_voice_model_loaded(lemonade.TTS_MODEL_ID)
+    except Exception as exc:
+        print(f"Startup support model: TTS failed: {exc}", flush=True)
+    print("Startup: support models warmed up.", flush=True)
 
 
 if __name__ == "__main__":

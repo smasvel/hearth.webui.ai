@@ -98,6 +98,15 @@ configuration. The generated limit uses the actual served context for a loaded m
 a saved larger maximum applies only after the model is reloaded. If a request exceeds
 that limit, load a larger supported window or choose a larger model before continuing.
 Settings can re-enable automatic compaction if summaries are preferred.
+Search all backends on Downloads checks the latest public Lemonade catalog and LM
+Studio's model catalog as well as the backend and Hugging Face searches. These public
+matches require internet access; new Lemonade GGUF entries download through Hugging
+Face when the installed Lemonade catalog does not contain them.
+The Help page's generated OpenCode config uses a 65,536-token context limit for models
+supporting at least that maximum, and 8,192 tokens otherwise. The Models page's model
+loading ctx-size is a separate load setting.
+Hearth retries a failed compaction in one fresh session per assignment. If compaction fails
+again, the assignment stops for review; load a larger supported context or model before continuing.
 
 After setup, start the app with `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443` on the
@@ -139,7 +148,13 @@ the [login screenshot](../docs/screenshots/login.png).
 
 Run these commands from the Hearth project directory. This installs the web app,
 PostgreSQL, and isolated agent build image. Model runtimes can be installed during
-setup, while model downloads remain a separate step.
+setup. When Lemonade is reachable, it offers the recommended model download before
+starting Hearth, after checking catalog size, free home-filesystem space, and available
+RAM. The prompt includes a transfer-time example at 25 Mbps so you can judge your
+connection. Confirm with `y` to download; press Enter to skip. Use
+`--skip-model-download` for unattended setup. If the model is already downloaded,
+the installer reuses it. A missing runtime, catalog entry, or insufficient resources
+skips the download and leaves the model available through Downloads later.
 Use an ordinary account with sudo access and a graphical or terminal login session.
 
 ## Install and initialize Hearth
@@ -205,8 +220,17 @@ Useful options:
 ```bash
 bash deploy/install-first-time.sh --skip-browser --no-service
 bash deploy/install-first-time.sh --skip-backend-broker --skip-lmstudio-server
+bash deploy/install-first-time.sh --skip-model-download
 .venv/bin/python tools/first_time_setup.py --help
 ```
+
+Before any Git push from this checkout, run
+`git config --local core.hooksPath .githooks` once to enable the versioned pre-push
+secret check. It blocks pushes containing credentials, private keys, private IP
+addresses, or tailnet names in files or commit history. To audit the entire local
+history and working tree, run
+`python3 tools/check_push_secrets.py --all-history --working-tree`. Resolve any
+findings before pushing and do not use `git push --no-verify`.
 
 ### Initial administrator account
 
@@ -592,7 +616,8 @@ administrator credentials created above.
 If you skipped automatic runtime installation, install and start a supported runtime. Configure its URL
 and credentials under Settings. LM Studio's default endpoint is
 `http://localhost:1234`; Lemonade's is `http://localhost:13305`. Download a model
-and load it from Models. PostgreSQL setup does not install model weights.
+and load it from Models. The first-time Ubuntu installer offers a confirmed
+download when Lemonade is available; other models remain available in Downloads.
 For one-command installation of Hearth with the optional q38rocm Qwen 3.8
 backend on Ubuntu or Debian, run this from the project checkout:
 

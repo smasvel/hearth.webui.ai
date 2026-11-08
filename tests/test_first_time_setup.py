@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from dotenv import dotenv_values
 from tools import first_time_setup as setup
@@ -147,3 +148,25 @@ class FirstTimeSetupTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(['systemctl', '--user', 'enable', 'ai-webui.service'], commands)
         self.assertIn(['systemctl', '--user', 'restart', 'ai-webui.service'], commands)
+
+    def test_initial_download_requires_confirmation_and_machine_capacity(self):
+        catalog = [{'id': 'Ornith-1.5-9B-GGUF', 'size_gb': 5.0, 'downloaded': False}]
+        with patch('lemonade_client.search_catalog', return_value=catalog), \
+             patch('lemonade_client.pull_catalog_model', return_value=iter([{'percent': 50}, {'done': True}])) as pull, \
+             patch('model_metadata_store.mark_model_downloaded') as record, \
+             patch.object(setup.shutil, 'disk_usage', return_value=SimpleNamespace(free=12_000_000_000)), \
+             patch.object(setup.psutil, 'virtual_memory', return_value=SimpleNamespace(available=12_000_000_000)):
+            self.assertFalse(setup.offer_initial_model_download(lambda _: ''))
+            pull.assert_not_called()
+            self.assertTrue(setup.offer_initial_model_download(lambda _: 'y'))
+            pull.assert_called_once_with('Ornith-1.5-9B-GGUF')
+            record.assert_called_once_with('lemonade', 'Ornith-1.5-9B-GGUF')
+
+    def test_initial_download_skips_when_disk_is_short(self):
+        catalog = [{'id': 'Ornith-1.5-9B-GGUF', 'size_gb': 5.0, 'downloaded': False}]
+        with patch('lemonade_client.search_catalog', return_value=catalog), \
+             patch('lemonade_client.pull_catalog_model') as pull, \
+             patch.object(setup.shutil, 'disk_usage', return_value=SimpleNamespace(free=5_000_000_000)), \
+             patch.object(setup.psutil, 'virtual_memory', return_value=SimpleNamespace(available=12_000_000_000)):
+            self.assertFalse(setup.offer_initial_model_download(lambda _: 'y'))
+            pull.assert_not_called()

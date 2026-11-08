@@ -171,7 +171,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Use case | Included capabilities |
 |---|---|
 | Local and hosted AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching (local or hosted opencode.ai), and supported reasoning displays |
-| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page. Lemonade load failures that are transient (a `500` during a cold load of a large model, or a connection error while the backend process is spawning) are retried automatically a bounded number of times before surfacing as an error; permanent rejections such as an unknown model or not-enough-RAM fail immediately. Lemonade loads are verified after the API reports success — if the model does not appear in the loaded list (e.g. insufficient memory), a clear error is raised instead of a silent failure. The default context window for Lemonade models is 65536 tokens when the model supports it; users can adjust it per-model via the Models page. Backend restarts can be selective (choose which backends to restart) and track progress via `/api/admin/restart-status/<job_id>`; restarts preserve mandatory support models (RAG/embedding, STT, TTS). Hearth no longer auto-loads models on startup or restart; all models must be loaded manually from the Models page (support models still lazy-load on demand). The default LAN model is set to K2-Horizon-MoVA-36B-A4B-GGUF (Lemonade). Service status and restart history are tracked in PostgreSQL tables (`service_status`, `restart_jobs`, `model_load_events`), and model load/unload errors are recorded with full error text for copy/display. On startup, Hearth records its own service status as 'started' and checks all backend services, so stale 'restarting' states from a previous restart are corrected. If Lemonade is temporarily unreachable, a load request for a Lemonade-served model now reports a clear 'Lemonade is unreachable' error instead of silently falling through to LM Studio (which previously produced a confusing 'No model found' message) |
+| Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page. Lemonade load failures that are transient (a `500` during a cold load of a large model, or a connection error while the backend process is spawning) are retried automatically a bounded number of times before surfacing as an error; permanent rejections such as an unknown model or not-enough-RAM fail immediately. Lemonade loads are verified after the API reports success — if the model does not appear in the loaded list (e.g. insufficient memory), a clear error is raised instead of a silent failure. The default context window for Lemonade models is 8192 tokens for loading; users can raise it per-model via the Models page or OpenCode context settings when the model supports more. Backend restarts can be selective (choose which backends to restart) and track progress via `/api/admin/restart-status/<job_id>`; restarts preserve mandatory support models (RAG/embedding, STT, TTS). Hearth no longer auto-loads models on startup or restart; all models must be loaded manually from the Models page (support models still lazy-load on demand). The default LAN model is set to K2-Horizon-MoVA-36B-A4B-GGUF (Lemonade). Service status and restart history are tracked in PostgreSQL tables (`service_status`, `restart_jobs`, `model_load_events`), and model load/unload errors are recorded with full error text for copy/display. The metrics page includes a model test report table showing pass/fail/skip counts, pass rate, and a recommended model based on test results. On startup, Hearth records its own service status as 'started' and checks all backend services, so stale 'restarting' states from a previous restart are corrected. If Lemonade is temporarily unreachable, a load request for a Lemonade-served model now reports a clear 'Lemonade is unreachable' error instead of silently falling through to LM Studio (which previously produced a confusing 'No model found' message) |
 | LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
@@ -243,8 +243,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    count are hidden while a size filter is active. Clear the size checkboxes to
    show all sizes again.
 5. **Downloads** opens with the recommended Lemonade `Ornith-1.5-9B-GGUF` search
-   selected. Review the result and choose Download; Hearth does not download model
-   weights automatically. Follow progress and logs, inspect active downloads, or
+   selected. During first-time Ubuntu setup, the installer offers to download this
+   model before starting the service when Lemonade is reachable. It shows the catalog
+   size, free disk space, available RAM, and an example transfer time, then requires
+   your confirmation. You can decline or pass `--skip-model-download` and download it
+   here later. Follow progress and logs, inspect active downloads, or
    cancel a download.
 6. To use a model file already on your device, choose **Upload a local GGUF model**
    on Models, browse to a `.gguf` file, and upload it. Hearth validates the GGUF
@@ -281,6 +284,11 @@ administrator to find models, then use **Models** to load and evaluate them.
 |---|---|---|
 | LM Studio | Hugging Face GGUF search; direct model name or repository URL | CPU/GPU as supported by LM Studio |
 | Lemonade | Curated catalog and Hugging Face search, including GGUF models | CPU/GPU/NPU according to model recipe and hardware |
+
+Search all backends also checks Lemonade's latest public catalog and LM Studio's
+published model catalog. When the installed Lemonade server has an older catalog,
+new public GGUF entries appear as Hugging Face downloads; LM Studio catalog matches
+link to their verified GGUF artifacts. Public catalog searches need internet access.
 | vLLM | Catalog and Hugging Face causal language model repositories | Depends on the installed vLLM runtime; the documented host uses CPU |
 | KoboldCPP | Hugging Face GGUF search and downloads | CPU/GPU according to the installed build |
 | q38rocm | `julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF`, shown under its actual Hugging Face repository ID | One locally installed Qwen 3.8 GGUF in `data/q38rocm/models`; q38rocm fork built with RADV Vulkan on this desktop; one model served at a time |
@@ -1035,7 +1043,17 @@ start after a reboot, even before login. Schedules are saved in PostgreSQL and r
 if a run became due while Hearth was stopped, it runs once after startup and skips
 missed intervals. With `--no-service`, scheduled runs start only while you run
 Hearth manually. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for
-first-run account setup. Optional runtime installation is offered during setup; model weights are downloaded separately.
+first-run account setup. Optional runtime installation is offered during setup;
+the Ubuntu installer can download the suggested Lemonade model with your confirmation
+before starting Hearth.
+
+Before pushing this repository, activate the versioned secret check in each clone:
+`git config --local core.hooksPath .githooks`. The pre-push hook scans the files and
+commit history being sent for credentials, private keys, private IP addresses, and
+tailnet names. Run `python3 tools/check_push_secrets.py --all-history --working-tree`
+to audit all reachable commits and current files. Resolve findings before pushing;
+do not bypass the hook with `--no-verify`. The release workflow also checks source
+history before it packages or publishes artifacts.
 
 For a manual app process, use `bash deploy/install-first-time.sh --no-service`.
 Chromium is optional (`--skip-browser`); web search falls back to snippets and plain
@@ -1383,12 +1401,17 @@ are reused across concurrent checks rather than replaced. On Hearth startup, rel
 listeners for saved agent sessions are restored before workers run, so persistent Docker
 containers can reconnect to the host model bridge after an app restart.
 Automatic OpenCode compaction is off by default for desktop and isolated project agents.
+The Help page's generated OpenCode config displays a model context limit of 65,536 tokens
+when the model supports at least that much, or 8,192 tokens otherwise. This is based on
+the model's supported maximum, not the Models page's model loading ctx-size field.
 Continuing an agent assignment reuses its exact OpenCode conversation while it fits the
 selected model's real loaded context. If that context is exceeded, the assignment stops
 for review rather than repeatedly retrying or compacting the same transcript. Reload the
 model with a larger supported window or choose a larger model before continuing.
 When automatic or manual compaction is enabled and fails, Hearth starts a fresh session from the
 saved project checkpoint and retries without advancing the work-cycle counter. Hearth
+tries this compaction recovery once per assignment; another compaction failure stops the
+assignment for review. Load a larger supported context or choose a larger model before continuing.
 interrupts the old runner, forces a current checkpoint before retiring its container,
 and includes the original goal, acceptance criteria, and refinements in the new session.
 When compaction is enabled, agent compaction settings are bounded by the selected model's actual context window:

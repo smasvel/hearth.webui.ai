@@ -29,7 +29,14 @@ _CONTEXT = 131072
 
 
 def configured_context() -> int:
-    """Read the installed service window so unloaded models are advertised honestly."""
+    """Prefer an admin-saved ctx-size, then the installed service window."""
+    try:
+        import model_metadata_store
+        saved = model_metadata_store.get_model_configured_context("q38rocm", _MODEL_ID)
+        if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0:
+            return saved
+    except Exception:
+        pass
     unit = Path.home() / ".config/systemd/user/q38rocm.service"
     try:
         match = re.search(r"(?m)^Environment=CTX=(\d+)$", unit.read_text())

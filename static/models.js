@@ -232,7 +232,7 @@
         ctxField.className = "model-copyable-field";
         const fieldLabel = document.createElement("span");
         fieldLabel.className = "model-field-label";
-        fieldLabel.textContent = "ctx-size:";
+        fieldLabel.textContent = "model loading ctx-size:";
         const ctxInput = document.createElement("input");
         ctxInput.type = "number";
         ctxInput.className = "model-context-input";

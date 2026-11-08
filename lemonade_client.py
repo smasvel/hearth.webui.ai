@@ -529,7 +529,7 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     # Default to a 65536-token context window when none is specified and the model
     # supports it; Lemonade's own default (1280) is far too small for real chat.
     if not context_length:
-        context_length = 65536
+        context_length = 8192
     payload["ctx_size"] = context_length
 
     # A cold load of a large MoE GGUF (or Lemonade mid-evicting a previous model) can return a

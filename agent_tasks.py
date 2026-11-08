@@ -307,7 +307,8 @@ class Manager:
         if job.get('session_id'):
             self.client.interrupt(job['session_id'])
             self._sync_project(job, force=True)
-        if attempts >= MAX_SESSION_RECOVERIES:
+        limit = 1 if counter == 'compaction_recovery_attempts' else MAX_SESSION_RECOVERIES
+        if attempts >= limit:
             job.update(status='blocked', error=reason+' Automatic recovery limit reached; review the saved work and continue.')
             self.note(job, job['error'])
             self.save(job)
@@ -327,7 +328,7 @@ class Manager:
                        'Write the implementation to files rather than returning code in chat. Verify before claiming completion.'},
                    retry_current_cycle=True, retry_current_cycle_reason=reason)
         job[counter] = attempts+1
-        self.note(job, reason+f' Starting a fresh session from the saved project checkpoint (attempt {attempts+1}/{MAX_SESSION_RECOVERIES}).')
+        self.note(job, reason+f' Starting a fresh session from the saved project checkpoint (attempt {attempts+1}/{limit}).')
         self.save(job)
 
     def _record_live_progress(self, job, snap):

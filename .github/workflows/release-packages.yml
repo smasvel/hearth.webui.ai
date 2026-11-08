@@ -23,6 +23,9 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
           fetch-depth: 0
 
+      - name: Check source history for secrets
+        run: python3 tools/check_push_secrets.py --all-history --working-tree
+
       - name: Build platform install bundles
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}

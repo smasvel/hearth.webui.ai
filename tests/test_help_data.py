@@ -23,6 +23,17 @@ class TailscaleHelpTests(unittest.TestCase):
             {"lemonade": ["Muse"]}, {}))
         self.assertTrue(cfg["compaction"]["auto"])
 
+    def test_help_context_uses_supported_maximum_not_loading_size(self):
+        cfg = json.loads(help_data.build_opencode_config(
+            "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["large", "small"]}, {},
+            ctx_by_model={("lemonade", "large"): 8192, ("lemonade", "small"): 8192},
+            max_ctx_by_model={("lemonade", "large"): 131072,
+                              ("lemonade", "small"): 32768}))
+        entries = cfg["provider"]["lemonade"]["models"]
+        self.assertEqual(entries["large"]["limit"]["context"], 65536)
+        self.assertEqual(entries["small"]["limit"]["context"], 8192)
+
     @patch.object(help_data.settings_store, "get", return_value=None)
     def test_small_lemonade_window_bounds_compaction_without_flm(self, _get):
         for model in ('Muse-Glimmer-30B-GGUF', 'GLM-4.7-Flash-GGUF'):

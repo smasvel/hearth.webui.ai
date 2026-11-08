@@ -68,7 +68,7 @@ class DevstralTemplateTests(unittest.TestCase):
         post.assert_called_once_with(
             f"{lemonade_guard_shim.LEMONADE_BASE}/v1/load",
             json={"model_name": model, **lemonade_templates.load_options(model, options)},
-            timeout=300,
+            timeout=600,
         )
         post.reset_mock()
         options.update(lemonade_templates.load_options(model, options))

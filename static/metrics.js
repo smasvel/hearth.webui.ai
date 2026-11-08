@@ -101,6 +101,32 @@
     renderBars("by-type", data.by_type, "type");
     renderSeries(data.series);
     renderModelReport(data.by_model || []);
+    loadModelTestReport();
+  }
+
+  async function loadModelTestReport() {
+    try {
+      const res = await fetch("/api/metrics/model-test-report");
+      const data = await res.json();
+      if (!res.ok) return;
+      const rows = data.rows || [];
+      const rec = data.recommended;
+      const recEl = el("model-test-recommendation");
+      if (recEl && rec) {
+        recEl.textContent = `Recommended: ${rec.model} (${rec.backend}) — ${rec.passed}/${rec.total} passed (${rec.pass_rate}%), score ${rec.score}`;
+      } else if (recEl) {
+        recEl.textContent = "No model test runs available yet.";
+      }
+      const tbody = el("model-test-report");
+      if (tbody) {
+        tbody.innerHTML = rows.length ? rows.map(r => `<tr>
+          <td>${esc(r.model)}</td><td>${esc(r.backend)}</td>
+          <td class="num">${fmt(r.total)}</td><td class="num">${fmt(r.passed)}</td>
+          <td class="num">${fmt(r.failed)}</td><td class="num">${fmt(r.skipped)}</td>
+          <td class="num">${r.pass_rate}%</td><td class="num">${r.score}</td>
+        </tr>`).join("") : '<tr><td colspan="8" class="hint">No model test runs yet. Run tests from the Model tests page.</td></tr>';
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function renderModelReport(rows) {

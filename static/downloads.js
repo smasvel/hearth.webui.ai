@@ -347,7 +347,8 @@
       card.innerHTML = `
         <div class="model-card-top">
           <div>
-            <div class="model-name">${escapeHtml(r.id || "")}</div>
+            <div class="model-name">${escapeHtml(r.catalog_name || r.id || "")}</div>
+            ${r.catalog_name ? `<div class="hint">${escapeHtml(r.id || "")}</div>` : ""}
             <div class="model-meta">${metaHtml}</div>
             ${descHtml}
           </div>

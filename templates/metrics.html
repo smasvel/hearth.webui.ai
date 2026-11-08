@@ -84,6 +84,17 @@
             </div>
           </div>
           <div class="console-card span-all">
+            <h2>Model test report and recommendation</h2>
+            <p class="hint">Aggregated results from all model test runs. Score = pass rate × coverage (out of 135 tests). The recommended model has the highest score.</p>
+            <p id="model-test-recommendation" class="hint" style="font-weight: bold;"></p>
+            <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Model test report table.">
+              <table class="console-table metric-table">
+                <thead><tr><th>Model</th><th>Backend</th><th class="num">Tests</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Skipped</th><th class="num">Pass rate</th><th class="num">Score</th></tr></thead>
+                <tbody id="model-test-report"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="console-card span-all">
             <h2>Requests over time <span id="series-tokens" class="hint"></span></h2>
             <div id="series" class="metric-timeline"></div>
           </div>
