@@ -28,12 +28,6 @@ remote access to your home setup.
 
 ## Architecture at a glance
 
-<img src="docs/architecture.png" alt="Hearth architecture: browser and LAN clients, the
-Flask core with chat, model lifecycle, tests, memory, research and voice, Caddy gateway,
-five inference backends plus ComfyUI, hosted opencode.ai models with plan-selected
-session-routed access, the agentic workflow with OpenCode containers and backend broker,
-and PostgreSQL plus local model storage" width="100%">
-
 <p><img src="docs/architecture.svg" alt="Animated Hearth architecture overview: client nodes,
 the Flask core with chat, model lifecycle, tests, memory, research and voice, five local inference
 backends, the Caddy gateway, persistence stores, the agentic workflow layer, and the opencode.ai
