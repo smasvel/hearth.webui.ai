@@ -2860,3 +2860,25 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   .agent-form-card .agent-budget { gap:14px; }
   .agent-controls > button { flex:1;min-height:46px; }
 }
+.model-picker { position: relative; display: inline-block; width: 100%; min-width: 0; }
+.chat-header .model-picker { flex: 0 1 260px; min-width: 110px; }
+.model-picker-native { position: absolute !important; width: 1px !important; height: 1px !important; opacity: 0; pointer-events: none; }
+.model-picker-trigger, .model-picker-search {
+  box-sizing: border-box; width: 100%; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); font: inherit;
+}
+.model-picker-trigger { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.model-picker-trigger::after { content: "⌄"; float: right; margin-left: 8px; }
+.model-picker-trigger:focus-visible, .model-picker-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.model-picker-menu {
+  position: absolute; z-index: 1000; top: calc(100% + 4px); left: 0;
+  width: max(100%, 280px); max-width: min(90vw, 440px);
+  padding: 8px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.28);
+}
+.model-picker-menu[hidden] { display: none; }
+.model-picker-list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
+.model-picker-option { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.model-picker-option:hover, .model-picker-option:focus-visible, .model-picker-option[aria-selected="true"] { background: var(--panel-2); }
+.model-picker-empty { padding: 10px; color: var(--text-dim); }

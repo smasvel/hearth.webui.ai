@@ -524,6 +524,12 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     support chat completion", 400). Callers that only care about "is this loaded, at all" (like
     _ensure_embedding_model_loaded in app.py) should check is_model_loaded() first and skip
     calling this when it's already true, rather than calling it unconditionally."""
+    if model_key.lower() == "anbeeld-glm-5.3-dflash2-gguf":
+        raise LemonadeError(
+            "Anbeeld-GLM-5.3-DFlash2-GGUF is a speculative draft model and cannot "
+            "be loaded alone. Load a compatible GLM-5.3 target model instead; DFlash2 "
+            "requires that target and a backend configured for paired speculative decoding."
+        )
     payload: dict = {"model_name": model_key}
     payload.update(lemonade_templates.load_options(model_key))
     # Default to a 4096-token context window when none is specified; Lemonade's own

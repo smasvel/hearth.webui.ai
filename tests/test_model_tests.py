@@ -21,6 +21,25 @@ def result(name, passed):
     return {'name': name, 'stream': False, 'passed': passed, 'seconds': .1}
 
 
+class PerformanceReportTests(unittest.TestCase):
+    def test_rerun_replaces_prior_score_only_when_complete(self):
+        def run(run_id, started, status, results):
+            return {'id': run_id, 'started_at': started, 'status': status,
+                    'targets': [TARGET], 'results': [dict(r, backend=TARGET['backend'],
+                                                         model=TARGET['id']) for r in results]}
+        old = run('old', 1, 'completed', [result('chat', True)])
+        active = run('active', 2, 'running', [result('chat', False)])
+        self.assertEqual(model_tests.performance_report([active, old])['rows'][0]['run_id'], 'old')
+        active['status'] = 'completed'
+        active['results'].append(dict(result('chat', True), backend=TARGET['backend'],
+                                      model=TARGET['id'], attempt=2))
+        active['results'].append(dict(result('other', False), backend=TARGET['backend'],
+                                      model=TARGET['id'], attempt=2, rolled_back=True))
+        row = model_tests.performance_report([active, old])['rows'][0]
+        self.assertEqual((row['run_id'], row['total'], row['passed'], row['failed']),
+                         ('active', 1, 1, 0))
+
+
 class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -419,6 +438,16 @@ class SuiteTests(unittest.TestCase):
     def setUp(self):
         patch('tools.test_flm_model.live_report', Mock()).start()
         self.addCleanup(patch.stopall)
+
+    def test_incorrect_reasoning_answer_is_failure_not_blocked(self):
+        response = Mock()
+        response.json.return_value = {'choices': [{'message': {'content': 'wrong'},
+                                                     'finish_reason': 'stop'}],
+                                      'usage': {'completion_tokens': 1}}
+        with patch('tools.test_flm_model.requests.post', return_value=response):
+            results = run_suite('x', 'http://local', suite='iq')
+        self.assertTrue(results)
+        self.assertTrue(all(not result['passed'] and not result.get('skipped') for result in results))
 
     def test_tool_check_budget_and_truncation_diagnostics(self):
         response = Mock()

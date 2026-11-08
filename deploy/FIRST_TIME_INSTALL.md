@@ -932,10 +932,11 @@ LM Studio installation uses the [official headless llmster installer](https://lm
 on Linux, macOS, and Windows, reuses an existing `lms` executable, and starts its
 API at `http://localhost:1234`. This installs the server runtime without the desktop
 app. On Linux with systemd, Hearth installs
-`~/.config/systemd/user/lmstudio-server.service` (backed by
-`deploy/ensure-lmstudio-server.sh`) so the daemon **and** its API server come up at
-boot; rerun `systemctl --user restart lmstudio-server.service` after restarting LM Studio
-manually. Systems without systemd still need `lms daemon up` and
+`~/.config/systemd/user/lmstudio-server.service` and `lmstudio-server.timer`.
+The timer checks the API every 30 seconds and starts the daemon or server if
+port 1234 stops responding. After updating, run
+`bash deploy/install-lmstudio-server.sh` to install the timer. Systems without
+systemd still need `lms daemon up` and
 `lms server start --port 1234` at each login. Pass `--skip-lmstudio-server` to omit
 this bootstrap unit when you start the API server yourself.
 Lemonade automatic installation supports Ubuntu, uses its
@@ -1159,3 +1160,25 @@ initial password creation, and administrator password resets. Each event include
 account, acting administrator for resets, local timestamp, and request address; passwords and password hashes are never
 stored in or displayed by the history. Existing installations create the audit table
 automatically when the Hearth service starts.
+
+# DFlash model loading
+
+`Anbeeld-GLM-5.3-DFlash2-GGUF` cannot run as a standalone chat model. Restart
+Hearth after updating. Selecting this draft on **Models** now gives an actionable
+error immediately; load a compatible GLM-5.3 target model for chat. DFlash2
+requires a backend configured with both target and draft models.
+
+Model pickers in Chat, Settings, model tests, and agent assignments open a
+dropdown with search at the top. Type part of a model name to narrow the list;
+clear the search to show every model again.
+The Reports dropdown shows model names, searches by model, and selects the same
+report for viewing, downloading, or deleting. Active reports cannot be deleted.
+Model tests count incorrect reasoning answers and failed security probes as
+failures instead of blocked checks. Dependent workflow steps remain blocked when
+their prerequisite fails. Restart Hearth after updating; saved reports retain
+their old results, so rerun a suite to see the corrected classification.
+Metrics uses each model's latest completed test run for its score and recommendation.
+An active rerun leaves the prior completed score visible; after completion, Metrics
+recalculates from the effective result of each check, excluding rolled-back repair
+attempts. Restart Hearth after updating to serve the new JavaScript and styles;
+refresh Metrics to see the revised score.

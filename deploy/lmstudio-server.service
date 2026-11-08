@@ -7,7 +7,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 # The helper runs `lms server start --port 1234` and does nothing when the API is
 # already reachable, so this is safe on every login/start/restart.
 ExecStart=/bin/bash %h/hearth/ai-webui/deploy/ensure-lmstudio-server.sh

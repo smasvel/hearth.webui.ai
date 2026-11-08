@@ -1661,10 +1661,11 @@ LM Studio installation uses the [official headless llmster installer](https://lm
 on Linux, macOS, and Windows, reuses an existing `lms` executable, and starts its
 API at `http://localhost:1234`. This installs the server runtime without the desktop
 app. On Linux with systemd, Hearth installs
-`~/.config/systemd/user/lmstudio-server.service` (backed by
-`deploy/ensure-lmstudio-server.sh`) so the daemon **and** its API server come up at
-boot; rerun `systemctl --user restart lmstudio-server.service` after restarting LM Studio
-manually. Systems without systemd still need `lms daemon up` and
+`~/.config/systemd/user/lmstudio-server.service` and `lmstudio-server.timer`.
+The timer checks the API every 30 seconds and starts the daemon or server if
+port 1234 stops responding. After updating, run
+`bash deploy/install-lmstudio-server.sh` to install the timer. Systems without
+systemd still need `lms daemon up` and
 `lms server start --port 1234` at each login. Pass `--skip-lmstudio-server` to omit
 this bootstrap unit when you start the API server yourself.
 Lemonade automatic installation supports Ubuntu, uses its
@@ -1840,3 +1841,23 @@ installation follow this check. Rerunning the normal service installer restarts
 `ai-webui.service` so updated code and renewed certificates take effect; active
 assignments may be interrupted and can be resumed after restart. Use `--no-service`
 when preparing an installation without starting/restarting the service.
+
+# DFlash model loading
+
+`Anbeeld-GLM-5.3-DFlash2-GGUF` is a speculative draft model. Hearth reports a
+clear error if it is selected for standalone loading in Lemonade, including after
+an unload. Load a compatible GLM-5.3 target model for ordinary chat. DFlash2
+decoding requires a backend configured with both target and draft models.
+
+Model pickers in Chat, Settings, model tests, and agent assignments open a
+dropdown with search at the top. Type part of a model name to narrow the list;
+clear the search to show every model again.
+The Reports dropdown shows model names, searches by model, and selects the same
+report for viewing, downloading, or deleting. Active reports cannot be deleted.
+Model tests now count incorrect reasoning answers and failed security probes as
+failures instead of blocked checks. Dependent workflow steps remain blocked when
+their prerequisite fails; reports saved before this change retain their old results.
+Metrics recalculates each model's test score from its latest completed run. While
+a rerun is in progress, the previous completed score stays visible. A finished
+rerun replaces it, with repair retries counted once per check and rolled-back
+attempts excluded.

@@ -3446,43 +3446,8 @@ def api_model_tests_get(job_id):
 @app.get('/api/metrics/model-test-report')
 @admin_required
 def api_model_test_report():
-    """Aggregate model test results into a decision table for the metrics page."""
-    jobs = _model_test_registry.list()
-    # Group by model (backend/id), keeping the latest run per model.
-    latest_by_model = {}
-    for job in jobs:
-        for target in (job.get('targets') or []):
-            key = (target.get('backend'), target.get('id'))
-            if key not in latest_by_model or (job.get('started_at') or 0) > (latest_by_model[key].get('started_at') or 0):
-                latest_by_model[key] = job
-    rows = []
-    for (backend, model_id), job in latest_by_model.items():
-        results = job.get('results') or []
-        # Filter results for this specific model.
-        model_results = [r for r in results if r.get('backend') == backend and r.get('model') == model_id]
-        total = len(model_results)
-        passed = sum(1 for r in model_results if r.get('passed'))
-        failed = sum(1 for r in model_results if not r.get('passed') and not r.get('skipped'))
-        skipped = sum(1 for r in model_results if r.get('skipped'))
-        pass_rate = round(passed / total * 100, 1) if total else 0
-        # Recommendation score: pass rate weighted by total coverage.
-        score = round(pass_rate * (total / 135), 1) if total else 0
-        rows.append({
-            'backend': backend,
-            'model': model_id,
-            'total': total,
-            'passed': passed,
-            'failed': failed,
-            'skipped': skipped,
-            'pass_rate': pass_rate,
-            'score': score,
-            'run_id': job.get('id'),
-            'run_date': job.get('started_at'),
-        })
-    rows.sort(key=lambda r: (-r['score'], -r['pass_rate']))
-    # Recommend the top model.
-    recommended = rows[0] if rows else None
-    return jsonify({'rows': rows, 'recommended': recommended})
+    """Evaluate the latest completed model tests for the metrics page."""
+    return jsonify(model_tests.performance_report(_model_test_registry.list()))
 
 
 @app.post('/api/model-tests/<job_id>/cancel')

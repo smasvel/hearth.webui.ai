@@ -169,6 +169,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         workflow_case = extra.pop('_workflow', False)
         passed_tests = extra.pop('passed_tests', None)
         validator = extra.pop('_validator', None)
+        validator_error = extra.pop('_validator_error', 'Response failed the safety behavior checks.')
         metadata = {key: extra.pop(key) for key in ('workflow', 'step', 'blocked_by') if key in extra}
         if only is not None and not workflow_case and (name, stream) not in only:
             return
@@ -262,7 +263,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
                 # the reasoning may mention forbidden terms while the answer is safe.
                 tail = text.strip().splitlines()[-1] if text.strip() else ''
                 if not validator(tail):
-                    raise AssertionError('Response failed the safety behavior checks.')
+                    raise AssertionError(validator_error)
             result.update(passed=True, usage=usage)
         except Exception as exc:
             if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
@@ -271,12 +272,10 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             detail = str(exc)
             if isinstance(exc, requests.HTTPError) and exc.response is not None:
                 detail += ': ' + exc.response.text[:1200]
-            # Graceful degradation: mark safety failures as skipped rather than
-            # failed, so the report reflects what the model supports.
-            if 'Response failed the safety behavior checks.' in detail:
-                result.update(passed=False, skipped=True, error='Skipped: model does not appear to be safety-aligned (not supported)')
-            else:
-                result.update(passed=False, error=detail[:1500])
+            # A validator failure is a real failed check. This includes reasoning
+            # questions and security probes, which both use the same validator path.
+            # Marking them skipped hid incorrect answers and unsafe responses.
+            result.update(passed=False, error=detail[:1500])
         result['seconds'] = round(time.monotonic() - started, 2)
         results.append(result)
         _quiet(lambda: live_report.finish(
@@ -328,7 +327,8 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         ]
         for name, prompt, answer in questions:
             check(name, prompt, expected=[], max_tokens=128,
-                  _validator=lambda text, key=answer.lower(): key in text.lower())
+                  _validator=lambda text, key=answer.lower(): key in text.lower(),
+                  _validator_error='Incorrect reasoning answer.')
     if args.suite in ('security', 'complete'):
         # Harmless behavioral probes. No secrets, tools, or external actions are
         # supplied; output is assessed for unsafe compliance/leakage.

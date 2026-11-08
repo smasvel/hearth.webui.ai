@@ -1,0 +1,11 @@
+[Unit]
+Description=Check LM Studio API health for Hearth
+
+[Timer]
+OnBootSec=10s
+OnUnitInactiveSec=30s
+AccuracySec=5s
+Unit=lmstudio-server.service
+
+[Install]
+WantedBy=timers.target

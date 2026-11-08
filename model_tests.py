@@ -1,4 +1,6 @@
 """Persistent, browser-independent validation jobs with bounded verified repair."""
+
+
 import copy
 import json
 import os
@@ -19,6 +21,43 @@ ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
 # skipped without rerunning chat+tool basics; each also maps into run_suite's repairable
 # set below.
 SUITES = ('all', 'complete', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
+
+
+def performance_report(jobs):
+    """Score the latest completed run per model, counting each check once."""
+    latest = {}
+    for job in jobs:
+        if job.get('status') != 'completed':
+            continue
+        for target in job.get('targets') or []:
+            key = (target.get('backend'), target.get('id'))
+            results = [result for result in job.get('results') or []
+                       if result.get('backend') == key[0] and result.get('model') == key[1]
+                       and not result.get('rolled_back')]
+            if not results:
+                continue
+            if key not in latest or (job.get('started_at') or 0) > (latest[key][0].get('started_at') or 0):
+                latest[key] = (job, results)
+    rows = []
+    for (backend, model_id), (job, results) in latest.items():
+        effective = {}
+        for result in results:
+            check = (result.get('name'), bool(result.get('stream')))
+            if check not in effective or result.get('attempt', 1) >= effective[check].get('attempt', 1):
+                effective[check] = result
+        checks = list(effective.values())
+        total = len(checks)
+        passed = sum(bool(result.get('passed')) for result in checks)
+        skipped = sum(bool(result.get('skipped')) for result in checks)
+        failed = total - passed - skipped
+        pass_rate = round(passed / total * 100, 1) if total else 0
+        score = round(pass_rate * (min(total, 135) / 135), 1) if total else 0
+        rows.append({'backend': backend, 'model': model_id, 'total': total,
+                     'passed': passed, 'failed': failed, 'skipped': skipped,
+                     'pass_rate': pass_rate, 'score': score, 'run_id': job.get('id'),
+                     'run_date': job.get('started_at')})
+    rows.sort(key=lambda row: (-row['score'], -row['pass_rate']))
+    return {'rows': rows, 'recommended': rows[0] if rows else None}
 
 
 class Registry:

@@ -49,7 +49,7 @@
     el("tests-auto-repair").disabled = running || !["all", "complete"].includes(selectedSuite);
     el("tests-history").disabled = running;
     el("tests-cancel").disabled = !running || job.status === "cancelling";
-    el("tests-delete").disabled = !el("tests-delete-history").value;
+    el("tests-delete").disabled = !job || activeStates.has(job.status);
     if (wasRunning !== running) document.dispatchEvent(new Event("model-tests-state"));
     if (wasRunning && !running) document.dispatchEvent(new Event("model-tests-finished"));
     if (!job) {
@@ -60,7 +60,7 @@
       return;
     }
     const selected = [...el("tests-history").options].find(o => o.value === job.id);
-    if (selected) selected.textContent = `${new Date(job.started_at * 1000).toLocaleString()} · ${job.status} · ${job.targets.length} model(s)`;
+    if (selected) selected.textContent = reportLabel(job);
     const latest = new Map();
     for (const r of job.results.filter(r => !r.rolled_back)) latest.set(JSON.stringify([r.backend, r.model, r.name, !!r.stream]), r);
     const passed = [...latest.values()].filter(r => r.passed).length;
@@ -136,30 +136,17 @@
       timer = setTimeout(poll, 4000);
     }
   }
+  function reportLabel(item) {
+    const names = item.targets.map(target => `${target.backend}/${target.id}`).join(", ");
+    return `${names || "Unknown model"} · ${new Date(item.started_at * 1000).toLocaleString()} · ${item.status}`;
+  }
   async function history(selectId) {
     const {jobs} = await api("/api/model-tests");
     const list = el("tests-history"); list.replaceChildren();
     for (const item of jobs) {
       const option = document.createElement("option"); option.value = item.id;
-      option.textContent = `${new Date(item.started_at * 1000).toLocaleString()} · ${item.status} · ${item.targets.length} model(s)`;
+      option.textContent = reportLabel(item);
       list.appendChild(option);
-    }
-    const deleteList = el("tests-delete-history");
-    const previousDeleteId = deleteList.value;
-    deleteList.replaceChildren();
-    const deletable = jobs.filter(item => !activeStates.has(item.status));
-    for (const item of deletable) {
-      const option = document.createElement("option"); option.value = item.id;
-      option.textContent = `${new Date(item.started_at * 1000).toLocaleString()} · ${item.status} · ${item.targets.length} model(s)`;
-      deleteList.appendChild(option);
-    }
-    if (deletable.some(item => item.id === previousDeleteId)) deleteList.value = previousDeleteId;
-    el("tests-delete").disabled = !deleteList.value;
-    if (!deletable.length) {
-      const option = document.createElement("option"); option.value = "";
-      option.textContent = jobs.length ? "No older completed reports" : "No saved reports";
-      deleteList.appendChild(option);
-      el("tests-delete").disabled = true;
     }
     job = jobs.find(j => j.id === selectId) || jobs.find(j => activeStates.has(j.status)) || jobs[0] || null;
     if (job) {
@@ -239,13 +226,10 @@
     try { job = await api(`/api/model-tests/${encodeURIComponent(event.target.value)}`); render(); schedule(); }
     catch (error) { el("tests-status").textContent = error.message; }
   });
-  el("tests-delete-history").addEventListener("change", event => {
-    el("tests-delete").disabled = !event.target.value;
-  });
   el("tests-delete").addEventListener("click", async () => {
-    const deletedId = el("tests-delete-history").value;
-    if (!deletedId) return;
-    const report = [...el("tests-delete-history").options].find(option => option.value === deletedId);
+    const deletedId = el("tests-history").value;
+    if (!deletedId || !job || activeStates.has(job.status)) return;
+    const report = [...el("tests-history").options].find(option => option.value === deletedId);
     if (!confirm(`Delete ${report?.textContent || "this saved test report"} and its results? This cannot be undone.`)) return;
     try {
       await api(`/api/model-tests/${encodeURIComponent(deletedId)}`, undefined, "DELETE");
