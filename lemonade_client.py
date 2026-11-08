@@ -53,9 +53,9 @@ EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-
 # times before surfacing a LemonadeError. A cold load of a large MoE GGUF or a model being
 # evicted in the background returns 500 from /v1/load even when the model is otherwise fine and
 # the next attempt succeeds — see load_model's docstring. Non-5xx responses fail immediately.
-_LOAD_RETRIES = 3
-_LOAD_RETRY_BACKOFF_SECONDS = 2.0
-_LOAD_RETRY_JITTER_SECONDS = 1.0
+_LOAD_RETRIES = 5
+_LOAD_RETRY_BACKOFF_SECONDS = 3.0
+_LOAD_RETRY_JITTER_SECONDS = 2.0
 
 
 def base_url() -> str:
@@ -526,10 +526,11 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     calling this when it's already true, rather than calling it unconditionally."""
     payload: dict = {"model_name": model_key}
     payload.update(lemonade_templates.load_options(model_key))
-    # Default to a 65536-token context window when none is specified and the model
-    # supports it; Lemonade's own default (1280) is far too small for real chat.
+    # Default to a 4096-token context window when none is specified; Lemonade's own
+    # default (1280) is far too small for real chat, but large windows can fail to
+    # load on memory-constrained systems. Users can increase via the Models page.
     if not context_length:
-        context_length = 8192
+        context_length = 4096
     payload["ctx_size"] = context_length
 
     # A cold load of a large MoE GGUF (or Lemonade mid-evicting a previous model) can return a

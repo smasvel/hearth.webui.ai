@@ -3889,7 +3889,7 @@ def api_load_model():
             if refusal:
                 return jsonify({"error": refusal}), 422
             lemonade.load_model(model_key, context_length=(
-                body.get("context_length") or ((_saved_model_context("lemonade", model_key) if (_saved_model_context("lemonade", model_key) or 0) > 32768 else 32768) if 'k2-horizon' in str(model_key).lower() else (_saved_model_context("lemonade", model_key) or 8192))))
+                body.get("context_length") or (_saved_model_context("lemonade", model_key) or 4096)))
         except (lemonade.LemonadeError, RuntimeError) as exc:
             return jsonify({"error": str(exc)}), 502
         finally:
