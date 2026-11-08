@@ -845,7 +845,7 @@ local GPUs/NPUs are busy or unavailable.
 | Plan | Cost | What it gives you |
 |---|---|---|
 | Free tier | $0 | The `-free` models in the catalog (for example `opencode/glm-5.3-flash-free`, `opencode/deepseek-v4.1-flash-free`, `opencode/big-pickle`) — usable immediately with any opencode.ai account key |
-| OpenCode Go | $10/month subscription | Curated coding models with generous per-model monthly/weekly/5-hour allowances (GLM 5.3, Kimi K3, Qwen3.8, DeepSeek V4, Grok 4.7, Claude Haiku 5.5, GPT 6 Luna, and more); requests route through opencode.ai's dedicated `/inference/go` endpoint |
+| OpenCode Go | $10/month subscription | Curated coding models with generous per-model monthly/weekly/5-hour allowances (GLM 5.3, Kimi K3, Qwen3.8, DeepSeek V4, Grok 4.7, GPT 6 Luna, and more); requests route through opencode.ai's dedicated `/inference/go` endpoint |
 | Pay-as-you-go | Console credits | Every catalog model billed per million tokens from your credit balance |
 
 Choose the plan on the **Settings → opencode.ai** card (Hearth switches the request
