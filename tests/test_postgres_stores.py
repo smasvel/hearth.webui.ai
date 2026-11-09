@@ -141,3 +141,12 @@ class PostgreSQLStoreTests(unittest.TestCase):
         model_metadata_store.clear_model_configured_context('lemonade', 'MUSE-GLIMMER-30B-GGUF')
         self.assertIsNone(
             model_metadata_store.get_model_configured_context('lemonade', 'Muse-Glimmer-30B-GGUF'))
+
+    def test_model_test_history_keeps_more_than_thirty_reports(self):
+        for index in range(35):
+            model_metadata_store.save_test_run({
+                'id': f'run-{index:02d}', 'started_at': index,
+                'status': 'completed', 'targets': [], 'results': [],
+            })
+        self.assertEqual(len(model_metadata_store.list_test_runs()), 35)
+        self.assertEqual(len(model_metadata_store.list_test_runs(limit=30)), 30)

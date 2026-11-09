@@ -2325,8 +2325,18 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .metric-table .col-npu-served { width: 92px; }
 .metric-table .col-ip { width: 110px; }
 .metric-table .col-user { width: 85px; }
+.metric-table .col-review { width: 130px; }
 .metric-table th.num, .metric-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .metric-model-report { width: 1972px; min-width: 100%; table-layout: fixed; }
+.metric-test-report { width: 1377px; min-width: 100%; table-layout: fixed; }
+.metric-test-report .test-col-model { width: 190px; }
+.metric-test-report .test-col-backend { width: 115px; }
+.metric-test-report .test-col-count { width: 78px; }
+.metric-test-report .test-col-rate { width: 90px; }
+.metric-test-report .test-col-score { width: 110px; }
+.metric-test-report .test-col-speed { width: 125px; }
+.metric-test-report .test-col-tokens { width: 190px; }
+.metric-test-report .test-col-time { width: 135px; }
 .metric-model-report .col-model { width: 170px; }
 .metric-model-report .col-backend { width: 120px; }
 .metric-model-report .col-requests { width: 82px; }
@@ -2577,12 +2587,12 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
      a single, deterministic geometry — fixed layout + an explicit table width equal
      to the sum of the .col-* widths defined above — makes every row share one column
      grid. .metric-model-report is already fixed-layout and unaffected. */
-  .metrics-page .metric-table { width: 2352px; min-width: 2352px; table-layout: fixed; }
-  /* Both metric tables scroll inside their own panel (the sticky headers pin to
-     .console-body, outside the panel, so they would float over the KPI cards above).
-     Pinning the header row to the top of the table's own scroll region instead keeps
-     headers aligned with every column on any screen width. */
-  .metrics-page .metric-table th { position: sticky; top: 0; z-index: 3; }
+  .metrics-page .metric-table { width: 1739px; min-width: 1739px; table-layout: fixed; }
+  .metrics-page .metric-test-report { width: 1377px; min-width: 1377px; }
+  /* Sticky header cells use intrinsic widths in Chromium's horizontally
+     scrollable fixed-layout tables, while body cells follow the colgroup.
+     Keep mobile headers in the table grid so every column stays aligned. */
+  .metrics-page .metric-table th { position: static; }
   .metrics-page .metric-table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .metric-bar-row { grid-template-columns: 90px 1fr auto; }
   .metric-kpi-val { font-size: 22px; }

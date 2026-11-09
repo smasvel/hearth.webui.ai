@@ -42,6 +42,7 @@ with contextlib.ExitStack() as stack:
   page.goto(f'http://127.0.0.1:{server.server_port}/agents/new')
   expect(page.locator('#agent-model option')).to_have_count(1)
   page.locator('[name=title]').fill('Build <img src=x onerror=alert(1)> project')
+  page.locator('[name=assignee]').fill('UI fixture agent')
   page.locator('[name=goal]').fill('Build the feature and verify the result.')
   page.locator('details.agent-more-options summary').click()
   page.locator('[name=verification_command]').fill('pytest -q')
@@ -97,7 +98,7 @@ with contextlib.ExitStack() as stack:
                        {'time':time.time(),'text':'Newest activity event'}]
   manager.save(current)
   page.reload(wait_until='domcontentloaded')
-  expect(page.locator('#agent-activity-feed .agent-activity-item span').first).to_have_text('Newest activity event')
+  expect(page.locator('#agent-activity-feed .agent-terminal-line span:nth-child(2)').first).to_have_text('Newest activity event')
   full_activity=page.locator('#agent-activity').text_content()
   assert full_activity.index('Newest activity event') < full_activity.index('Older activity event')
   current['activity'].append({'time':time.time(),'text':'Activity added after page load'})

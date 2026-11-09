@@ -61,6 +61,12 @@ with contextlib.ExitStack() as stack:
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.on('console', lambda message: errors.append('console: ' + message.text) if message.type == 'error' else None)
         base = f'http://127.0.0.1:{server.server_port}'
+        page.route('**/api/metrics/model-test-report', lambda route: route.fulfill(
+            status=200, content_type='application/json', body=(
+                '{"rows":[{"model":"fixture-model","backend":"fixture-backend",'
+                '"total":12,"passed":10,"failed":1,"skipped":1,"pass_rate":83.3,'
+                '"reasoning_score":75,"tok_s":22.5,"avg_completion_tokens":120,'
+                '"avg_seconds":4.2,"score":72.1}],"recommended":null}')))
 
         # Exercise browser rendering and each page's expected primary controls.
         checks = {
@@ -85,6 +91,57 @@ with contextlib.ExitStack() as stack:
             assert response and response.status == 200, f'{route} returned {response.status if response else None}'
             expect(page.get_by_role('heading', name=heading).first).to_be_visible()
             expect(page.locator(selector).first).to_be_visible()
+
+        def check_table_dom(route, viewport_label):
+            issues = page.evaluate("""() => {
+              const issues = [];
+              for (const [tableIndex, table] of [...document.querySelectorAll('table')].entries()) {
+                if (table.getClientRects().length === 0) continue;
+                const label = table.getAttribute('aria-label') || table.id || `table ${tableIndex + 1} (${table.className})`;
+                const headers = [...table.querySelectorAll('thead tr:last-child th')];
+                const layoutInfo = `table=${getComputedStyle(table).display},thead=${getComputedStyle(table.tHead).display},headrow=${getComputedStyle(table.tHead.rows[0]).display},tbody=${getComputedStyle(table.tBodies[0]).display},bodyrow=${getComputedStyle(table.tBodies[0].rows[0] || table).display}`;
+                for (const [rowIndex, row] of [...table.querySelectorAll('tbody tr')].entries()) {
+                  if (row.getClientRects().length === 0) continue;
+                  const cells = [...row.children].filter(cell => /^(TD|TH)$/.test(cell.tagName));
+                  const expected = headers.reduce((sum, cell) => sum + cell.colSpan, 0);
+                  const actual = cells.reduce((sum, cell) => sum + cell.colSpan, 0);
+                  if (headers.length && actual !== expected)
+                    issues.push(`${label} row ${rowIndex + 1}: ${actual} columns, expected ${expected}`);
+                  // Native tables should keep each rendered data column under its header.
+                  // Card-style mobile tables intentionally use block layout and are skipped.
+                  if (headers.length && cells.length === headers.length &&
+                      getComputedStyle(cells[0]).display === 'table-cell') {
+                    for (let i = 0; i < cells.length; i++) {
+                      const h = headers[i].getBoundingClientRect();
+                      const c = cells[i].getBoundingClientRect();
+                      if (Math.abs(h.left - c.left) > 2 || Math.abs(h.width - c.width) > 2)
+                        issues.push(`${label} ${layoutInfo} row ${rowIndex + 1}, column ${i + 1}: layout=${getComputedStyle(table).tableLayout} width=${table.getBoundingClientRect().width.toFixed(1)} header x=${h.left.toFixed(1)} w=${h.width.toFixed(1)}, cell x=${c.left.toFixed(1)} w=${c.width.toFixed(1)}`);
+                    }
+                  }
+                }
+              }
+              return issues;
+            }""")
+            assert not issues, f'{route} ({viewport_label}) table formatting: {issues}'
+
+        # Check all rendered tables at desktop and phone widths, including the blank
+        # state rows whose colspan must still match the table's declared columns.
+        for route in checks:
+            page.set_viewport_size({'width': 1440, 'height': 1000})
+            page.goto(base + route)
+            page.wait_for_timeout(150)
+            check_table_dom(route, 'desktop')
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.reload()
+            page.wait_for_timeout(150)
+            check_table_dom(route, 'mobile')
+        page.goto(base + '/metrics')
+        expect(page.locator('#model-test-report tr')).to_have_count(1)
+        expect(page.locator('.metric-test-report thead th')).to_have_count(12)
+        expect(page.locator('.metric-test-report thead')).to_contain_text('Generated tok/s')
+        expect(page.locator('.metric-test-report tbody tr').last).to_contain_text('72.1')
+        check_table_dom('/metrics', 'populated report')
+        page.set_viewport_size({'width': 1440, 'height': 1000})
 
         # Local GGUF upload belongs to Models, reports progress, refreshes the model
         # inventory after registration, and is absent from Downloads.

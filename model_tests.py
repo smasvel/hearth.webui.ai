@@ -21,16 +21,29 @@ ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
 # skipped without rerunning chat+tool basics; each also maps into run_suite's repairable
 # set below.
 SUITES = ('all', 'complete', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
+REASONING_CHECKS = {
+    'number-sequence', 'logic-syllogism', 'analogy', 'odd-one-out', 'spatial-count',
+    'conditional-logic', 'arithmetic', 'letter-pattern', 'deduction',
+    'rate-reasoning', 'rule-testing', 'probability',
+}
 
 
 def performance_report(jobs):
-    """Score the latest completed run per model, counting each check once."""
+    """Compare each model's latest comprehensive completed run.
+
+    Narrow suites are useful during debugging but are not comparable evaluations. The
+    recommendation is quality-first; speed and token use only break close quality scores.
+    """
     latest = {}
     for job in jobs:
-        if job.get('status') != 'completed':
+        if job.get('status') != 'completed' or job.get('suite') not in (None, 'all', 'complete'):
             continue
         for target in job.get('targets') or []:
             key = (target.get('backend'), target.get('id'))
+            # Hosted OpenCode catalog models are not supported by Hearth model tests.
+            # Ignore historical/stale reports too, so they cannot reappear in Metrics.
+            if key[0] == 'opencode' or (isinstance(key[1], str) and key[1].startswith('opencode/')):
+                continue
             results = [result for result in job.get('results') or []
                        if result.get('backend') == key[0] and result.get('model') == key[1]
                        and not result.get('rolled_back')]
@@ -50,12 +63,42 @@ def performance_report(jobs):
         passed = sum(bool(result.get('passed')) for result in checks)
         skipped = sum(bool(result.get('skipped')) for result in checks)
         failed = total - passed - skipped
-        pass_rate = round(passed / total * 100, 1) if total else 0
-        score = round(pass_rate * (min(total, 135) / 135), 1) if total else 0
+        attempted = total - skipped
+        pass_rate = round(passed / attempted * 100, 1) if attempted else 0
+        reasoning = [r for r in checks
+                     if r.get('name') in REASONING_CHECKS and not r.get('skipped')]
+        reasoning_score = (round(sum(bool(r.get('passed')) for r in reasoning) / len(reasoning) * 100, 1)
+                           if reasoning else None)
+        timed = [r for r in checks if isinstance(r.get('seconds'), (int, float)) and r['seconds'] > 0]
+        avg_seconds = round(sum(r['seconds'] for r in timed) / len(timed), 2) if timed else None
+        measured = [r for r in timed if isinstance((r.get('usage') or {}).get('completion_tokens'), (int, float))]
+        avg_tokens = (round(sum((r.get('usage') or {}).get('completion_tokens', 0) for r in measured) / len(measured), 1)
+                      if measured else None)
+        tok_s = (round(sum((r.get('usage') or {}).get('completion_tokens', 0) for r in measured) /
+                       sum(r['seconds'] for r in measured), 1) if measured and sum(r['seconds'] for r in measured) > 0 else None)
         rows.append({'backend': backend, 'model': model_id, 'total': total,
                      'passed': passed, 'failed': failed, 'skipped': skipped,
-                     'pass_rate': pass_rate, 'score': score, 'run_id': job.get('id'),
+                     'pass_rate': pass_rate, 'avg_seconds': avg_seconds,
+                     'avg_completion_tokens': avg_tokens, 'tok_s': tok_s,
+                     'reasoning_score': reasoning_score,
+                     'run_id': job.get('id'),
                      'run_date': job.get('started_at')})
+    # Relative 0–100 scores make the unlike units comparable. Evaluation quality
+    # dominates; throughput and token use can only provide a modest tie-break.
+    dimensions = [('pass_rate', True, .7), ('reasoning_score', True, .2),
+                  ('tok_s', True, .05), ('avg_completion_tokens', False, .05)]
+    for row in rows:
+        available = [(key, higher, weight) for key, higher, weight in dimensions if row[key] is not None]
+        total_weight = sum(weight for _, _, weight in available)
+        row['score'] = 0
+        if total_weight:
+            score = 0
+            for key, higher, weight in available:
+                values = [item[key] for item in rows if item[key] is not None]
+                low, high, value = min(values), max(values), row[key]
+                relative = 100 if low == high else (100 * (value - low) / (high - low) if higher else 100 * (high - value) / (high - low))
+                score += relative * weight / total_weight
+            row['score'] = round(score, 1)
     rows.sort(key=lambda row: (-row['score'], -row['pass_rate']))
     return {'rows': rows, 'recommended': rows[0] if rows else None}
 
@@ -135,7 +178,7 @@ class Registry:
         """Merge recent saved jobs so the UI sees runs owned by another Hearth process."""
         if self.database_backed:
             present = {}
-            for job in model_metadata_store.list_test_runs():
+            for job in model_metadata_store.list_test_runs(limit=30):
                 repairs_changed = self._refresh_repair_counts(job)
                 if job.get('status') in ACTIVE:
                     try:

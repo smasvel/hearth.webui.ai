@@ -3419,7 +3419,7 @@ def api_model_tests_start():
         model = inventory.get(pair)
         if (not model or pair in seen or model.get('type') in _SUPPORT_MODEL_TYPES
                 or model.get('loadable') is False
-                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'opencode', 'kobold', 'q38rocm')):
+                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm')):
             return jsonify({'error': 'Choose unique, installed, loadable chat models.'}), 400
         seen.add(pair)
         targets.append({'backend': pair[0], 'id': pair[1]})
@@ -3447,7 +3447,9 @@ def api_model_tests_get(job_id):
 @admin_required
 def api_model_test_report():
     """Evaluate the latest completed model tests for the metrics page."""
-    return jsonify(model_tests.performance_report(_model_test_registry.list()))
+    response = jsonify(model_tests.performance_report(model_metadata_store.list_test_runs()))
+    response.headers['Cache-Control'] = 'no-store, max-age=0'
+    return response
 
 
 @app.post('/api/model-tests/<job_id>/cancel')

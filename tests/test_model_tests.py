@@ -39,6 +39,54 @@ class PerformanceReportTests(unittest.TestCase):
         self.assertEqual((row['run_id'], row['total'], row['passed'], row['failed']),
                          ('active', 1, 1, 0))
 
+    def test_recommendation_prioritizes_pass_rate_over_speed_and_token_use(self):
+        def run(model, started, passed, failed, skipped, seconds, tokens):
+            target = {'backend': 'lmstudio', 'id': model}
+            results = []
+            for index in range(passed):
+                results.append({'backend': 'lmstudio', 'model': model, 'name': f'p{index}',
+                                'passed': True, 'seconds': seconds,
+                                'usage': {'completion_tokens': tokens}})
+            for index in range(failed):
+                results.append({'backend': 'lmstudio', 'model': model, 'name': f'f{index}',
+                                'passed': False, 'seconds': seconds,
+                                'usage': {'completion_tokens': tokens}})
+            for index in range(skipped):
+                results.append({'backend': 'lmstudio', 'model': model, 'name': f's{index}',
+                                'passed': False, 'skipped': True})
+            return {'id': model, 'started_at': started, 'status': 'completed',
+                    'suite': 'all', 'targets': [target], 'results': results}
+
+        report = model_tests.performance_report([
+            run('accurate', 1, 100, 0, 20, 4, 80),
+            run('fast-but-weak', 2, 70, 30, 0, .1, 1),
+        ])
+        self.assertEqual(report['recommended']['model'], 'accurate')
+        accurate = next(row for row in report['rows'] if row['model'] == 'accurate')
+        self.assertEqual(accurate['pass_rate'], 100)
+
+    def test_narrow_suite_does_not_replace_comprehensive_report(self):
+        common = {'backend': 'lmstudio', 'id': 'model'}
+        def run(run_id, started, suite, name):
+            return {'id': run_id, 'started_at': started, 'status': 'completed', 'suite': suite,
+                    'targets': [common], 'results': [{'backend': 'lmstudio', 'model': 'model',
+                    'name': name, 'passed': True}]}
+        report = model_tests.performance_report([
+            run('all', 1, 'all', 'chat'), run('core', 2, 'core', 'chat')])
+        self.assertEqual(report['rows'][0]['run_id'], 'all')
+
+    def test_skipped_reasoning_checks_do_not_lower_reasoning_score(self):
+        target = {'backend': 'lmstudio', 'id': 'reasoning-fixture'}
+        report = model_tests.performance_report([{
+            'id': 'complete', 'started_at': 1, 'status': 'completed', 'suite': 'complete',
+            'targets': [target], 'results': [
+                {'backend': 'lmstudio', 'model': target['id'], 'name': 'number-sequence', 'passed': True},
+                {'backend': 'lmstudio', 'model': target['id'], 'name': 'logic-syllogism',
+                 'passed': False, 'skipped': True},
+            ],
+        }])
+        self.assertEqual(report['rows'][0]['reasoning_score'], 100)
+
 
 class RegistryTests(unittest.TestCase):
     def setUp(self):
@@ -324,6 +372,50 @@ class ModelTestAPITests(unittest.TestCase):
         response = self.client.post('/api/model-tests',
             json={'models': [TARGET], 'suite': 'not-a-suite'}, headers=self.headers)
         self.assertEqual(response.status_code, 400)
+
+    def test_hosted_opencode_models_cannot_start_a_model_test(self):
+        self.login()
+        hosted = {'backend': 'opencode', 'id': 'opencode/hosted-free', 'type': 'llm'}
+        with patch.object(app, '_test_model_inventory', return_value=[TARGET, hosted]):
+            response = self.client.post('/api/model-tests',
+                json={'models': [hosted]}, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('installed, loadable chat models', response.json['error'])
+
+    def test_metrics_report_includes_models_beyond_recent_report_window(self):
+        self.login()
+        runs = []
+        for index in range(35):
+            model = f'fixture-model-{index:02d}'
+            runs.append({
+                'id': f'run-{index:02d}', 'status': 'completed', 'started_at': index,
+                'targets': [{'backend': 'lmstudio', 'id': model}],
+                'results': [{'backend': 'lmstudio', 'model': model, 'name': 'chat',
+                             'passed': True, 'attempt': 1}],
+            })
+        with patch.object(app.model_metadata_store, 'list_test_runs', return_value=runs):
+            response = self.client.get('/api/metrics/model-test-report')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get('Cache-Control'), 'no-store, max-age=0')
+        self.assertEqual(len(response.json['rows']), 35)
+
+    def test_metrics_report_excludes_opencode_results_even_if_still_saved(self):
+        self.login()
+        runs = [{
+            'id': 'legacy-opencode', 'status': 'completed', 'started_at': 1,
+            'targets': [{'backend': 'opencode', 'id': 'opencode/beam-free'}],
+            'results': [{'backend': 'opencode', 'model': 'opencode/beam-free',
+                         'name': 'chat', 'passed': True, 'attempt': 1}],
+        }, {
+            'id': 'local', 'status': 'completed', 'started_at': 2,
+            'targets': [{'backend': 'lmstudio', 'id': 'local-model'}],
+            'results': [{'backend': 'lmstudio', 'model': 'local-model',
+                         'name': 'chat', 'passed': True, 'attempt': 1}],
+        }]
+        with patch.object(app.model_metadata_store, 'list_test_runs', return_value=runs):
+            response = self.client.get('/api/metrics/model-test-report')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row['model'] for row in response.json['rows']], ['local-model'])
 
     def test_admin_and_csrf_are_required(self):
         self.assertEqual(self.client.get('/api/model-tests').status_code, 401)

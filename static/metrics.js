@@ -106,25 +106,47 @@
 
   async function loadModelTestReport() {
     try {
-      const res = await fetch("/api/metrics/model-test-report");
+      const res = await fetch("/api/metrics/model-test-report", {cache: "no-store"});
       const data = await res.json();
       if (!res.ok) return;
       const rows = data.rows || [];
       const rec = data.recommended;
       const recEl = el("model-test-recommendation");
       if (recEl && rec) {
-        recEl.textContent = `Recommended: ${rec.model} (${rec.backend}) — ${rec.passed}/${rec.total} passed (${rec.pass_rate}%), score ${rec.score}`;
+        recEl.textContent = `Recommended: ${rec.model} (${rec.backend}) — ${rec.pass_rate}% passed, ${rec.reasoning_score == null ? "reasoning benchmark unavailable" : `${rec.reasoning_score}% reasoning score`}, ${rec.tok_s == null ? "speed unavailable" : `${fmt(rec.tok_s)} generated tok/s`}, ${rec.avg_completion_tokens == null ? "token use unavailable" : `${fmt(rec.avg_completion_tokens)} generated tokens/test`}; quality-first score ${rec.score}/100 (pass rate 70%, reasoning 20%, speed 5%, token economy 5%; available dimensions are reweighted).`;
       } else if (recEl) {
         recEl.textContent = "No model test runs available yet.";
       }
       const tbody = el("model-test-report");
       if (tbody) {
+        const columns = [
+          ["Model", false, 190], ["Backend", false, 115],
+          ["Tests", true, 78], ["Passed", true, 78], ["Failed", true, 78], ["Skipped", true, 78],
+          ["Pass rate", true, 90], ["Reasoning score", true, 110],
+          ["Generated tok/s", true, 125], ["Generated tokens/test", true, 190],
+          ["Avg test time (s)", true, 135], ["Score / 100", true, 110],
+        ];
+        const headerRow = tbody.closest("table")?.tHead?.rows?.[0];
+        if (headerRow) {
+          headerRow.replaceChildren(...columns.map(([label, numeric, width]) => {
+            const th = document.createElement("th");
+            th.textContent = label;
+            if (numeric) th.className = "num";
+            th.style.width = `${width}px`;
+            th.style.minWidth = `${width}px`;
+            th.style.maxWidth = `${width}px`;
+            return th;
+          }));
+        }
         tbody.innerHTML = rows.length ? rows.map(r => `<tr>
           <td>${esc(r.model)}</td><td>${esc(r.backend)}</td>
           <td class="num">${fmt(r.total)}</td><td class="num">${fmt(r.passed)}</td>
           <td class="num">${fmt(r.failed)}</td><td class="num">${fmt(r.skipped)}</td>
-          <td class="num">${r.pass_rate}%</td><td class="num">${r.score}</td>
-        </tr>`).join("") : '<tr><td colspan="8" class="hint">No model test runs yet. Run tests from the Model tests page.</td></tr>';
+          <td class="num">${r.pass_rate}%</td><td class="num">${r.reasoning_score == null ? "—" : `${r.reasoning_score}%`}</td>
+          <td class="num">${r.tok_s == null ? "—" : fmt(r.tok_s)}</td>
+          <td class="num">${r.avg_completion_tokens == null ? "—" : fmt(r.avg_completion_tokens)}</td>
+          <td class="num">${r.avg_seconds == null ? "—" : fmt(r.avg_seconds)}</td><td class="num">${r.score}</td>
+        </tr>`).join("") : '<tr><td colspan="12" class="hint">No model test runs yet. Run tests from the Model tests page.</td></tr>';
       }
     } catch (e) { /* ignore */ }
   }

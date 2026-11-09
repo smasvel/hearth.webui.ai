@@ -85,11 +85,17 @@
           </div>
           <div class="console-card span-all">
             <h2>Model test report and recommendation</h2>
-            <p class="hint">Aggregated results from all model test runs. Score = pass rate × coverage (out of 135 tests). The recommended model has the highest score.</p>
+            <p class="hint">Each model uses its latest completed comprehensive run (All tests or Complete); narrow suites do not replace it. Skipped checks are excluded from pass rate. Recommendation is quality-first: pass rate (70%) and reasoning benchmark score (20%), with speed (5%) and token use (5%) as minor tie-breakers. Scores are scaled relative to the models in this report; available dimensions are reweighted. Reasoning score is shown when that run includes the 12-question benchmark; it is a benchmark result, not a human IQ score.</p>
             <p id="model-test-recommendation" class="hint" style="font-weight: bold;"></p>
             <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Model test report table.">
-              <table class="console-table metric-table">
-                <thead><tr><th>Model</th><th>Backend</th><th class="num">Tests</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Skipped</th><th class="num">Pass rate</th><th class="num">Score</th></tr></thead>
+              <table class="console-table metric-table metric-test-report">
+                <colgroup>
+                  <col class="test-col-model" /><col class="test-col-backend" />
+                  <col class="test-col-count" /><col class="test-col-count" /><col class="test-col-count" /><col class="test-col-count" />
+                  <col class="test-col-rate" /><col class="test-col-score" /><col class="test-col-speed" />
+                  <col class="test-col-tokens" /><col class="test-col-time" /><col class="test-col-score" />
+                </colgroup>
+                <thead><tr><th>Model</th><th>Backend</th><th class="num">Tests</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Skipped</th><th class="num">Pass rate</th><th class="num">Reasoning score</th><th class="num">Generated tok/s</th><th class="num">Generated tokens/test</th><th class="num">Avg test time (s)</th><th class="num">Score / 100</th></tr></thead>
                 <tbody id="model-test-report"></tbody>
               </table>
             </div>
@@ -128,6 +134,13 @@
             <p class="metric-table-scroll-hint hint">On small screens, scroll horizontally to see all columns.</p>
             <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Recent requests table; scroll horizontally to see all columns.">
               <table class="console-table metric-table">
+                <colgroup>
+                  <col class="col-id" /><col class="col-time" /><col class="col-source" /><col class="col-backend" />
+                  <col class="col-model" /><col class="col-type" /><col class="col-ask" />
+                  <col class="col-num" /><col class="col-num" /><col class="col-num" /><col class="col-num" />
+                  <col class="col-num" /><col class="col-num" /><col class="col-num" />
+                  <col class="col-npu-served" /><col class="col-status" /><col class="col-ip" /><col class="col-user" /><col class="col-review" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th class="num col-id">ID</th><th class="col-time">Time</th><th class="col-source">Source</th><th class="col-backend">Backend</th><th class="col-model">Model</th>

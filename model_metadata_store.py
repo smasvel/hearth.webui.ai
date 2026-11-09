@@ -186,8 +186,6 @@ def save_test_run(job):
             "ON CONFLICT(id) DO UPDATE SET started_at = EXCLUDED.started_at, payload = EXCLUDED.payload",
             (job['id'], job['started_at'], json.dumps(job)),
         )
-        conn.execute("""DELETE FROM model_test_runs WHERE id IN
-                       (SELECT id FROM model_test_runs ORDER BY started_at DESC OFFSET 30)""")
 
 
 def get_test_run(job_id):
@@ -196,9 +194,13 @@ def get_test_run(job_id):
     return json.loads(row['payload']) if row else None
 
 
-def list_test_runs():
+def list_test_runs(limit=None):
     with database.connect() as conn:
-        rows = conn.execute("SELECT payload FROM model_test_runs ORDER BY started_at DESC LIMIT 30").fetchall()
+        if limit is None:
+            rows = conn.execute("SELECT payload FROM model_test_runs ORDER BY started_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT payload FROM model_test_runs ORDER BY started_at DESC LIMIT %s",
+                                (max(0, int(limit)),)).fetchall()
     return [json.loads(row['payload']) for row in rows]
 
 
@@ -217,7 +219,7 @@ def import_test_runs(path):
     if done:
         return
     if path.is_dir():
-        for report in sorted(path.glob('*.json'), key=lambda item: item.stat().st_mtime, reverse=True)[:30]:
+        for report in sorted(path.glob('*.json'), key=lambda item: item.stat().st_mtime, reverse=True):
             try:
                 job = json.loads(report.read_text())
                 if isinstance(job, dict) and job.get('id') and isinstance(job.get('started_at'), (int, float)):

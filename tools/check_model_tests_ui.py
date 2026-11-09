@@ -28,6 +28,8 @@ with contextlib.ExitStack() as stack:
  for client in (app.lms,app.lemonade,app.vllm,app.kobold):
   stack.enter_context(patch.object(client,'list_models',side_effect=lambda:[]))
  stack.enter_context(patch.object(app.fastflowlm,'list_models',side_effect=lambda:[TARGET.copy()]))
+ stack.enter_context(patch.object(app.zen,'list_models',return_value=[{
+  'id':'opencode/hosted-fixture','name':'Hosted fixture model','type':'llm','loadable':True}]))
  stack.enter_context(patch.object(app.comfyui,'video_model_info',return_value={'id':'media','backend':'comfyui','type':'video'}))
  stack.enter_context(patch.object(profiles,'get',side_effect=lambda b,m:values.get((b,m.removeprefix('flm/')))))
  stack.enter_context(patch.object(profiles,'set_profile',side_effect=lambda b,m,v:values.__setitem__((b,m.removeprefix('flm/')),v)))
@@ -66,9 +68,10 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#model-tests')).to_have_count(0)
   expect(page.locator('#model-groups')).to_be_visible()
   page.goto(f'http://127.0.0.1:{server.server_port}/model-tests')
+  expect(page.locator('#tests-model')).not_to_contain_text('Hosted fixture model')
   expect(page.locator('#tests-auto-repair')).not_to_be_checked()
   page.locator('#tests-auto-repair').check()
-  page.get_by_label('Model to test').select_option(label='fastflowlm · flm/test-fixture')
+  page.locator('#tests-model').select_option(label='fastflowlm · flm/test-fixture')
   page.get_by_role('button',name='Run tests for selected model').click()
   expect(page.locator('#tests-status')).to_contain_text('completed',timeout=12000)
   expect(page.locator('#tests-status')).to_contain_text('3 passed · 0 failed')
@@ -81,22 +84,22 @@ with contextlib.ExitStack() as stack:
   assert page.locator('#tests-results').get_by_text('Blocked',exact=True).count()==1
   page.reload();expect(page.locator('#tests-status')).to_contain_text('completed')
   page.goto(f'http://127.0.0.1:{server.server_port}/models')
-  page.get_by_role('button',name='Reset repair',exact=True).click()
+  page.locator('.model-card2').filter(has_text='flm/test-fixture').get_by_role(
+   'button',name='Reset repair',exact=True).click()
   expect(page).to_have_url(__import__('re').compile(r'.*/model-tests$'))
   expect(page.locator('#tests-status')).to_contain_text('Repair profile reset')
   assert values[('fastflowlm','test-fixture')] is None
   old_report_id = page.locator('#tests-history').input_value()
   mode['wait']=True
-  page.get_by_label('Model to test').select_option(index=1)
+  page.locator('#tests-model').select_option(index=1)
   page.get_by_role('button',name='Run tests for selected model').click()
   expect(page.locator('#tests-cancel')).to_be_enabled()
   expect(page.locator('#tests-status')).to_contain_text('waiting-check')
-  expect(page.locator('#tests-delete-history option')).to_have_count(1)
-  page.get_by_role('button',name='Delete selected report').click()
-  expect(page.locator('#tests-delete-status')).to_contain_text('Older report deleted. The active model test continues.')
+  expect(page.locator('#tests-history option')).to_have_count(2)
+  expect(page.locator('#tests-history')).to_be_disabled()
+  expect(page.locator('#tests-delete')).to_be_disabled()
   expect(page.locator('#tests-status')).to_contain_text('waiting-check')
-  expect(page.locator('#tests-history option')).to_have_count(1)
-  assert context.request.get(f'http://127.0.0.1:{server.server_port}/api/model-tests/{old_report_id}').status == 404
+  assert context.request.get(f'http://127.0.0.1:{server.server_port}/api/model-tests/{old_report_id}').status == 200
   page.locator('#tests-cancel').click()
   expect(page.locator('#tests-status')).to_contain_text('cancelled',timeout=10000)
   assert not errors,errors

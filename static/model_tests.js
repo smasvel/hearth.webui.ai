@@ -178,7 +178,7 @@
   async function loadModels(preferred) {
     try {
       const {models} = await api("/api/models");
-      const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "opencode", "kobold", "q38rocm"]);
+      const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "kobold", "q38rocm"]);
       const media = new Set(["embedding", "embeddings", "transcription", "tts", "image", "video"]);
       const targets = [...new Map(models.filter(m => supported.has(m.backend) && !media.has(m.type) && m.loadable !== false)
         .map(m => [JSON.stringify([m.backend, m.id]), m])).values()];

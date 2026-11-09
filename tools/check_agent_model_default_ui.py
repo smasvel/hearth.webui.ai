@@ -29,7 +29,8 @@ with contextlib.ExitStack() as stack:
     stack.enter_context(patch.object(agent_tasks.agent_store, 'save_task'))
     stack.enter_context(patch.object(agent_tasks.agent_store, 'user_exists', return_value=True))
     manager = Manager(Path(directory) / 'tasks', fake)
-    task = manager.create({'title': 'Model picker check', 'goal': 'Check the selected model', 'model': CURRENT}, 'browser')
+    task = manager.create({'title': 'Model picker check', 'assignee': 'Picker test agent',
+                           'goal': 'Check the selected model', 'model': CURRENT}, 'browser')
     manager.jobs[task['id']].update(status='blocked', error='UI test fixture')
     manager.save(manager.jobs[task['id']])
     stack.enter_context(patch.object(app, '_agent_tasks', manager))

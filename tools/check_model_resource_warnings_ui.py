@@ -24,6 +24,7 @@ with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(client, 'list_models', side_effect=lambda key=backend:
                                         [dict(m) for m in models if m['backend'] == key]))
         stack.enter_context(patch.object(client, 'base_url', return_value='http://127.0.0.1:9999'))
+    stack.enter_context(patch.object(app.q38rocm, 'list_models', return_value=[]))
     stack.enter_context(patch.object(app.comfyui, 'video_model_info', return_value={'id': 'media', 'backend': 'comfyui', 'type': 'video'}))
     stack.enter_context(patch.object(app._model_test_registry, 'list', return_value=[]))
     stack.enter_context(patch.object(app.users_store, 'get_user_by_id', return_value={'id': 'ui-test', 'username': 'ui-test', 'role': 'admin'}))
@@ -48,7 +49,7 @@ with contextlib.ExitStack() as stack:
         # button (.model-load-warning); only the evidence list stays collapsed.
         expect(page.locator('.model-load-warning')).to_have_count(10)
         expect(page.locator('.model-load-warning').filter(has_text='32.8 GiB')).to_be_visible()
-        page.get_by_label('Resource warnings only').check()
+        page.locator('#model-warnings-only').check()
         expect(page.locator('.model-card2')).to_have_count(10)
         for width in (320, 390, 768, 1280):
             page.set_viewport_size({'width': width, 'height': 900})
@@ -64,7 +65,7 @@ with contextlib.ExitStack() as stack:
         expect(page.locator('.model-card2')).to_have_count(3)
         page.get_by_label('Filter models by name').fill('qwen3.5')
         expect(page.locator('.model-card2')).to_have_count(0)
-        page.get_by_label('Resource warnings only').uncheck()
+        page.locator('#model-warnings-only').uncheck()
         expect(page.locator('.model-card2')).to_have_count(1)
         assert page.locator('.model-resource-warning img').count() == 0
         assert not errors, errors

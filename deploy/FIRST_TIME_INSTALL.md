@@ -252,7 +252,7 @@ Model test runs and performance metrics are stored in PostgreSQL and shared acro
 
 ## Model test report
 
-The metrics page includes a model test report table aggregating results from all model test runs. It shows pass/fail/skip counts, pass rate, and a composite score (pass rate × coverage). The top-scoring model is recommended for best results.
+The metrics page compares each supported local model's latest comprehensive test run (All tests or Complete) from the full saved history; narrow suites do not replace it, and saved reports are not automatically trimmed to the newest 30. Hosted OpenCode catalog results are excluded from this report, including historical saved runs. It shows pass/fail/skip counts, pass rate (skips excluded), reasoning benchmark score, generated tokens per second, generated tokens per test, and average test time. Recommendation is quality-first: pass rate is weighted at 70%, reasoning benchmark at 20%, speed at 5%, and lower token use at 5%; values are scaled against the other models, with available dimensions reweighted. The reasoning score uses the 12-question benchmark when present and is not a human IQ score. Token, speed, and reasoning fields show as unavailable when a run did not record those results. On narrow screens, scroll the report horizontally; its 12 columns stay aligned with the headers.
 
 ## Backend restarts and service tracking
 
@@ -724,6 +724,8 @@ across open Models pages every five seconds. Hearth clears the current error aft
 successful load and keeps its reviewed model warning dismissed until a later load attempt
 fails. Open **Model tests** from
 the navigation, choose an installed chat model, and run its checks individually.
+Hosted opencode.ai catalog models are not offered for model tests; they remain available
+for chat and agent assignments.
 LM Studio model cards offer administrators a per-model **Enable thinking** switch.
 It is saved in PostgreSQL and applies to chat, model tests, and gateway requests
 on the next request. Some models may ignore the thinking controls.
@@ -830,9 +832,10 @@ The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
 browser test scripts directly against application tables. With `--browser`, it runs
 the unit tests and all seven Playwright suites concurrently, each against its own temporary
 schema and a private agent runtime directory, so test startup cannot remove containers
-owned by the running application. The admin browser coverage visits every standalone page, exercises key page actions,
-opens a Live logs request trace, checks Browse history search and deletion, and verifies
-that ordinary users cannot open admin-only pages or APIs.
+owned by the running application. The admin browser coverage visits every standalone page,
+checks rendered table column counts and alignment at desktop and phone widths, exercises
+key page actions, opens a Live logs request trace, checks Browse history search and deletion,
+and verifies that ordinary users cannot open admin-only pages or APIs.
 
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
@@ -1179,7 +1182,7 @@ Model tests count incorrect reasoning answers and failed security probes as
 failures instead of blocked checks. Dependent workflow steps remain blocked when
 their prerequisite fails. Restart Hearth after updating; saved reports retain
 their old results, so rerun a suite to see the corrected classification.
-Metrics uses each model's latest completed test run for its score and recommendation.
+Metrics uses each model's latest comprehensive completed test run (All tests or Complete); narrow suites do not replace it. Skipped checks do not lower pass rate. Recommendation scoring prioritizes pass rate (70%) and the reasoning benchmark (20%), with speed and token economy (5% each) as minor tie-breakers; available dimensions are normalized against the models currently listed. The reasoning benchmark is a model comparison score, not a human IQ estimate.
 An active rerun leaves the prior completed score visible; after completion, Metrics
 recalculates from the effective result of each check, excluding rolled-back repair
 attempts. Restart Hearth after updating to serve the new JavaScript and styles;

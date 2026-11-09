@@ -166,7 +166,7 @@ preventing native tool parsers from rejecting ordinary answers.
 |---|---|
 | Local and hosted AI chat | Streamed answer and reasoning updates during generation, saved conversations, document attachments (PDF, Word, PowerPoint, Excel, TXT, and CSV) for analysis and follow-up questions, automatic recent-context fitting based on each model's reported context limit, reliable SSE streaming through the local model proxies, copy individual responses or an entire conversation, model switching (local or hosted opencode.ai), and supported reasoning displays |
 | Model management | Search, download, upload local GGUF files to Lemonade, load, unload, and delete models through supported local backends; hosted opencode.ai models are marked as remotely managed and do not trigger local unload prompts; restart backend services or Hearth from admin Settings; set per-model thinking for Lemonade models and see supported context limits on the Models page. Lemonade load failures that are transient (a `500` during a cold load of a large model, or a connection error while the backend process is spawning) are retried automatically a bounded number of times before surfacing as an error; permanent rejections such as an unknown model or not-enough-RAM fail immediately. Lemonade loads are verified after the API reports success — if the model does not appear in the loaded list (e.g. insufficient memory), a clear error is raised instead of a silent failure. The default context window for Lemonade models is 4096 tokens for loading (conservative default to avoid load failures on large models); users can raise it per-model via the Models page or OpenCode context settings when the model supports more. K2-Horizon loads with 5 retries and 3s backoff to handle transient Lemonade errors. Backend restarts can be selective (choose which backends to restart) and track progress via `/api/admin/restart-status/<job_id>`; restarts preserve mandatory support models (RAG/embedding, STT, TTS). Hearth no longer auto-loads models on startup or restart; all models must be loaded manually from the Models page (support models still lazy-load on demand). The default LAN model is set to K2-Horizon-MoVA-36B-A4B-GGUF (Lemonade). Service status and restart history are tracked in PostgreSQL tables (`service_status`, `restart_jobs`, `model_load_events`), and model load/unload errors are recorded with full error text for copy/display. Model test runs and performance metrics are stored in PostgreSQL and shared across all admin users — any admin can view, cancel, or delete test runs started by another admin. The metrics page includes a model test report table showing pass/fail/skip counts, pass rate, and a recommended model based on test results. On startup, Hearth records its own service status as 'started' and checks all backend services, so stale 'restarting' states from a previous restart are corrected. If Lemonade is temporarily unreachable, a load request for a Lemonade-served model now reports a clear 'Lemonade is unreachable' error instead of silently falling through to LM Studio (which previously produced a confusing 'No model found' message) |
-| LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, and per-question results |
+| LLM evaluation | Compatibility and tool-calling tests, a scored reasoning benchmark, security behavior probes, saved reports, per-question results, and a metrics recommendation comparing each supported local model's latest comprehensive run. Skipped checks are excluded from pass rate; recommendation is quality-first, with pass rate and reasoning score outweighing speed and token use. Hosted OpenCode catalog results are excluded from the Model tests report, including historical saved runs. The report table keeps its 12 data columns aligned while scrolling on narrow screens. The reasoning score is a model benchmark, not a human IQ estimate. |
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
@@ -715,7 +715,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Model evaluation | Compatibility, tool-calling, reasoning benchmark, and model security behavior tabs; saved reports, per-question results, repair progress, and repair-profile reset | Model tests; per-model links from Models |
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
-| Hosted opencode.ai models | Free-tier and subscription (OpenCode Go) model access embedded in chat, agent assignments, and model tests; plan selector, connection test, encrypted key storage, and per-conversation session routing | Settings → opencode.ai |
+| Hosted opencode.ai models | Free-tier and subscription (OpenCode Go) model access embedded in chat and agent assignments; plan selector, connection test, encrypted key storage, and per-conversation session routing | Settings → opencode.ai |
 | Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Agent skills | Per-user skill library with add/edit/delete, file upload, URL import, and SKILL.md export; selected skills install into the agent's container and are surfaced to the agent | Agents → Skills |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
@@ -740,9 +740,10 @@ validation and kernel/ABI artifacts.
 
 ## Local LLM testing and tool-calling evaluation
 
-Use Hearth to evaluate whether a local language model can follow the tool contracts
-needed by an AI coding agent. On **Model tests**, choose an installed chat model to
-run it individually, monitor its progress, and inspect results by model and backend.
+Use Hearth to evaluate whether an installed local chat model can follow the tool contracts
+needed by an AI coding agent. On **Model tests**, choose a supported local model to run it
+individually, monitor its progress, and inspect results by model and backend. Hosted
+opencode.ai catalog models do not appear in Model tests.
 From **Models**, **Test Model** opens the same page and starts the model from the
 clicked card. Automatic repair stays off for this run.
 Older completed reports can be deleted from the separate report selector even while
@@ -751,6 +752,10 @@ compatibility profiles, backend model registries, and reviewed resource notes ar
 in PostgreSQL. Reports can still be downloaded as JSON. First-time setup or the next
 application startup imports existing reports and KoboldCPP/vLLM registries, then removes
 their legacy JSON files.
+Saved model-test reports are retained without a 30-run cap. Metrics evaluates the full
+saved history and shows each model's latest comprehensive completed run; narrow suites
+do not replace it. Skipped checks do not lower pass rate, and recommendation scoring
+puts quality ahead of speed and token use.
 
 The evaluation workflows cover:
 
@@ -1630,9 +1635,10 @@ With `--browser`, the unit suite and all seven Playwright suites run concurrentl
 browser suite receives its own temporary PostgreSQL schema, and all schemas are removed
 when the run finishes. Agent runtime files and containers use a matching temporary
 directory, so isolated tests cannot discover or remove containers owned by the running
-application. Admin browser coverage visits every standalone page, opens a Live
-logs request trace, checks Browse history search and both deletion actions, and verifies
-that ordinary users cannot open admin-only pages or APIs.
+application. Admin browser coverage visits every standalone page, checks rendered table
+column counts and alignment at desktop and phone widths, opens a Live logs request trace,
+checks Browse history search and both deletion actions, and verifies that ordinary users
+cannot open admin-only pages or APIs.
 
 For installation details, see [the setup guide](deploy/FIRST_TIME_INSTALL.md).
 For model-specific test evidence, see [saved failure reviews](reports/saved-failure-review-2026-10-19.md).
