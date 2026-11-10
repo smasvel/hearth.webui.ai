@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 import flm_context
@@ -164,6 +164,9 @@ class OpenCode:
         self.call('POST', f'/api/session/{session}/interrupt', params={'resume': 'false'})
 
     def reply(self, session, kind, item, value):
+        # OpenCode permission IDs are opaque and may contain URL-reserved
+        # characters. Keep the ID within its path segment when replying.
+        item = quote(str(item), safe='')
         if kind == 'form':
             self.call('POST', f'/api/session/{session}/form/{item}/reply', {'answer': value})
         elif kind == 'dismiss':

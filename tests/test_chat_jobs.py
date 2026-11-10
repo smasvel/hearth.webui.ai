@@ -56,6 +56,41 @@ class BackgroundChatTests(unittest.TestCase):
         self.body = {"model": "test-model", "conversation_id": "conversation",
                      "messages": [{"role": "user", "content": "Say hello"}], "max_tokens": 32}
 
+    def test_live_generation_accepts_kobold_and_opencode_reasoning_fields(self):
+        for field in ("reasoning_content", "reasoning", "reasoning_text"):
+            with self.subTest(field=field):
+                job = chat_jobs.ChatJob("owner", "conversation", "model", "question", 1)
+                event = {"choices": [{"delta": {field: f"from {field}"}}]}
+                response = type("Response", (), {
+                    "response": ["data: " + json.dumps(event) + "\n\n"],
+                })()
+
+                job.consume(response)
+
+                self.assertEqual(job.snapshot()["reasoning"], f"from {field}")
+
+    def test_chat_api_streams_and_saves_reasoning_aliases(self):
+        for field in ("reasoning_content", "reasoning", "reasoning_text"):
+            with self.subTest(field=field), patch.object(app.lms, "chat_stream") as stream:
+                self.body["conversation_id"] = "reasoning-" + field
+
+                def chunks(*args, **kwargs):
+                    yield "data: " + json.dumps({"choices": [{"delta": {field: "Thinking live"}}]})
+                    yield self.chunk("Answer")
+                    yield "data: [DONE]"
+
+                stream.side_effect = chunks
+                response = self.client.post("/api/chat/start", json=self.body,
+                                            headers={"X-CSRF-Token": "test-csrf"})
+                self.assertEqual(response.status_code, 202, response.get_json())
+                response.close()
+                job = self.registry.get("owner", self.body["conversation_id"])
+                self.wait_until(lambda: job.status != "running")
+
+                self.assertEqual(job.snapshot()["reasoning"], "Thinking live")
+                saved = chat_store.get_conversation(self.body["conversation_id"], "owner")
+                self.assertEqual(saved["messages"][-1]["reasoning"], "Thinking live")
+
     @staticmethod
     def chunk(text):
         return "data: " + json.dumps({"choices": [{"delta": {"content": text}}]})

@@ -25,13 +25,16 @@ def install_agent_runtime(rebuild=False):
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
         raise RuntimeError('Agent runtime image version is invalid.')
     image = 'hearth-agent-opencode:' + version
+    opencode_version = (ROOT / 'agent_container' / 'OPENCODE_VERSION').read_text().strip()
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', opencode_version):
+        raise RuntimeError('OpenCode runtime version is invalid.')
     inspect = subprocess.run(['docker', 'image', 'inspect', image],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if inspect.returncode == 0 and not rebuild:
         print(f'Agent runtime image is already installed: {image}')
         return
     subprocess.run(['docker', 'build', '--pull', '--tag', image,
-                    '--build-arg', 'OPENCODE_VERSION=' + version,
+                    '--build-arg', 'OPENCODE_VERSION=' + opencode_version,
                     str(ROOT / 'agent_container')], check=True, cwd=ROOT)
     subprocess.run(['docker', 'image', 'inspect', image], check=True, stdout=subprocess.DEVNULL)
     print(f'Installed isolated agent runtime: {image}')

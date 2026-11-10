@@ -603,45 +603,112 @@ def _ensure_embedding_model_loaded() -> None:
         pass
 
 
-def _recall_memory(user_id: str, conversation_id: str, query_text: str | None) -> str | None:
+def _rag_embedding_backend(model: str | None) -> str:
+    """Use KoboldCpp's optional sidecar embeddings only for Kobold chats.
+
+    Every other backend retains the existing Lemonade vector space and request path.
+    """
+    return "kobold" if model and kobold.owns_model(model) else "lemonade"
+
+
+def _embed_rag_texts(texts: list[str], embedding_backend: str) -> tuple[str, list[list[float]]]:
+    if embedding_backend == "kobold":
+        try:
+            return "kobold", kobold.embed(texts)
+        except kobold.KoboldError:
+            # The sidecar embedding model is optional. Use the shared Lemonade
+            # vector space when KoboldCpp lacks it, so Kobold chats still retain
+            # and recall memory without changing any other backend's path.
+            embedding_backend = "lemonade"
+    _ensure_embedding_model_loaded()
+    return "lemonade", lemonade.embed(texts)
+
+
+def _recall_memory(user_id: str, conversation_id: str, query_text: str | None,
+                   model: str | None = None) -> str | None:
     """Cross-conversation memory: relevant snippets from this user's *other* past chats,
-    formatted for injection into a system message. None if there's nothing relevant, or
-    if the embedding model/Lemonade isn't reachable — never raises."""
+    formatted for injection beside the latest user message. None if there's nothing
+    relevant or the selected embedding backend isn't reachable — never raises."""
     if not query_text:
         return None
     location_fact = None
+    name_fact = None
     lowered_query = query_text.lower()
-    if web_search.looks_like_weather_query(query_text) or any(
+    direct_location_query = any(
         phrase in lowered_query
-        for phrase in ("city", "location", "where do i live", "where i live")
-    ):
+        for phrase in ("city", "location", "where do i live", "where i live",
+                       "where am i", "where i'm located", "where i am located")
+    )
+    if direct_location_query or web_search.looks_like_weather_query(query_text):
         # Include the current conversation for structured facts. Although its raw
         # messages are normally present too, smaller models can still overlook the
         # earlier location statement and incorrectly deny that it was remembered.
         location_fact = memory_store.latest_location(user_id)
+    if any(phrase in lowered_query for phrase in ("my name", "who am i", "remember me")):
+        # Same incident class as the location fact: on weak backends (verified live
+        # with KoboldCPP Qwen3.8-2B) embedding-ranked recall alone let the model
+        # deny knowing the user's name, because a stored past refusal outranked
+        # the actual "My name is ..." chunk. A directive-style fact fixes it.
+        name_fact = memory_store.latest_name(user_id)
+    embedding_backend = _rag_embedding_backend(model)
     try:
-        _ensure_embedding_model_loaded()
-        [query_embedding] = lemonade.embed([query_text])
-    except lemonade.LemonadeError:
+        embedding_backend, query_vectors = _embed_rag_texts([query_text], embedding_backend)
+        [query_embedding] = query_vectors
+    except (lemonade.LemonadeError, kobold.KoboldError):
         query_embedding = None
     hits = memory_store.search(
-        user_id, query_embedding, exclude_conversation_id=conversation_id
+        user_id, query_embedding, exclude_conversation_id=conversation_id,
+        embedding_backend=embedding_backend,
     ) if query_embedding is not None else []
-    if not hits and not location_fact:
+    if name_fact or direct_location_query:
+        # A name query with an extracted name, or any location query, uses only
+        # the direct fact if one exists. Loose semantic hits are more likely to
+        # distract with stale or prompt-like text than help these questions.
+        # Verified live (2026-11-09, KoboldCPP
+        # Qwen3.8-2B, 4/4 correct fact-only vs. occasional failures with the
+        # list): with unrelated recalled chunks present the model sometimes
+        # answered "what's my name?" with the user's saved street address,
+        # mimicked a stored past refusal, or deflected with a greeting. The
+        # fact directive already carries the answer, so the list is pure noise
+        # for this query on weak backends.
+        hits = []
+    if not hits and not location_fact and not name_fact:
         return None
     lines = []
+    if name_fact:
+        lines.append(
+            "Known personal fact explicitly saved from a past conversation: "
+            f"the user's name is {name_fact['name']} — this is the name of the person "
+            "you are talking to, not your own name. When asked what the user's name is, "
+            "reply with exactly this name. Treat this as persistent user memory and "
+            "answer directly from it; do not claim that the name cannot be remembered "
+            "or that the user never told you."
+        )
     if location_fact:
         lines.append(
             "Known personal fact explicitly saved from a past conversation: "
             f"the user's current city/location is {location_fact['location']}. "
-            "Treat this as persistent user memory and answer directly from it; do not "
-            "claim that the city cannot be remembered."
+            "When asked where the user lives or what their location is, answer with "
+            "this saved place directly and concisely. Do not replace it with a "
+            "placeholder, ask the user to provide it again, or claim it cannot be remembered."
         )
-    lines.append("Relevant context from this user's other past conversations (may or may not be relevant now):")
+    if hits:
+        lines.append("Relevant context from this user's other past conversations (may or may not be relevant now):")
     for hit in hits:
         when = datetime.datetime.fromtimestamp(hit["created_at"]).strftime("%Y-%m-%d")
         speaker = "User said" if hit["role"] == "user" else "You (assistant) said"
         lines.append(f"- [{when}] {speaker}: {hit['content'][:300]}")
+    if hits:
+        # Directive framing, same reasoning as _browse_framing: weak models
+        # (verified live with KoboldCPP Qwen3.8-2B) read the soft "may or may not
+        # be relevant" list as license to answer "you never told me" even with
+        # the fact sitting right there. Unconditional - costs nothing for
+        # stronger models.
+        lines.append(
+            "When this recalled context contains what the user is asking for, answer "
+            "from it directly. Never claim you were never told, cannot remember, or "
+            "don't know something that appears in the recalled context above."
+        )
     return "\n".join(lines)
 
 
@@ -1042,7 +1109,8 @@ def _stream_video_reply(context_messages: list[dict], raw_request: str, model: s
                            model="SD-Turbo fast coherent video", backend="comfyui")
 
 
-def _remember_exchange(user_id: str, conversation_id: str, user_text: str | None, assistant_text: str | None) -> None:
+def _remember_exchange(user_id: str, conversation_id: str, user_text: str | None,
+                       assistant_text: str | None, model: str | None = None) -> None:
     """Best-effort: embed and store this turn for future recall. Never raises.
 
     Skips storing a chunk that's a near-duplicate of one already on file for this user
@@ -1053,15 +1121,18 @@ def _remember_exchange(user_id: str, conversation_id: str, user_text: str | None
     turns = [(role, text) for role, text in turns if text]
     if not turns:
         return
+    embedding_backend = _rag_embedding_backend(model)
     try:
-        _ensure_embedding_model_loaded()
-        embeddings = lemonade.embed([text for _, text in turns])
-    except lemonade.LemonadeError:
+        embedding_backend, embeddings = _embed_rag_texts(
+            [text for _, text in turns], embedding_backend)
+    except (lemonade.LemonadeError, kobold.KoboldError):
         return
     for (role, text), embedding in zip(turns, embeddings):
-        if memory_store.find_near_duplicate(user_id, role, embedding):
+        if memory_store.find_near_duplicate(user_id, role, embedding,
+                                            embedding_backend=embedding_backend):
             continue
-        memory_store.add_chunk(user_id, conversation_id, role, text, embedding)
+        memory_store.add_chunk(user_id, conversation_id, role, text, embedding,
+                               embedding_backend=embedding_backend)
 
 
 def _embed_agent_project_notes(texts: list[str]) -> list[list[float]]:
@@ -2084,6 +2155,10 @@ def api_list_models():
         kobold_models = []
     for m in kobold_models:
         m["backend"] = "kobold"
+        # Same thinking toggle the Models page shows for Lemonade/LM Studio/q38rocm;
+        # global default from Settings, per-model choice overrides it.
+        m["enable_thinking"] = _kobold_model_thinking_overrides().get(
+            m.get("id"), (settings_store.get("kobold_enable_thinking") or "true") == "true")
     models += kobold_models
     # FastFlowLM (standalone NPU) — same fail-soft contract.
     try:
@@ -2215,6 +2290,21 @@ def _q38rocm_model_thinking_overrides() -> dict[str, bool]:
             if isinstance(model_id, str) and isinstance(value, bool)}
 
 
+def _kobold_model_thinking_overrides() -> dict[str, bool]:
+    """Per-model thinking choices for KoboldCPP GGUFs — same mechanism as the
+    Lemonade/LM Studio/q38rocm overrides, so Qwen3-style thinking models served
+    by KoboldCPP get the same request-level enable_thinking control."""
+    raw = settings_store.get("kobold_model_thinking_overrides") or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(model_id): value for model_id, value in data.items()
+            if isinstance(model_id, str) and isinstance(value, bool)}
+
+
 @app.post("/api/models/thinking")
 @admin_required
 def api_set_model_thinking():
@@ -2225,10 +2315,11 @@ def api_set_model_thinking():
     if not isinstance(body.get("enabled"), bool):
         return jsonify({"error": "enabled must be a boolean"}), 400
     backend = body.get("backend", "lemonade")
-    if backend not in ("lemonade", "lmstudio", "q38rocm"):
+    if backend not in ("lemonade", "lmstudio", "q38rocm", "kobold"):
         return jsonify({"error": "unsupported backend"}), 400
     overrides = (_lmstudio_model_thinking_overrides() if backend == "lmstudio"
                  else _q38rocm_model_thinking_overrides() if backend == "q38rocm"
+                 else _kobold_model_thinking_overrides() if backend == "kobold"
                  else _lemonade_model_thinking_overrides())
     overrides[model_id] = body["enabled"]
     settings_store.set(backend + "_model_thinking_overrides", json.dumps(overrides, separators=(",", ":")))
@@ -5780,6 +5871,7 @@ def api_chat():
         is_revision = True
     context_messages = messages
     browse_screenshots: list[dict] = []
+    memory_note = None
 
     if not image_request and not video_request:
         # Bilingual models (e.g. GLM) can default to Chinese on short/ambiguous input (a
@@ -5803,10 +5895,10 @@ def api_chat():
             ])
         # Cross-chat RAG is an application capability, not a fallback system prompt.
         # Caller-supplied system messages must not disable retrieval (the old nesting
-        # did exactly that for API clients and restored conversations).
-        memory_note = _recall_memory(user_id, conversation_id, last_user_message)
-        if memory_note:
-            system_parts.append(memory_note)
+        # did exactly that for API clients and restored conversations). The note is
+        # NOT put in system_parts: it is injected adjacent to the user's latest
+        # question below — see that block's comment for the live-verified reason.
+        memory_note = _recall_memory(user_id, conversation_id, last_user_message, model=model)
         # Web access is independent of whether the caller supplied a system prompt.
         # Previously this entire block lived under `if not has_system_message`, so
         # API clients (and restored chats containing a system turn) silently skipped
@@ -5865,6 +5957,34 @@ def api_chat():
         system_content = "\n\n".join(m.get("content", "") for m in system_messages)
         conversation_messages = [m for m in messages if m.get("role") != "system"]
         messages = [{"role": "system", "content": system_content}] + conversation_messages
+
+    # Cross-chat memory is injected adjacent to the user's latest question, not in
+    # the leading system message. Verified live (2026-11-09, KoboldCPP
+    # Qwen3.8-2B): the same recalled name fact placed in the system message
+    # produced "You didn't tell me your name!" refusals — with a tool schema
+    # present the model even mimicked a stored past refusal chunk from the
+    # recall list — while the identical fact appended next to the question was
+    # answered correctly every time, tools or not. Stronger models handle either
+    # channel, so this is unconditional (same reasoning as _browse_framing).
+    # The saved history and stored memory chunks keep the clean user text: both
+    # writes happen before this injection.
+    if memory_note and not image_request and not video_request:
+        framed_note = (
+            "[Hearth cross-chat memory, recalled from this user's other past conversations]\n"
+            + memory_note
+            + "\n[End of recalled memory. If the user asks about something that appears in it, "
+              "answer from it directly; never claim you were never told, cannot remember, or "
+              "don't know something shown in the recalled memory above.]"
+        )
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = f"{content}\n\n{framed_note}" if content else framed_note
+            elif isinstance(content, list):
+                message["content"] = content + [{"type": "text", "text": framed_note}]
+            break
 
     if lemonade.owns_model(model):
         backend, backend_error, backend_name = lemonade, lemonade.LemonadeError, "lemonade"
@@ -6074,11 +6194,11 @@ def api_chat():
                                     if delta:
                                         assistant_parts.append(delta)
                                         live_requests.update(live_id, delta_chars=len(delta))
-                                    reasoning_delta = delta_obj.get("reasoning_content")
-                                    # vLLM streams the reasoning tokens under "reasoning"
-                                    # instead of OpenAI's "reasoning_content" field.
-                                    if not reasoning_delta:
-                                        reasoning_delta = delta_obj.get("reasoning")
+                                    # KoboldCpp emits reasoning_content; OpenCode may use
+                                    # reasoning or reasoning_text depending on provider.
+                                    # Use the same normalizer as the live-job snapshot so
+                                    # streamed and saved thinking stay in sync.
+                                    reasoning_delta = chat_jobs.reasoning_from_delta(delta_obj)
                                     if reasoning_delta:
                                         reasoning_parts.append(reasoning_delta)
                                         live_requests.update(live_id, delta_chars=len(reasoning_delta))
@@ -6258,7 +6378,7 @@ def api_chat():
                         user_id=user_id,
                         is_npu=is_npu,
                     )
-                    _remember_exchange(user_id, conversation_id, last_user_message, assistant_text)
+                    _remember_exchange(user_id, conversation_id, last_user_message, assistant_text, model=model)
               finally:
                 live_requests.finish(live_id, status=request_status, total_tokens=(usage or {}).get("completion_tokens"))
                 npu_request_lock.release(npu_handle)

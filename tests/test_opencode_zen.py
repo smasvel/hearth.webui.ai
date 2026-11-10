@@ -92,6 +92,21 @@ class OpenCodeClientTests(unittest.TestCase):
     @patch.object(zen.settings_store, "get", return_value=None)
     @patch.object(zen, "api_key", return_value="test-key")
     @patch.object(zen.requests, "post")
+    def test_chat_stream_preserves_reasoning_delta_fields(self, post, _key, _setting):
+        post.return_value = _StreamingResponse([
+            b'data: {"choices":[{"delta":{"reasoning":"OpenCode thought"}}]}',
+            b'data: {"choices":[{"delta":{"reasoning_text":"more thought"}}]}',
+            b"data: [DONE]",
+        ])
+
+        lines = list(zen.chat_stream([{"role": "user", "content": "hello"}], "opencode/glm-5.3"))
+
+        self.assertIn('"reasoning":"OpenCode thought"', lines[0])
+        self.assertIn('"reasoning_text":"more thought"', lines[1])
+
+    @patch.object(zen.settings_store, "get", return_value=None)
+    @patch.object(zen, "api_key", return_value="test-key")
+    @patch.object(zen.requests, "post")
     def test_chat_sends_the_requested_stable_session_header(self, post, _key, _setting):
         post.return_value = _StreamingResponse([b"data: [DONE]"])
         list(zen.chat_stream([{"role": "user", "content": "hi"}], "opencode/glm-5.3",

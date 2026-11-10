@@ -162,6 +162,43 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
     results = []
     unavailable = None
 
+    def opencode_agent_tool_capability():
+        """Report whether Hearth's generated OpenCode model config exposes tools."""
+        name = 'opencode-agent-tool-capability'
+        if backend != 'kobold' or suite not in ('all', 'complete', 'core', 'opencode'):
+            return
+        if only is not None and (name, False) not in only:
+            return
+        if cancel and cancel.is_set():
+            raise Cancelled()
+        if on_case:
+            on_case({'name': name, 'stream': False, 'started_at': time.time()})
+        result = {'name': name, 'stream': False, 'diagnostic': True, 'seconds': 0}
+        try:
+            import help_data
+            config = json.loads(help_data.build_opencode_config(
+                '127.0.0.1', 'model-test', help_data._DEFAULT_PORTS,
+                {'kobold': [model]}, {}))
+            model_config = config['provider']['kobold']['models'][model]
+            capabilities = model_config.get('capabilities') or {}
+            assert capabilities.get('tools') is True, (
+                'Generated OpenCode config does not advertise capabilities.tools=true. '
+                'The model endpoint may pass tool-call tests while OpenCode refuses to '
+                'make agent tools available.')
+            result['passed'] = True
+            result['detail'] = 'Generated OpenCode model metadata enables tools for this KoboldCPP model.'
+        except Exception as exc:
+            result.update(passed=False, error=str(exc)[:1500])
+        results.append(result)
+        print(('PASS' if result['passed'] else 'FAIL'), name, False,
+              result.get('error', ''), flush=True)
+        if on_result:
+            on_result(result)
+        if args.output:
+            Path(args.output).write_text(json.dumps({'model': args.model, 'results': results}, indent=2))
+
+    opencode_agent_tool_capability()
+
     def check(name, prompt, stream=False, expected=None, contains=None, **extra):
         nonlocal unavailable
         if cancel and cancel.is_set():

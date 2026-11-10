@@ -7,6 +7,15 @@ import time
 import uuid
 
 
+def reasoning_from_delta(delta: dict) -> str:
+    """Normalize the reasoning fields used by KoboldCpp and OpenCode streams."""
+    for field in ("reasoning_content", "reasoning", "reasoning_text"):
+        value = delta.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def cancelable_lines(lines, cancel):
     try:
         for line in lines:
@@ -67,7 +76,7 @@ class ChatJob:
                         choices = payload.get("choices") or []
                         delta = (choices[0].get("delta") or {}) if choices else {}
                         self.content += delta.get("content") or ""
-                        self.reasoning += delta.get("reasoning_content") or ""
+                        self.reasoning += reasoning_from_delta(delta)
                         self.content += payload.get("screenshots_markdown") or ""
                         if payload.get("error"):
                             self.error = str(payload["error"])

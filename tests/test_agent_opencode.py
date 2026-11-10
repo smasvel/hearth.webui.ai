@@ -1,5 +1,6 @@
 import unittest
 import copy
+import hashlib
 from unittest.mock import Mock, patch
 import requests
 import socket
@@ -40,6 +41,14 @@ class OpenCodeAdapterTests(unittest.TestCase):
         with patch.object(client,'call',return_value={'data':{'id':'session'}}) as call:
             client.create(job)
         self.assertIn({'action':'shell','resource':'*','effect':'allow'},call.call_args.args[2]['permissions'])
+
+    def test_permission_reply_encodes_opaque_request_id(self):
+        client=OpenCode()
+        with patch.object(client,'call') as call:
+            client.reply('ses_owned','permission','web/search?confirm=1','once')
+        self.assertEqual(call.call_args.args[1],
+                         '/api/session/ses_owned/permission/web%2Fsearch%3Fconfirm%3D1/reply')
+        self.assertEqual(call.call_args.args[2],{'decision':'once'})
 
     def test_verification_observes_process_after_http_waiter_disconnects(self):
         client=OpenCode();calls=[]
@@ -118,19 +127,58 @@ class ContainerRecoveryTests(unittest.TestCase):
         self.assertEqual(relay['base_url'], 'https://example.com/current/v1')
         self.assertEqual(relay['api_key'], 'current-key')
 
+    def test_kobold_agent_relay_enables_tools_for_stale_model_metadata(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        config = {'provider': {'kobold': {
+            'models': {'kobold-model': {'limit': {'context': 8192},
+                                        'capabilities': {'tools': False}}},
+            'options': {'baseURL': 'https://kobold.example/v1', 'apiKey': 'test-key'},
+        }}}
+        with patch('agent_container.parse_jsonc', return_value=config), \
+             patch('agent_container._generated_model_config', return_value=None):
+            _, provider, _ = client._host_provider(
+                'kobold', 'kobold-model', '/tmp/model.sock', 'Test agent')
+        self.assertTrue(provider['models']['kobold-model']['capabilities']['tools'])
+        self.assertFalse(config['provider']['kobold']['models']['kobold-model']['capabilities']['tools'])
+
     def test_resume_restores_durable_workspace_to_existing_container(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)
             task_id = 'c' * 32
             name = 'hearth-agent-' + task_id[:24]
             job = {'id': task_id, 'owner': 'owner-1',
+                   'model': {'providerID': 'lmstudio', 'id': 'model'},
                    'session_id': name + '::saved-session'}
+            empty_skill_hash = hashlib.sha256(b'{}').hexdigest()
+            runtime = {'tool_policy_version': 'native-tools-v2',
+                       'model_proxy': {'skill_bundle_hash': empty_skill_hash},
+                       'opencode_config': {'provider': {'lmstudio': {'options': {
+                           'extraBody': {'enable_thinking': True,
+                                         'chat_template_kwargs': {'enable_thinking': True}}}}}}}
             with patch.object(client, '_read_runtime',
-                              return_value={'tool_policy_version': 'native-tools-v1'}), \
+                              return_value=runtime), \
+                 patch.object(client, '_skill_bundle', return_value={}), \
                  patch.object(client, 'snapshot', return_value={'messages': []}), \
                  patch.object(client, '_sync_to_container') as restore:
                 self.assertEqual(client.resume(job), job['session_id'])
             restore.assert_called_once_with(name, 'owner-1', workspace_id=task_id)
+
+    def test_resume_rebuilds_container_when_selected_skill_content_changes(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        job = {'id': 'c'*32, 'model': {'providerID': 'lmstudio', 'id': 'fixture'},
+               'enable_thinking': True, 'session_id': 'hearth-agent-'+'c'*24+'::old'}
+        info = {'tool_policy_version': 'native-tools-v2',
+                'model_proxy': {'skill_bundle_hash': 'old-skill-hash'},
+                'opencode_config': {'provider': {'lmstudio': {'options': {'extraBody': {
+                    'enable_thinking': True,
+                    'chat_template_kwargs': {'enable_thinking': True}}}}}}}
+        with patch.object(client, '_read_runtime', return_value=info), \
+             patch.object(client, '_skill_bundle', return_value={'deploy-helper': 'updated body'}), \
+             patch.object(client, 'create', return_value='fresh') as create, \
+             patch.object(client, 'snapshot') as snapshot:
+            self.assertEqual(client.resume(job), 'fresh')
+        create.assert_called_once_with(job)
+        snapshot.assert_not_called()
 
     def test_endpoint_refreshes_container_host_port(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -265,8 +313,17 @@ class ContainerRecoveryTests(unittest.TestCase):
     def test_missing_container_recreates_session_from_project_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             client = ContainerOpenCode(directory)
-            job = {'id':'a'*32,'session_id':'hearth-agent-'+'a'*24+'::old-session'}
-            with patch.object(client,'_read_runtime', return_value={'tool_policy_version': 'native-tools-v1'}), \
+            job = {'id':'a'*32, 'model': {'providerID': 'lmstudio', 'id': 'model'},
+                   'session_id':'hearth-agent-'+'a'*24+'::old-session'}
+            empty_skill_hash = hashlib.sha256(b'{}').hexdigest()
+            runtime = {'tool_policy_version': 'native-tools-v2',
+                       'model_proxy': {'skill_bundle_hash': empty_skill_hash},
+                       'opencode_config': {'provider': {'lmstudio': {'options': {
+                           'extraBody': {'enable_thinking': True,
+                                         'chat_template_kwargs': {'enable_thinking': True}}}}}}}
+            with patch.object(client,'_read_runtime', return_value={
+                    **runtime}), \
+                 patch.object(client, '_skill_bundle', return_value={}), \
                  patch.object(client,'snapshot',side_effect=RuntimeError('The isolated agent container is missing.')) as snapshot, \
                  patch.object(client,'cleanup') as cleanup, \
                  patch.object(client,'create',return_value='hearth-agent-'+'a'*24+'::new-session') as create, \

@@ -56,6 +56,7 @@ class KoboldMetricsTests(unittest.TestCase):
     def test_chat_stream_adds_correlated_perf_to_terminal_usage_event(self):
         response = Mock(status_code=200)
         response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"reasoning_content":"Kobold thought"}}]}',
             b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
             b'data: [DONE]',
@@ -79,6 +80,7 @@ class KoboldMetricsTests(unittest.TestCase):
             "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7,
             "decoding_speed_tps": 10.0,
         })
+        self.assertEqual(events[0]["choices"][0]["delta"]["reasoning_content"], "Kobold thought")
         self.assertEqual(lines[-1], "data: [DONE]")
 
     def test_context_overflow_test_records_its_http_metric(self):

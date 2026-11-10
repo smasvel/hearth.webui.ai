@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 COMMENT ON COLUMN agent_tasks.payload IS
     'Serialized task state including started marker, cycle counters, saved responses, and completion data.';
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id);
+CREATE TABLE IF NOT EXISTS agent_research_credentials (
+    task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
+    encrypted_value TEXT NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_workspace_files (
     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL DEFAULT '',
@@ -119,6 +124,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     embedding BYTEA NOT NULL,
+    embedding_backend TEXT NOT NULL DEFAULT 'lemonade',
     created_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_chunks_user ON memory_chunks(user_id);

@@ -50,6 +50,22 @@ class AgentContainerTests(unittest.TestCase):
         self.assertFalse(config['provider']['lmstudio']['options']['extraBody']['chat_template_kwargs']['enable_thinking'])
         self.assertFalse(config['provider']['lmstudio']['options']['extraBody']['enable_thinking'])
 
+    def test_opencode_skills_are_mounted_before_service_start(self):
+        task_dir = Path(self.tempdir.name) / 'task'
+        task_dir.mkdir()
+        (task_dir / 'opencode-skills').mkdir()
+        info = {'task_id': 'a' * 32, 'password': 'test-password',
+                'opencode_config': {}}
+        self.client._docker = Mock(side_effect=['', '127.0.0.1:43123'])
+        with patch('agent_container.requests.get', return_value=Mock(ok=True)), \
+             patch.object(self.client, '_write_runtime'):
+            self.client._start_container('hearth-agent-fixture', info, task_dir)
+        run_args = self.client._docker.call_args_list[0].args
+        self.assertIn(
+            f'type=bind,src={task_dir / "opencode-skills"},dst=/home/node/.config/opencode/skills,readonly',
+            run_args,
+        )
+
     def test_resume_replaces_session_with_stale_thinking_setting(self):
         job = {'id': 'c'*32, 'model': {'providerID': 'lmstudio', 'id': 'fixture'},
                'enable_thinking': False, 'session_id': 'hearth-agent-'+'c'*24+'::old'}

@@ -45,17 +45,19 @@
     }
     for (const row of filtered) {
       const done = row.status !== "streaming";
+      const failed = row.status === "error";
+      const cancelled = row.status === "cancelled";
       const line = document.createElement("div");
       line.className = `metric-dev-line dev-${row.status}`;
       const time = new Date((row.finished_at || row.started_at || 0) * 1000)
         .toLocaleTimeString([], {hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit"});
       addText(line, "dev-time", time);
-      addText(line, "dev-level", row.status === "error" ? "ERROR" : done ? "DONE " : "INFO ");
+      addText(line, "dev-level", failed ? "ERROR" : cancelled ? "CANCEL" : done ? "DONE " : "INFO ");
       addText(line, "dev-id", `req#${row.id ?? "—"}`);
       addText(line, "dev-client", row.source || "unknown");
       addText(line, "dev-route", `${row.backend || "unknown"} / ${row.model || "unknown"}`);
       if (row.is_npu) addText(line, "dev-npu", "NPU");
-      addText(line, "dev-event", done ? (row.status === "error" ? "request failed" : "generation completed") : "streaming");
+      addText(line, "dev-event", done ? (failed ? "request failed" : cancelled ? "client closed stream" : "generation completed") : "streaming");
       if (!done) {
         const stop = document.createElement("button");
         stop.className = "panel-btn danger";

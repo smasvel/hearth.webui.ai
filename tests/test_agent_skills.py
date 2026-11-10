@@ -30,14 +30,38 @@ class SkillFolderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent_store.skill_folder('---')
 
+    def test_long_folder_slug_does_not_end_in_separator(self):
+        self.assertEqual(len(agent_store.skill_folder('a' * 63 + ' ' + 'b')), 63)
+        self.assertFalse(agent_store.skill_folder('a' * 63 + ' ' + 'b').endswith('-'))
+
     def test_compose_markdown_adds_frontmatter_unless_present(self):
         skill = {'name': 'Review', 'description': 'Check code', 'body': 'Do the thing.'}
         markdown = agent_store.compose_skill_markdown(skill)
-        self.assertTrue(markdown.startswith('---\nname: "Review"'))
+        self.assertTrue(markdown.startswith('---\nname: "review"'))
         self.assertIn('description: "Check code"', markdown)
         self.assertIn('Do the thing.', markdown)
         existing = '---\nname: "Custom"\n---\nBody text.'
-        self.assertEqual(agent_store.compose_skill_markdown({'body': existing}), existing)
+        deployed = agent_store.compose_skill_markdown({'name': 'Code Review Checklist', 'body': existing})
+        self.assertIn('name: "code-review-checklist"', deployed)
+        self.assertNotIn('name: "Custom"', deployed)
+        self.assertIn('Body text.', deployed)
+
+    def test_compose_markdown_normalizes_imported_opencode_skill_id(self):
+        imported = ('---\nname: skill_project_review\ndescription: Review projects\n---\n'
+                    'Follow these instructions.')
+        deployed = agent_store.compose_skill_markdown(
+            {'name': 'Project Review', 'description': 'Review projects', 'body': imported})
+        self.assertIn('name: "project-review"', deployed)
+        self.assertNotIn('skill_project_review', deployed)
+        self.assertIn('Follow these instructions.', deployed)
+
+    def test_compose_markdown_normalizes_imported_skill_id(self):
+        imported = ('---\nname: imported_project_review_checklist\ndescription: Review projects\n---\n'
+                    'Follow these instructions.')
+        deployed = agent_store.compose_skill_markdown(
+            {'name': 'Imported Project Review Checklist', 'description': 'Review projects', 'body': imported})
+        self.assertIn('name: "imported-project-review-checklist"', deployed)
+        self.assertNotIn('imported_project_review_checklist', deployed)
 
 
 class SkillStoreTests(unittest.TestCase):
@@ -114,28 +138,23 @@ class AssignmentSkillTests(unittest.TestCase):
         self.manager.update_assignment(key, {**self.values, 'skills': ['Deploy helper']})
         self.assertEqual(self.manager.get(key)['skills'], ['Deploy helper'])
 
+    def test_update_assignment_saves_research_providers_and_retains_blank_keys(self):
+        key = self.manager.create({**self.values, 'research_providers': ['exa'],
+                                   'research_keys': {'exa': 'old-key'}}, self.owner)['id']
+        self.manager.jobs[key]['status'] = 'completed'
+        updated = self.manager.update_assignment(key, {**self.values,
+            'research_providers': ['exa', 'tavily'],
+            'research_keys': {'exa': '', 'tavily': 'tavily-key'}})
+        self.assertEqual(updated['research_providers'], ['exa', 'tavily'])
+        self.assertEqual(agent_store.get_research_credentials(key),
+                         {'exa': 'old-key', 'tavily': 'tavily-key'})
 
-class SnapshotBytesIO(io.BytesIO):
-    def __init__(self, process):
-        super().__init__()
-        self.process = process
-
-    def close(self):
-        self.process.captured = self.getvalue()
-        super().close()
-
-
-class FakeTarProcess:
-    def __init__(self, args):
-        self.args = args
-        self.stdin = SnapshotBytesIO(self)
-        self.stderr = io.BytesIO()
-        self.captured = None
-    def wait(self, timeout=None):
-        return 0
-
-    def kill(self):
-        pass
+    def test_update_assignment_removes_credentials_for_deselected_providers(self):
+        key = self.manager.create({**self.values, 'research_providers': ['exa'],
+                                   'research_keys': {'exa': 'old-key'}}, self.owner)['id']
+        self.manager.jobs[key]['status'] = 'completed'
+        self.manager.update_assignment(key, {**self.values, 'research_providers': [], 'research_keys': {}})
+        self.assertEqual(agent_store.get_research_credentials(key), {})
 
 
 class ContainerSkillTests(unittest.TestCase):
@@ -152,36 +171,31 @@ class ContainerSkillTests(unittest.TestCase):
     def skill_job(self, names):
         return {'owner': self.owner, 'skills': names}
 
-    def test_sync_installs_skill_markdown_tar(self):
+    def test_skill_bundle_is_staged_in_opencode_discovery_directory(self):
         skill = agent_store.save_skill({'owner': self.owner, 'name': 'Deploy Helper',
                                         'description': 'Steps', 'body': 'Run the deploy.'})
-        processes = []
-        with patch.object(self.agent_container.subprocess, 'Popen',
-                          side_effect=lambda args, **kwargs: processes.append(FakeTarProcess(args)) or processes[-1]):
-            self.container._sync_skills_to_container('hearth-agent-x', self.skill_job(['Deploy Helper']))
-        self.assertEqual(processes[0].args[:4], ['docker', 'exec', '-i', 'hearth-agent-x'])
-        self.assertIn("rm -rf /home/node/.config/opencode/skill", self.container._docker.call_args.args[4])
-        import tarfile
-        with tarfile.open(fileobj=io.BytesIO(processes[0].captured)) as tar:
-            names = tar.getnames()
-            deployed = tar.extractfile('deploy-helper/SKILL.md').read().decode()
-        self.assertEqual(names, ['deploy-helper', 'deploy-helper/SKILL.md'])
-        self.assertIn('name: "Deploy Helper"', deployed)
+        bundle = self.container._skill_bundle(self.skill_job(['Deploy Helper']))
+        self.container._write_skill_bundle(self.tmp.name, bundle)
+        deployed_path = Path(self.tmp.name) / 'opencode-skills' / 'deploy-helper' / 'SKILL.md'
+        deployed = deployed_path.read_text()
+        self.assertIn('name: "deploy-helper"', deployed)
         self.assertIn('Run the deploy.', deployed)
+        self.assertEqual(deployed_path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(deployed_path.parent.stat().st_mode & 0o777, 0o755)
 
-    def test_sync_without_skills_skips_docker_entirely(self):
-        processes = []
-        with patch.object(self.agent_container.subprocess, 'Popen',
-                          side_effect=lambda args, **kwargs: processes.append(FakeTarProcess(args)) or processes[-1]):
-            self.container._sync_skills_to_container('hearth-agent-x', self.skill_job([]))
+    def test_empty_skill_bundle_creates_mount_source_without_docker_calls(self):
+        bundle = self.container._skill_bundle(self.skill_job([]))
+        self.container._write_skill_bundle(self.tmp.name, bundle)
+        self.assertTrue((Path(self.tmp.name) / 'opencode-skills').is_dir())
         self.container._docker.assert_not_called()
-        self.assertEqual(processes, [])
 
     def test_agent_config_mentions_selected_skills(self):
         config = self.container._agent_config({}, 'lmstudio', 'qwen',
                                               {'options': {}, 'models': {'qwen': {}}}, skills=['Deploy Helper'])
         system = config['agents']['hearth-worker']['system']
         self.assertIn('Deploy Helper', system)
+        self.assertIn('skill ID: deploy-helper', system)
+        self.assertIn('load it with the skill tool using its exact skill ID', system)
         self.assertNotIn('SKILL.md instructions', self.agent_container.SYSTEM)
 
     def test_skill_change_requires_fresh_container_config(self):

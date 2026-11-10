@@ -75,6 +75,18 @@ class PerformanceReportTests(unittest.TestCase):
             run('all', 1, 'all', 'chat'), run('core', 2, 'core', 'chat')])
         self.assertEqual(report['rows'][0]['run_id'], 'all')
 
+    def test_configuration_diagnostics_do_not_change_model_recommendations(self):
+        job = {'id': 'kobold-all', 'started_at': 1, 'status': 'completed', 'suite': 'all',
+               'targets': [{'backend': 'kobold', 'id': 'model'}], 'results': [
+                   {'backend': 'kobold', 'model': 'model', 'name': 'tool-call',
+                    'passed': True, 'seconds': 1, 'usage': {'completion_tokens': 10}},
+                   {'backend': 'kobold', 'model': 'model', 'name': 'opencode-agent-tool-capability',
+                    'passed': False, 'diagnostic': True, 'seconds': 0},
+               ]}
+        row = model_tests.performance_report([job])['rows'][0]
+        self.assertEqual((row['total'], row['passed'], row['failed'], row['pass_rate']),
+                         (1, 1, 0, 100))
+
     def test_skipped_reasoning_checks_do_not_lower_reasoning_score(self):
         target = {'backend': 'lmstudio', 'id': 'reasoning-fixture'}
         report = model_tests.performance_report([{
@@ -189,6 +201,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(job['repairs'], [])
         self.assertFalse(self.values)
+
+    def test_configuration_diagnostic_failure_does_not_trigger_model_repair(self):
+        target = {'backend': 'kobold', 'id': 'kobold-model'}
+        diagnostic = dict(result('opencode-agent-tool-capability', False), diagnostic=True)
+        job, calls = self.run_job([[diagnostic]], targets=[target])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(job['repairs'], [])
+        self.assertIsNone(self.values.get(('kobold', 'kobold-model')))
 
     def test_unavailable_backend_is_not_retried_with_a_prompt_recipe(self):
         failure = {**result('plain-chat', False), 'backend_unavailable': True}
@@ -554,6 +574,32 @@ class SuiteTests(unittest.TestCase):
         self.assertIn("finish reasons=['length']", results[0]['error'])
         self.assertIn('completion tokens=2048', results[0]['error'])
         self.assertIn('src/example.py', results[0]['error'])
+
+    def test_kobold_suite_reports_generated_opencode_tool_capability(self):
+        observed, cases = [], []
+        with patch('tools.test_flm_model.requests.post') as post:
+            results = run_suite('kobold-model', 'http://local', suite='core', backend='kobold',
+                                only={('opencode-agent-tool-capability', False)},
+                                on_result=observed.append, on_case=cases.append)
+        post.assert_not_called()
+        self.assertEqual(results, observed)
+        self.assertEqual(cases[0]['name'], 'opencode-agent-tool-capability')
+        self.assertTrue(results[0]['passed'])
+        self.assertTrue(results[0]['diagnostic'])
+        self.assertIn('enables tools', results[0]['detail'])
+
+    def test_kobold_suite_flags_missing_opencode_tool_capability(self):
+        broken_config = json.dumps({'provider': {'kobold': {'models': {
+            'kobold-model': {'capabilities': {'tools': False}},
+        }}}})
+        with patch('help_data.build_opencode_config', return_value=broken_config), \
+             patch('tools.test_flm_model.requests.post') as post:
+            results = run_suite('kobold-model', 'http://local', suite='opencode', backend='kobold',
+                                only={('opencode-agent-tool-capability', False)})
+        post.assert_not_called()
+        self.assertFalse(results[0]['passed'])
+        self.assertTrue(results[0]['diagnostic'])
+        self.assertIn('endpoint may pass tool-call tests', results[0]['error'])
 
     def test_cancelled_suite_makes_no_network_request(self):
         event = threading.Event(); event.set()

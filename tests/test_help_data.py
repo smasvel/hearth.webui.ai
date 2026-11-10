@@ -128,6 +128,15 @@ class HelpDataCacheTests(unittest.TestCase):
 
 class OpenCodeConsoleConfigTests(unittest.TestCase):
     @patch.object(help_data.settings_store, "get", return_value=None)
+    def test_generated_kobold_model_advertises_tool_support_only_for_kobold(self, _setting):
+        cfg = json.loads(help_data.build_opencode_config(
+            "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
+            {"kobold": ["kobold-model"], "vllm": ["vllm-model"]}, {}))
+        self.assertEqual(cfg["provider"]["kobold"]["models"]["kobold-model"]["capabilities"],
+                         {"tools": True})
+        self.assertNotIn("capabilities", cfg["provider"]["vllm"]["models"]["vllm-model"])
+
+    @patch.object(help_data.settings_store, "get", return_value=None)
     @patch.object(help_data.zen, "api_key", return_value="")
     def test_console_providers_absent_without_a_key(self, _key, _setting):
         cfg = json.loads(help_data.build_opencode_config(

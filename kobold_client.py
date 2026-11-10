@@ -98,6 +98,32 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
+def embed(texts: list[str]) -> list[list[float]]:
+    """Create embeddings through KoboldCpp's OpenAI-compatible endpoint.
+
+    KoboldCpp must be started with ``--embeddingsmodel`` configured. Its embedding
+    model runs alongside the chat GGUF, so this does not replace the active chat model.
+    """
+    safe_texts = [str(text)[:1400] for text in texts]
+    try:
+        resp = requests.post(
+            f"{base_url()}/v1/embeddings",
+            json={"model": "koboldcpp", "input": safe_texts},
+            headers=_auth_headers(), timeout=30,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise KoboldError(f"KoboldCPP embedding request failed: {exc}") from exc
+    try:
+        data = sorted(resp.json()["data"], key=lambda item: item["index"])
+        vectors = [item["embedding"] for item in data]
+        if len(vectors) != len(safe_texts) or any(not vector for vector in vectors):
+            raise ValueError("unexpected embedding count or empty vector")
+        return vectors
+    except (ValueError, KeyError, TypeError) as exc:
+        raise KoboldError(f"KoboldCPP embedding response malformed: {exc}") from exc
+
+
 # ---- model id <-> gguf path registry ----------------------------------------------
 def _load_registry() -> dict:
     global _registry_migrated
@@ -356,11 +382,17 @@ def merge_performance_usage(usage, before, after):
 
 
 def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_penalty=0.3,
+                chat_template_kwargs=None, enable_thinking=None,
                 tools=None, parallel_tool_calls=None):
     """Yield raw SSE 'data: ...' lines from KoboldCPP's OpenAI-compatible chat endpoint.
     Same shape/defaults as the other clients' chat_stream() so app.py's worker needs no
     changes. KoboldCPP serves one model, so `model` is informational — the loaded GGUF
     answers regardless.
+
+    `chat_template_kwargs` / `enable_thinking`: same request-level thinking control
+    Lemonade gets (Qwen3-style templates). Verified live that KoboldCPP (with --jinja)
+    accepts both without error and forwards them to the model's chat template;
+    templates that don't support the flag ignore it.
 
     `tools`: OpenAI-format tool definitions (see mcp_tools_client.py) - passed through
     verbatim. Relies on kobold.service's own --jinja --jinja_tools flags (see that unit's
@@ -381,6 +413,10 @@ def chat_stream(messages, model, temperature=0.7, max_tokens=None, frequency_pen
         payload["max_tokens"] = max_tokens
     if frequency_penalty:
         payload["frequency_penalty"] = frequency_penalty
+    if chat_template_kwargs:
+        payload["chat_template_kwargs"] = chat_template_kwargs
+    if enable_thinking is not None:
+        payload["enable_thinking"] = enable_thinking
     if tools:
         payload["tools"] = tools
     if parallel_tool_calls is not None and tools:

@@ -5,6 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip python3-venv default-jdk-headless maven build-essential pkg-config socat tar \
+ && python3 -m venv /opt/duckduckgo \
+ && /opt/duckduckgo/bin/pip install --no-cache-dir 'duckduckgo-mcp-server[browser]==0.7.0' \
  && npm install --global "@opencode/cli@${OPENCODE_VERSION}" \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*

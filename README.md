@@ -170,7 +170,7 @@ preventing native tool parsers from rejecting ordinary answers.
 | Agentic coding | OpenCode project tasks with a configurable per-turn step limit, progress monitoring, user-input handling, and configured verification commands |
 | Agent skills | A per-user skill library: add, edit, upload, download, and import skills as SKILL.md instruction packs installed into agent containers |
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
-| Web research | Relevance-ranked web search, broad configurable Playwright page retrieval, ad/tracker blocking, read-only chat browser research, and searchable AI browser history |
+| Web research | Relevance-ranked web search, broad configurable Playwright page retrieval, ad/tracker blocking, read-only chat browser research, per-agent DuckDuckGo/Exa/Firecrawl/Parallel/Tavily/TinyFish MCP tools, and searchable AI browser history |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
 | Creative tools | Image and video generation through separately configured ComfyUI workflows |
 | Learning | In-chat practice tests and quizzes |
@@ -484,6 +484,11 @@ for injection, disclosure, unsafe requests, privacy, and unauthorized actions; i
 does not scan the host or prove the model or deployment secure. Tool calls are never
 executed by these suites. Results and individual check details are saved with the
 existing model-test reports.
+For KoboldCPP, the core, OpenCode, and comprehensive suites also check that the
+generated OpenCode model config advertises tool availability. This catches cases
+where direct endpoint tool tests pass but OpenCode would withhold agent tools. The
+configuration diagnostic appears in the run report but does not affect model
+recommendations.
 During Hearth chat, tool-enabled backend requests explicitly allow parallel tool
 calls so compatible runtimes can return multiple independent calls in one turn.
 Tool checks allow up to 2,048 completion tokens so models that spend tokens on
@@ -565,7 +570,9 @@ Hearth streams generated response text into the conversation as the backend send
 it, including supported reasoning/thinking updates. The assistant message grows
 during generation so you can see progress before the model finishes. Streaming
 depends on the selected backend and model exposing incremental output; some models
-may send reasoning separately or not expose it at all.
+may send reasoning separately or not expose it at all. Hearth recognizes the separate
+reasoning fields used by KoboldCpp and OpenCode, so supported thinking appears in the live
+chat panel and remains available after the reply is saved.
 
 Chat caps the requested output budget to the selected model's active context window,
 leaving room for the prompt and template overhead. This prevents small-window models
@@ -716,7 +723,7 @@ configured separately. The first-time Hearth installer does not perform that set
 | Coding API gateway | Authenticated HTTPS access to backend APIs, generated OpenCode/Continue configurations, certificate instructions, LAN and Tailscale addresses | Help; host gateway setup required |
 | Tailscale remote access | Private browser access through configured Serve, address detection, backend tests, and separate LAN/Tailscale coding configurations | [Tailscale setup](#tailscale-remote-access-for-chat-and-coding-models) |
 | Hosted opencode.ai models | Free-tier and subscription (OpenCode Go) model access embedded in chat and agent assignments; plan selector, connection test, encrypted key storage, and per-conversation session routing | Settings → opencode.ai |
-| Persistent coding agents | Guided task creation with per-run model thinking and OpenCode step-limit controls, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
+| Persistent coding agents | Guided task creation and editing with per-run model thinking, OpenCode step-limit controls, and per-assignment online research providers, separate assignment and live execution pages, real-time agent Activity with timestamps, private workspaces, owner-scoped project-note RAG, searchable sharing with owner-level task controls, reusable stopped containers for reruns, recurring schedules with local run times, admin-controlled access, and optional result checks | Users; Agents; OpenCode required |
 | Agent skills | Per-user skill library with add/edit/delete, file upload, URL import, and SKILL.md export; selected skills install into the agent's container and are surfaced to the agent | Agents → Skills |
 | Personal memory | Per-user conversation history and cross-chat retrieval using local embeddings | [Cross-chat memory](#cross-chat-memory) |
 | Codebase retrieval | Continue embedding configuration for codebase indexing; OpenCode uses its own project file/search tools | [Codebase RAG](#codebase-retrieval-for-coding-clients) |
@@ -787,12 +794,20 @@ archive of `SKILL.md` packs; or download a skill from an `http(s)` URL. Skills c
 be edited, exported back out as `SKILL.md` files, and deleted. When creating or
 editing an assignment, select skills under **More options** to install them into
 that agent's container as OpenCode skills; the generated agent configuration also
-reminds the model to read the matching `SKILL.md` when the work is relevant.
-Changing an assignment's skill selection starts a fresh container on its next run
-so the installed skills always match the saved selection. Skill imports honor the
+provides each skill's exact OpenCode ID so the model can load it instead of
+confusing it with Hearth's private database ID. Skills are mounted in OpenCode's
+global discovery directory before its service starts. Changing an assignment's
+skill selection or editing selected skill contents starts a fresh container on its
+next run so installed skills match the saved selection. Skill imports honor the
 file's own frontmatter `name`/`description` when present, are capped at 5 MB per
 import and 20 skills per zip, and colliding names are imported under a numbered
-suffix. Skills are stored in PostgreSQL and are private to each account.
+suffix. On installation, Hearth normalizes frontmatter `name` to the OpenCode skill
+ID derived from the saved library name, so imported IDs cannot mismatch the mounted
+skill directory. For example, imported `project_review_checklist` frontmatter is
+installed and requested as `project-review-checklist` when that is the saved library
+name. Existing sessions are rebuilt on the next run if their installed skill
+bundle differs from the current saved bundle. Skills are stored in PostgreSQL and are
+private to each account.
 Pausing or stopping an assignment closes the agent container's
 active model response, including a response still buffered for tool parsing.
 After a model request finishes, Hearth starts the OpenCode handoff timer from the
@@ -1183,11 +1198,38 @@ last administrator account and prevents administrators from deleting themselves.
 ### Cross-chat memory
 
 Cross-chat recall embeds messages in PostgreSQL, scopes retrieval by user, and
-excludes the current conversation. It uses Lemonade embeddings, deduplicates
-near-identical chunks, and retrieves up to eight relevant chunks with a minimum
-similarity of 0.35. Short conversational facts may score below repeated questions,
+excludes the current conversation. It uses Lemonade embeddings for all backends
+except KoboldCpp chats, which can use KoboldCpp's optional embeddings model.
+Each backend's vectors are stored and searched in a separate namespace, so enabling
+KoboldCpp embeddings does not change retrieval for other backends. KoboldCpp needs
+to be started with `--embeddingsmodel /path/to/embedding-model.gguf` to use its own
+embedding model. If that endpoint is unavailable, KoboldCpp chats fall back to
+Lemonade embeddings and the Lemonade vector namespace; once the endpoint works,
+KoboldCpp builds a separate vector history. Previously indexed Lemonade vectors
+remain available to other backends. Both
+paths deduplicate near-identical chunks and retrieve up to eight relevant chunks
+with a minimum similarity of 0.35. Short conversational facts may score below repeated questions,
 so both the similarity threshold and retrieval window matter. Deleting a
 conversation or account also deletes its associated memory chunks.
+
+Personal facts are additionally recalled as explicit directives rather than by
+embedding rank: the user's name ("My name is …", "call me …") and home location
+are extracted from stored messages and injected as a "known personal fact" that
+weak models (verified live with KoboldCPP Qwen3.8-2B) can follow, since
+embedding-ranked recall alone let those models answer "you never told me" — a
+stored past refusal could even outrank the actual fact. On a name question the
+general recall list is dropped entirely and only the name fact is injected —
+unrelated recalled chunks (a saved address, an old refusal, greeting text)
+made weak models answer with the wrong fact or deflect. These personal facts
+are read from saved chat history as well as the embedding index, so they remain
+available when indexing was unavailable during the original conversation. They
+also work when the Lemonade embedding model is temporarily unreachable. The whole recall
+note is injected adjacent to the user's latest message (clearly delimited as
+Hearth memory) instead of the leading system message: verified live that weak
+models ignore a recalled fact buried in the system prompt — especially with a
+tool schema present — but follow the same fact placed next to their question.
+Saved chat history and stored memory chunks keep the clean user text; the note
+is appended only to the copy sent to the model.
 
 ### Browse history
 
@@ -1307,6 +1349,10 @@ tasks, or continue blocked and interrupted tasks, to use the new limit.
 Changing it before continuing a blocked or interrupted task starts a fresh session from
 the saved project files. Hearth project agents use OpenCode's direct file and shell tools;
 shell commands still follow the selected **Ask me first** or **Allow automatically** mode.
+Generated OpenCode configs explicitly advertise tool support for KoboldCPP models,
+and the isolated agent relay reapplies that capability when an older desktop config
+omits or disables it. This lets OpenCode offer its project tools even when its model
+catalog has stale capability data; other backend model metadata is unchanged.
 Transient provider connection resets are retried automatically in the same task cycle;
 the model relay avoids sending a second HTTP response after a streamed response has begun.
 The agent label is used only for Hearth's request attribution and is removed before
@@ -1331,6 +1377,31 @@ when a response is needed. If the status says **Needs your help** but the reques
 details have not loaded, use **Refresh request** in the notice to reload them.
 Agent responses and structured tool inputs, outputs, and errors are rendered as
 readable key/value text instead of raw JSON; shell inputs are shown as commands.
+OpenCode permission replies preserve opaque request IDs as a single encoded URL
+component, so choices such as allowing web search reach the correct pending request.
+On **New agent**, expand **Online research** to allow web research and choose
+DuckDuckGo, Exa, Firecrawl, Parallel, Tavily, or TinyFish. DuckDuckGo uses a
+community-maintained [DuckDuckGo MCP server](https://github.com/nickclyde/duckduckgo-mcp-server)
+bundled in the isolated agent image and needs no key.
+Multiple providers can be selected and the
+agent is instructed to compare their results in parallel. API keys are optional where
+the provider offers keyless access; Tavily requires a key. Keys are encrypted in
+PostgreSQL separately from task details and injected only into that assignment's
+isolated OpenCode MCP configuration. Search calls include the requested terms in the
+required `query` field; if a search tool reports that `query` is missing, the agent is
+instructed to retry with a nonempty query. Agents must use the exact search tool names
+listed as available and must not invent aliases such as `web_search`. Before fetching
+full pages, the agent checks
+titles and snippets against the task's goal, entities, location, and time period; it
+discards unrelated or duplicate hits and refines the search when results are a poor fit.
+It deep-dives only into relevant results. Existing agent sessions refresh once on resume
+to load these instructions. On an editable assignment, **Edit task → Online
+research** shows its saved providers. You can change providers or replace keys; leaving
+a selected provider's key field blank retains its saved key, while deselecting that
+provider removes its key. Provider terms, rate limits, and charges are set by each service.
+The first new agent run after an update builds the versioned runtime image containing
+DuckDuckGo's MCP server; Docker and internet access to the Python package index are
+needed for that build.
 You can also add instructions and pause, continue, or stop work from the same
 page. Detailed activity
 The activity feed and full activity history always put the newest timestamp at the top,
@@ -1523,6 +1594,9 @@ can kill active Hearth chat and agent relay requests from their rows. Requests h
 entirely by an external backend cannot be stopped from Hearth.
 Rejected Hearth agent relay chat requests also appear as failed 403 rows with the
 agent name and model. Their prompt body is not read or saved.
+When OpenCode closes a model response before it finishes, the relay records the row
+as **CANCEL** and notes that the client closed the stream; this is distinct from an
+upstream model error. An agent's first-token timeout can close a stream this way.
 Streaming token detail is available for Hearth chat, model tests, and OpenCode/Continue traffic through
 Lemonade, FastFlowLM, LM Studio, and KoboldCPP when the backend supplies usage counts. For
 local KoboldCPP, Hearth requests the final streamed usage event and also checks
@@ -1630,6 +1704,10 @@ Run the application checks through the isolated PostgreSQL test runner:
 ```bash
 .venv/bin/python tools/run_tests.py --browser
 ```
+
+The discovered unit suite includes RAG backend-routing, KoboldCpp embedding API,
+failure-handling, and vector-namespace isolation regressions. The same tests run
+without browser checks when invoking `.venv/bin/python tools/run_tests.py`.
 
 With `--browser`, the unit suite and all seven Playwright suites run concurrently. Each
 browser suite receives its own temporary PostgreSQL schema, and all schemas are removed

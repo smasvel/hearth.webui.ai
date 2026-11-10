@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     embedding BYTEA NOT NULL,
+    embedding_backend TEXT NOT NULL DEFAULT 'lemonade',
     created_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_chunks_user ON memory_chunks(user_id);
@@ -35,6 +36,7 @@ def _connect():
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(SCHEMA)
+        conn.execute("ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS embedding_backend TEXT NOT NULL DEFAULT 'lemonade'")
 
 
 def delete_conversation_chunks(conversation_id: str) -> None:
@@ -63,15 +65,16 @@ def update_chunk_embedding(chunk_id: int, embedding: list[float]) -> None:
         conn.execute("UPDATE memory_chunks SET embedding = %s WHERE id = %s", (vector, chunk_id))
 
 
-def find_near_duplicate(user_id: str, role: str, embedding: list[float], threshold: float = 0.9) -> bool:
+def find_near_duplicate(user_id: str, role: str, embedding: list[float], threshold: float = 0.9,
+                        embedding_backend: str = "lemonade") -> bool:
     """Check for near-duplicate chunks with the same user and role.
 
     Repeated questions can crowd relevant facts out of the retrieval window.
     Compare only chunks with the same role to preserve question-answer pairs."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT embedding FROM memory_chunks WHERE user_id = %s AND role = %s",
-            (user_id, role),
+            "SELECT embedding FROM memory_chunks WHERE user_id = %s AND role = %s AND embedding_backend = %s",
+            (user_id, role, embedding_backend),
         ).fetchall()
     if not rows:
         return False
@@ -92,13 +95,14 @@ def find_near_duplicate(user_id: str, role: str, embedding: list[float], thresho
     return bool(np.max(similarities) >= threshold)
 
 
-def add_chunk(user_id: str, conversation_id: str, role: str, content: str, embedding: list[float]) -> None:
+def add_chunk(user_id: str, conversation_id: str, role: str, content: str, embedding: list[float],
+              embedding_backend: str = "lemonade") -> None:
     vector = np.asarray(embedding, dtype=np.float32).tobytes()
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO memory_chunks (user_id, conversation_id, role, content, embedding, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (user_id, conversation_id, role, content, vector, time.time()),
+            "INSERT INTO memory_chunks (user_id, conversation_id, role, content, embedding, embedding_backend, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (user_id, conversation_id, role, content, vector, embedding_backend, time.time()),
         )
 
 
@@ -122,7 +126,71 @@ _LOCATION_PATTERNS = (
     re.compile(r"\bset\s+my\s+(?:current\s+)?location\s+(?:as|to)\s+(.+)", re.I),
     re.compile(r"\bmy\s+(?:current\s+)?(?:city|location)\s+is\s+(.+)", re.I),
     re.compile(r"\bi\s+(?:live|reside)\s+in\s+(.+)", re.I),
+    re.compile(r"\bi(?:'m| am)\s+(?:currently\s+)?(?:located|based|living)\s+in\s+(.+)", re.I),
 )
+
+
+_NAME_PATTERNS = (
+    re.compile(r"\bmy\s+name(?:'s|\s+is)\s+([A-Za-z][A-Za-z .'-]*)", re.I),
+    re.compile(r"\bcall\s+me\s+([A-Za-z][A-Za-z .'-]*)", re.I),
+)
+_NAME_REJECT_VALUES = {
+    "not", "unknown", "nothing", "none", "n/a", "same",
+    # Non-name completions of "call me ..." that still match the letter pattern.
+    "later", "back", "anytime", "maybe", "when", "if", "asap", "once",
+    "today", "tomorrow",
+}
+
+
+def _recent_user_messages(user_id: str) -> list[dict]:
+    """Read explicit user text from both the searchable memory index and chat history.
+
+    Chat history is the source of truth for saved facts. A memory chunk may be absent
+    when the embedding service was offline at the time a turn was stored.
+    """
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT conversation_id, content, created_at FROM ("
+            "SELECT conversation_id, content, created_at, id FROM memory_chunks "
+            "WHERE user_id = %s AND role = 'user' UNION ALL "
+            "SELECT m.conversation_id, m.content, m.created_at, m.id FROM messages m "
+            "JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE c.user_id = %s AND m.role = 'user'"
+            ") AS user_messages ORDER BY created_at DESC, id DESC LIMIT 2000",
+            (user_id, user_id),
+        ).fetchall()
+
+
+def latest_name(user_id: str, exclude_conversation_id: str | None = None) -> dict | None:
+    """Return the newest explicit user-stated personal name.
+
+    Same reasoning as latest_location: personal facts are too important to leave
+    entirely to embedding rank. A live incident (2026-11-09, KoboldCPP
+    Qwen3.8-2B): "what's my name?" ranked a stored past *refusal* ("I'm an AI
+    assistant. I don't have a name...", 0.686) above the actual "My name is
+    Maya Patel" chunk (0.568), and the soft recall framing let the model answer
+    "You didn't tell me your name!" — while a directive-style fact fixed it.
+    Non-personal phrasings ("my username is", "the file name is",
+    "my name is not important") intentionally do not match these patterns.
+    """
+    for row in _recent_user_messages(user_id):
+        if row["conversation_id"] == exclude_conversation_id:
+            continue
+        text = (row["content"] or "").strip()
+        for pattern in _NAME_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                value = match.group(1).strip().rstrip(".!? ").strip("'\"")[:60]
+                first_word = value.lower().split(None, 1)[0] if value else ""
+                if value and first_word not in _NAME_REJECT_VALUES \
+                        and not value.lower().startswith(("not ", "unknown")):
+                    return {
+                        "name": value,
+                        "content": text,
+                        "conversation_id": row["conversation_id"],
+                        "created_at": row["created_at"],
+                    }
+    return None
 
 
 def latest_location(user_id: str, exclude_conversation_id: str | None = None) -> dict | None:
@@ -134,13 +202,7 @@ def latest_location(user_id: str, exclude_conversation_id: str | None = None) ->
     Store-specific addresses ("remember my Great Clips location") intentionally do
     not match these personal-location patterns.
     """
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT conversation_id, content, created_at FROM memory_chunks "
-            "WHERE user_id = %s AND role = 'user' ORDER BY created_at DESC, id DESC",
-            (user_id,),
-        ).fetchall()
-    for row in rows:
+    for row in _recent_user_messages(user_id):
         if row["conversation_id"] == exclude_conversation_id:
             continue
         text = (row["content"] or "").strip()
@@ -148,6 +210,13 @@ def latest_location(user_id: str, exclude_conversation_id: str | None = None) ->
             match = pattern.search(text)
             if match:
                 value = match.group(1).strip().rstrip(".!? ")[:200]
+                # Ignore copied prompt placeholders such as
+                # "[Clear, concise confirmation of your location]"; treating one
+                # as a real saved place makes the recall directive reinforce it.
+                if value.startswith("[") and value.endswith("]") and re.search(
+                    r"\b(?:clear|concise|confirmation|placeholder|your location)\b", value, re.I
+                ):
+                    continue
                 if value:
                     return {
                         "location": value,
@@ -164,6 +233,7 @@ def search(
     exclude_conversation_id: str | None = None,
     top_k: int = 8,
     min_similarity: float = 0.35,
+    embedding_backend: str = "lemonade",
 ) -> list[dict]:
     """Search stored chunks by cosine similarity, scoped to the current user.
 
@@ -172,8 +242,8 @@ def search(
     with _connect() as conn:
         rows = conn.execute(
             "SELECT conversation_id, role, content, embedding, created_at FROM memory_chunks "
-            "WHERE user_id = %s",
-            (user_id,),
+            "WHERE user_id = %s AND embedding_backend = %s",
+            (user_id, embedding_backend),
         ).fetchall()
 
     candidates = [r for r in rows if r["conversation_id"] != exclude_conversation_id]

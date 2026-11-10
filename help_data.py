@@ -487,6 +487,11 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
                 "name": f"{mid} ({_LABELS[be]}, {network_label})",
                 "limit": {"context": ctx, "output": _advertised_output(be, ctx, mid)},
             }
+            if be == "kobold":
+                # OpenCode can inherit a stale/negative tool capability from its
+                # model catalog. KoboldCPP's OpenAI endpoint supports tool calls,
+                # and Hearth's compatibility bridge handles its known quirks.
+                models[mid]["capabilities"] = {"tools": True}
         options = {
             "baseURL": f"https://{ip}:{ports[be]}/v1", "apiKey": token,
             "headers": {"X-Hearth-Client": "opencode"},

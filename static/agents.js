@@ -123,6 +123,7 @@
       }
       editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
       setSelectedSkills(el('agent-edit-skill-picker'), task.skills);
+      for(const input of editForm.querySelectorAll('[name="research_provider"]'))input.checked=(task.research_providers || []).includes(input.value);
       editForm.dataset.loadedTask=task.id;
     }
     const editModel=el('agent-edit-model');
@@ -143,7 +144,7 @@
     if(latestTime)latestTime.textContent=displayTime(latestActivity?.time,{dateStyle:'medium',timeStyle:'short'}) || 'No updates yet';
     const liveIndicator=el('agent-live-indicator');
     if(liveIndicator)liveIndicator.hidden=!['queued','running','verifying','waiting_input'].includes(task.status);
-    if(el('agent-target'))el('agent-target').textContent = `${task.shared ? 'Shared project' : task.project} · ${task.model.providerID}/${task.model.id}`;
+    if(el('agent-target'))el('agent-target').textContent = `${task.shared ? 'Shared project' : task.project} · ${task.model.providerID}/${task.model.id}${task.research_providers?.length ? ` · Online research: ${task.research_providers.join(', ')}` : ''}`;
     if (shareTaskId !== task.id) {
       shareTaskId = task.id;
       selectedShareUsers.clear();
@@ -514,6 +515,9 @@
     values.enable_thinking=form.elements.enable_thinking.checked;
     values.model=JSON.parse(el('agent-model').value);values.max_cycles=Number(values.max_cycles);values.opencode_steps=Number(values.opencode_steps);values.verification_timeout=Number(values.verification_timeout);values.shell_mode=form.elements.shell_mode.value;
     values.skills=selectedSkills(el('agent-skill-picker'));
+    values.research_providers=[...form.querySelectorAll('[name="research_provider"]:checked')].map(input=>input.value);
+    values.research_keys=Object.fromEntries(['exa','firecrawl','parallel','tavily','tinyfish'].map(provider=>[provider,form.elements[`research_key_${provider}`].value]));
+    for(const provider of ['exa','firecrawl','parallel','tavily','tinyfish'])delete values[`research_key_${provider}`];
     el('agent-assign').disabled=true;
     try { const created=await api('/api/agent-tasks',values);window.location.assign(`/agents/${created.id}`); }
     catch(error){el('agent-create-status').textContent=error.message;}
@@ -529,6 +533,7 @@
           if(form.elements[name] && cloneDraft[name] != null)form.elements[name].value=cloneDraft[name];
         }
         form.elements.enable_thinking.checked=cloneDraft.enable_thinking !== false;
+        for(const input of form.querySelectorAll('[name="research_provider"]'))input.checked=(cloneDraft.research_providers || []).includes(input.value);
         cloneSkills = cloneDraft.skills || [];
         if(el('agent-create-status'))el('agent-create-status').textContent='Copied task settings into a new assignment. Review them before starting; the new task will have a separate project workspace.';
       }
@@ -626,6 +631,9 @@
     values.verification_timeout=Number(values.verification_timeout);
     values.enable_thinking=form.elements.enable_thinking.checked;
     values.skills=selectedSkills(el('agent-edit-skill-picker'));
+    values.research_providers=[...form.querySelectorAll('[name="research_provider"]:checked')].map(input=>input.value);
+    values.research_keys=Object.fromEntries(['exa','firecrawl','parallel','tavily','tinyfish'].map(provider=>[provider,form.elements[`research_key_${provider}`].value]));
+    for(const provider of ['exa','firecrawl','parallel','tavily','tinyfish'])delete values[`research_key_${provider}`];
     return values;
   }
   async function saveEditedTask(resubmit) {

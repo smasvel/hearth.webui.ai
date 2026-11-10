@@ -46,7 +46,7 @@ def performance_report(jobs):
                 continue
             results = [result for result in job.get('results') or []
                        if result.get('backend') == key[0] and result.get('model') == key[1]
-                       and not result.get('rolled_back')]
+                       and not result.get('rolled_back') and not result.get('diagnostic')]
             if not results:
                 continue
             if key not in latest or (job.get('started_at') or 0) > (latest[key][0].get('started_at') or 0):
@@ -154,7 +154,8 @@ class Registry:
                 attempt: {(result['name'], bool(result.get('stream', False)))
                           for result in attempts
                           if result.get('attempt') == attempt
-                          and not result.get('passed') and not result.get('skipped')}
+                          and not result.get('passed') and not result.get('skipped')
+                          and not result.get('diagnostic')}
                 for attempt in (1, 2)
             }
             committed = repair.get('outcome') == 'Applied and verified'
@@ -308,7 +309,8 @@ class Registry:
                         # blocked steps are visible in the report, but are not checks
                         # that a compatibility repair can fix or should count against.
                         failures = {(r['name'], r.get('stream', False)) for r in results
-                                    if not r['passed'] and not r.get('skipped')}
+                                    if not r['passed'] and not r.get('skipped')
+                                    and not r.get('diagnostic')}
                         if repair and suite in ('all', 'complete', 'core', 'opencode', 'extra') and failures:
                             if any(r.get('backend_unavailable') for r in results):
                                 with self.lock:
@@ -335,7 +337,8 @@ class Registry:
                                         profiles.apply_recipe(body, profiles.RECIPE), backend))
                                 # Keep a recipe only when at least one original assertion now passes.
                                 remaining = {(r['name'], r.get('stream', False)) for r in retried
-                                             if not r['passed'] and not r.get('skipped')}
+                                             if not r['passed'] and not r.get('skipped')
+                                             and not r.get('diagnostic')}
                                 committed = len(retried) == len(results) and remaining < failures
                                 if committed:
                                     profiles.set_profile(backend, served_model, profiles.RECIPE)

@@ -580,6 +580,11 @@ class Manager:
         if type(enable_thinking) is not bool:
             raise ValueError('Choose whether model thinking is enabled.')
         skills = self._normalize_skills(values, owner) if owner is not None else []
+        research_providers = values.get('research_providers', [])
+        allowed_research = {'duckduckgo', 'exa', 'firecrawl', 'parallel', 'tavily', 'tinyfish'}
+        if not isinstance(research_providers, list) or any(
+                not isinstance(item, str) or item not in allowed_research for item in research_providers):
+            raise ValueError('Choose online research providers from the supported list.')
         return {'title': title, 'goal': goal, 'model': model, 'max_cycles': cycles,
                 'opencode_steps': opencode_steps,
                 'verification_timeout': timeout, 'criteria': criteria,
@@ -587,10 +592,27 @@ class Manager:
                 'memory_notes': memory_notes, 'html_requirements': html_requirements,
                 'verification_command': command, 'assignee': assignee, 'shell_mode': shell_mode,
                 'enable_thinking': enable_thinking, 'result_label': result_label,
-                'result_platform': result_platform, 'skills': skills}
+                'result_platform': result_platform, 'skills': skills,
+                'research_providers': list(dict.fromkeys(research_providers))}
 
     def create(self, values, owner):
         assignment = self._normalize_assignment(values, owner=owner)
+        raw_credentials = values.get('research_keys', {})
+        if not isinstance(raw_credentials, dict):
+            raise ValueError('Online research credentials must be a provider/key object.')
+        credentials = {}
+        for provider, value in raw_credentials.items():
+            if provider not in {'exa', 'firecrawl', 'parallel', 'tavily', 'tinyfish'}:
+                raise ValueError('An unsupported online research credential was supplied.')
+            if value is not None and not isinstance(value, str):
+                raise ValueError('Online research API keys must be text.')
+            value = (value or '').strip()
+            if len(value) > 1000:
+                raise ValueError('Online research API keys must be at most 1,000 characters.')
+            if value and provider in assignment['research_providers']:
+                credentials[provider] = value
+        if 'tavily' in assignment['research_providers'] and not credentials.get('tavily'):
+            raise ValueError('Enter a Tavily API key or remove Tavily from the selected providers.')
         self.client.ensure_agent()
         with self.lock:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
@@ -603,6 +625,7 @@ class Manager:
             self.note(job, 'Assignment queued. Project files are stored in this account’s private PostgreSQL workspace.')
             self.jobs[job['id']] = job
             self.save(job)
+            agent_store.save_research_credentials(job['id'], credentials)
             return copy.deepcopy(job)
 
     def create_schedule(self, values, owner):
@@ -762,6 +785,10 @@ class Manager:
                     assignment['goal'] += '\n\nScheduled agent comment:\n'+schedule['comment']
                 assignment['goal'] += '\n\nScheduled occurrence (UTC): '+datetime.fromtimestamp(scheduled_at, timezone.utc).isoformat()
                 job = self.create(assignment, schedule['owner'])
+                credential_source = self.get(schedule.get('task_id'))
+                if credential_source:
+                    agent_store.save_research_credentials(
+                        job['id'], agent_store.get_research_credentials(credential_source['id']))
                 job['schedule_id'] = schedule['id']
                 job['scheduled_run_at'] = scheduled_at
                 with self.lock:
@@ -956,7 +983,29 @@ class Manager:
         with self.lock:
             existing_model = self.jobs[key].get('model')
             owner = self.jobs[key].get('owner')
+            existing_research = self.jobs[key].get('research_providers', [])
+            task_id = self.jobs[key]['id']
         assignment = self._normalize_assignment(values, existing_model=existing_model, owner=owner)
+        if 'research_providers' not in values:
+            assignment['research_providers'] = existing_research
+        credentials = agent_store.get_research_credentials(task_id)
+        raw_credentials = values.get('research_keys', {})
+        if not isinstance(raw_credentials, dict):
+            raise ValueError('Online research credentials must be a provider/key object.')
+        for provider, value in raw_credentials.items():
+            if provider not in {'exa', 'firecrawl', 'parallel', 'tavily', 'tinyfish'}:
+                raise ValueError('An unsupported online research credential was supplied.')
+            if value is not None and not isinstance(value, str):
+                raise ValueError('Online research API keys must be text.')
+            value = (value or '').strip()
+            if len(value) > 1000:
+                raise ValueError('Online research API keys must be at most 1,000 characters.')
+            if value and provider in assignment['research_providers']:
+                credentials[provider] = value
+        credentials = {provider: value for provider, value in credentials.items()
+                       if provider in assignment['research_providers']}
+        if 'tavily' in assignment['research_providers'] and not credentials.get('tavily'):
+            raise ValueError('Enter a Tavily API key or remove Tavily from the selected providers.')
         with self.dispatch_lock:
             with self.lock:
                 job = self.jobs[key]
@@ -971,6 +1020,7 @@ class Manager:
             with self.lock:
                 job = self.jobs[key]
                 job.update(assignment, auto_commands=assignment['shell_mode'] == 'auto')
+                agent_store.save_research_credentials(task_id, credentials)
                 if steps_changed and job.get('status') in ('interrupted', 'blocked'):
                     checkpoint = job.get('summary', '')
                     job.update(session_id=None, resume_session=False,
@@ -1180,7 +1230,9 @@ class Manager:
                             return
                         self.note(job, 'Reconnecting to the isolated assignment session.')
                         self.save(job)
-                        sid = resume(self.client, job)
+                        runtime_job = copy.deepcopy(job)
+                        runtime_job['research_credentials'] = agent_store.get_research_credentials(job['id'])
+                        sid = resume(self.client, runtime_job)
                         with self.lock:
                             replaced = sid != job.get('session_id')
                             job.update(session_id=sid, resume_session=False)
@@ -1203,7 +1255,9 @@ class Manager:
                         return
                     self.note(job, 'Starting or reusing the isolated Docker agent environment.')
                     self.save(job)
-                    sid = self.client.create(job)
+                    runtime_job = copy.deepcopy(job)
+                    runtime_job['research_credentials'] = agent_store.get_research_credentials(job['id'])
+                    sid = self.client.create(runtime_job)
                     with self.lock:
                         job['session_id'] = sid
                         self.save(job)
