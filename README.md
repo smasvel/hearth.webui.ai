@@ -654,6 +654,9 @@ OpenCode relay also trims oversized historical tool results to useful head and t
 If OpenCode or an agent reports a context overflow, check the model's **loaded** context in
 Models: its maximum supported context can be much larger. Use the card's **ctx-size** field
 to load a larger supported window; agent startup applies the saved ctx-size automatically.
+For Lemonade Muse models, Hearth ignores a transient compaction headroom value (such as
+11,264 tokens) and advertises the known 65,536-token model window, avoiding a repeated
+context rejection and compaction cycle.
 Refresh the generated LAN or Tailscale config from Help and restart OpenCode after changing
 the loaded window. Continue for VS Code receives each model's advertised loaded context;
 its own client settings control compaction. Every model still has a finite loaded window.
@@ -1524,8 +1527,11 @@ containers can reconnect to the host model bridge after an app restart.
 Automatic OpenCode compaction is on by default for desktop and isolated project agents;
 Hearth generates a separate compaction-enabled OpenCode config inside each agent container.
 The Help page's generated OpenCode config displays a model context limit of 65,536 tokens
-when the model supports at least that much, or 8,192 tokens otherwise. This is based on
-the model's supported maximum, not the Models page's model loading ctx-size field; the
+when the model supports at least that much, or 8,192 tokens otherwise. Muse models on
+Lemonade keep their known 65,536-token window if Lemonade reports only the temporarily
+available headroom during compaction (for example 11,264 tokens); otherwise repeated
+context-limit rejections can trigger compaction after every step. This is based on the
+model's supported maximum, not the Models page's model loading ctx-size field; the
 generated client config must be refreshed after changing a loaded window. Agent startup
 applies the saved per-model ctx-size when it needs to load the selected model. Oversized
 historical tool results are shortened to their useful beginning and end. If the assignment

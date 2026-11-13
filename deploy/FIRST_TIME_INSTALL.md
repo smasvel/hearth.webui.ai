@@ -618,7 +618,10 @@ are reused rather than replaced during concurrent checks. On Hearth startup, rel
 listeners for saved agent sessions are restored before workers run, reconnecting
 persistent Docker containers to the host model bridge after an app restart.
 Automatic OpenCode compaction is on by default for desktop and project agents. Hearth
-generates a separate compaction-enabled OpenCode config inside each agent container. Its
+generates a separate compaction-enabled OpenCode config inside each agent container. For
+Lemonade Muse models, Hearth keeps the known 65,536-token context window if Lemonade
+reports only temporarily available compaction headroom (for example 11,264 tokens),
+preventing repeated context-limit rejections from triggering compaction after every step. Its
 OpenCode relay also shortens oversized historical tool results to their useful beginnings
 and endings. A project assignment continues with its OpenCode conversation while it fits
 the loaded model. Agent startup applies the selected model's saved loading ctx-size when it

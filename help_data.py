@@ -158,6 +158,14 @@ def _advertised_context(be: str, model_id: str, ctx_by_model: dict, fallback: in
     if be == "fastflowlm":
         return flm_context.context_limit(model_id)
     detected = ctx_by_model.get((be, model_id))
+    # Lemonade may report the *current request's* available context after OpenCode
+    # has started compacting (for example 11,264 tokens for a 65K Muse model).
+    # Feeding that transient headroom back as the model's configured window creates
+    # a compaction loop: each retry is planned against the already-reduced value.
+    # Prefer the known native window for Muse, unless the operator has set an
+    # explicit per-model maximum below.
+    if be == "lemonade" and "muse" in model_id.casefold() and detected and detected >= 16384:
+        return max(detected, _CTX[be])
     if isinstance(detected, int) and detected > 0:
         return detected
     if fallback:
@@ -484,7 +492,12 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
     for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm"):
         models = {}
         for mid in chat_by_be.get(be, []):
-            ctx = (65536 if max_ctx_by_model.get((be, mid), 0) >= 65536 else 8192) if max_ctx_by_model else _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
+            ctx = _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
+            maximum = max_ctx_by_model.get((be, mid), 0)
+            if maximum >= 65536:
+                ctx = max(ctx, 65536)
+            if be == "lemonade" and "muse" in mid.casefold() and ctx >= 8192:
+                ctx = max(ctx, _CTX[be])
             models[mid] = {
                 "name": f"{mid} ({_LABELS[be]}, {network_label})",
                 "limit": {"context": ctx, "output": _advertised_output(be, ctx, mid)},

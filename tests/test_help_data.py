@@ -42,6 +42,17 @@ class TailscaleHelpTests(unittest.TestCase):
         self.assertEqual(entries["large"]["limit"]["context"], 65536)
         self.assertEqual(entries["small"]["limit"]["context"], 8192)
 
+    @patch.object(help_data.settings_store, "get", side_effect=lambda key: None)
+    def test_muse_transient_compaction_headroom_does_not_shrink_model_window(self, _get):
+        cfg = json.loads(help_data.build_opencode_config(
+            "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["Muse-Glimmer-30B-GGUF"]}, {},
+            ctx_by_model={("lemonade", "Muse-Glimmer-30B-GGUF"): 11264}))
+        entry = cfg["provider"]["lemonade"]["models"]["Muse-Glimmer-30B-GGUF"]
+        self.assertEqual(entry["limit"]["context"], 65536)
+        self.assertEqual(cfg["compaction"], {
+            "auto": True, "keep": {"tokens": 15000}, "buffer": 16384})
+
     @patch.object(help_data.settings_store, "get", return_value=None)
     def test_small_lemonade_window_bounds_compaction_without_flm(self, _get):
         for model in ('Muse-Glimmer-30B-GGUF', 'GLM-4.7-Flash-GGUF'):
