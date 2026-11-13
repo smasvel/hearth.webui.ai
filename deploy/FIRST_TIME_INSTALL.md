@@ -132,6 +132,8 @@ Face when the installed Lemonade catalog does not contain them.
 The Help page's generated OpenCode config uses a 65,536-token context limit for models
 supporting at least that maximum, and 8,192 tokens otherwise. The Models page's model
 loading ctx-size is a separate load setting.
+Loaded models show a separate **loaded ctx-size** line with the runtime's active context;
+unloaded models do not show this line.
 Hearth retries a failed compaction in one fresh session per assignment. If compaction fails
 again, the assignment stops for review; load a larger supported context or model before continuing.
 
@@ -962,8 +964,9 @@ embedding endpoint handling, fail-soft behavior, and separate-vector-space retri
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
 automatically, shows requests from the last 48 hours (up to 500 most recent), and loads trace text only when opened.
-Streaming rows hide token rates that round to zero. Completed rows retain the rate
-measured at completion instead of decaying as the history row ages.
+Streaming rows stay at the top of the feed and update their displayed token count, rate,
+and elapsed time. They hide rates that round to zero; completed rows keep all three values
+fixed at finish.
 Completed rows remain available for two days. Project-agent model requests appear with
 the task's agent name through Hearth's model relay. No additional setup is required.
 Administrators can use **Reset all metrics** to erase saved request history and coding

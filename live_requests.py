@@ -273,7 +273,8 @@ def snapshot(limit: int = 500) -> list[dict]:
         rows = [e for e in _recent if (e.get("finished_at") or 0) >= cutoff] + list(_active.values())
     out = []
     for e in rows:
-        elapsed = now - e["started"]
+        elapsed = (now - e["started"] if e.get("status") == "streaming"
+                   else max(0, e["updated"] - e["started"]))
         # Active rows use a live estimate; completed rows keep the rate captured at
         # finish time. Suppress tiny estimates that would round to a misleading 0.0.
         tps = (_completed_rate(e.get("tokens"), elapsed) if e.get("status") == "streaming"
@@ -303,12 +304,14 @@ def snapshot(limit: int = 500) -> list[dict]:
             "error_detail": e.get("error_detail"),
             "response_truncated": e.get("response_truncated", False),
         })
-    # Developer logs read like a conventional event stream: newest displayed timestamp
-    # first. Previously active/status grouping plus elapsed time made completed rows appear
-    # out of chronological order even though each row showed a timestamp.
+    # Keep live INFO rows visible even when many newer requests finish while they stream;
+    # otherwise a long-running active row can fall past the 500-row cap. Completed rows
+    # remain in newest-event order and keep their snapshot values unchanged.
     out.sort(
-        key=lambda r: r.get("finished_at") or r.get("started_at") or 0,
-        reverse=True,
+        key=lambda r: (
+            r.get("status") != "streaming",
+            -(r.get("finished_at") or r.get("started_at") or 0),
+        ),
     )
     return out[:max(1, min(int(limit), 500))]
 

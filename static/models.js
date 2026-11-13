@@ -205,6 +205,14 @@
       <div class="model-card2-actions"></div>`;
     const contextTokens = Number(m.context_window_tokens);
     const metaEl = c.querySelector(".model-card2-meta");
+    const loadedContext = Number(m.loaded_context_length);
+    if (loaded && Number.isSafeInteger(loadedContext) && loadedContext > 0) {
+      const loadedContextLabel = document.createElement("div");
+      loadedContextLabel.className = "model-loaded-context-row";
+      loadedContextLabel.textContent = `loaded ctx-size: ${loadedContext.toLocaleString()} tokens`;
+      loadedContextLabel.title = "Context window currently active in the loaded model runtime.";
+      c.querySelector(".model-card2-main").appendChild(loadedContextLabel);
+    }
     if (Number.isSafeInteger(contextTokens) && contextTokens > 0) {
       const contextLabel = document.createElement("span");
       contextLabel.className = "model-context-label";

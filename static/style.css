@@ -2637,6 +2637,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .model-card2-name { font-size: 13.5px; font-weight: 650; word-break: break-word; line-height: 1.3; }
 .model-card2-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
 .model-context-label { color: var(--accent); white-space: nowrap; cursor: help; }
+.model-loaded-context-row { color: var(--good); font-size: 11.5px; font-weight: 650; line-height: 1.4; margin-top: 5px; overflow-wrap: anywhere; }
 .model-copyable-field { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .model-copyable-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; }
 .model-copy-btn, .model-field-label { font-size: 10.5px; color: var(--muted); }
