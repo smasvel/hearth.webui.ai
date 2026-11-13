@@ -116,6 +116,12 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             headers['X-Hearth-Stream-ID'] = cancel_id
         headers['Accept-Encoding'] = 'identity'
         key = proxy.get('api_key')
+        if proxy.get('provider_id') == 'opencode':
+            try:
+                import settings_store
+                key = (settings_store.get('opencode_api_key') or key or '').strip()
+            except Exception:
+                pass
         if key: headers['Authorization'] = 'Bearer '+key
         response_started = False
         response = None
@@ -152,7 +158,14 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
                     is_npu=proxy.get('provider_id') == 'fastflowlm',
                     request_content=request_text,
                 )
-            response = requests.request(self.command, proxy['base_url']+suffix,
+            base_url = proxy['base_url']
+            if proxy.get('provider_id') == 'opencode':
+                try:
+                    import opencode_client as zen
+                    base_url = zen.base_url().rstrip('/') + '/v1'
+                except Exception:
+                    pass
+            response = requests.request(self.command, base_url+suffix,
                 params=None, headers=headers, data=body, stream=True,
                 timeout=(15, 600), verify=proxy.get('verify_tls', True))
             if live_id is not None:
