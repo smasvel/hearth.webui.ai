@@ -962,6 +962,8 @@ embedding endpoint handling, fail-soft behavior, and separate-vector-space retri
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
 automatically, shows requests from the last 48 hours (up to 500 most recent), and loads trace text only when opened.
+Streaming rows hide token rates that round to zero. Completed rows retain the rate
+measured at completion instead of decaying as the history row ages.
 Completed rows remain available for two days. Project-agent model requests appear with
 the task's agent name through Hearth's model relay. No additional setup is required.
 Administrators can use **Reset all metrics** to erase saved request history and coding

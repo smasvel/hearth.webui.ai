@@ -32,6 +32,14 @@ _RECENT_MAX = 5000
 _TRACE_MAX_CHARS = 4000
 
 
+def _completed_rate(tokens, duration):
+    """Return a stable positive rate, hiding zero-rounded/no-usage estimates."""
+    if not isinstance(tokens, (int, float)) or tokens <= 0 or duration <= 0:
+        return None
+    rate = round(tokens / duration, 1)
+    return rate if rate > 0 else None
+
+
 
 def _init_trace_store() -> int:
     with database.connect() as conn:
@@ -55,6 +63,9 @@ def _init_trace_store() -> int:
                 elapsed = float(entry.pop("_elapsed_s", 0))
                 entry["started"] = time.monotonic() - elapsed
                 entry["updated"] = time.monotonic()
+                # Older saved rows do not contain a frozen rate. Reconstruct it once
+                # from the persisted generation duration instead of aging it per poll.
+                entry.setdefault("tokens_per_sec", _completed_rate(entry.get("tokens"), elapsed))
                 _recent.append(entry)
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
@@ -215,6 +226,8 @@ def finish(
         entry["error_detail"] = (error_detail or "").strip()[:300] or None
         if total_tokens is not None:
             entry["tokens"] = total_tokens
+        # Freeze throughput at completion; retained rows must not decay toward zero.
+        entry["tokens_per_sec"] = _completed_rate(entry.get("tokens"), entry["updated"] - entry["started"])
         _recent.append(entry)
         cutoff = time.time() - _RECENT_KEEP_SECONDS
         while _recent and ((_recent[0].get("finished_at") or 0) < cutoff or len(_recent) > _RECENT_MAX):
@@ -261,9 +274,10 @@ def snapshot(limit: int = 500) -> list[dict]:
     out = []
     for e in rows:
         elapsed = now - e["started"]
-        # tokens/elapsed is a live throughput estimate (no first-token timestamp exists here),
-        # and a non-positive reading is dropped so the feed never shows a bogus 0.
-        tps = round(e["tokens"] / elapsed, 1) if (elapsed > 0 and isinstance(e["tokens"], (int, float)) and e["tokens"] > 0) else None
+        # Active rows use a live estimate; completed rows keep the rate captured at
+        # finish time. Suppress tiny estimates that would round to a misleading 0.0.
+        tps = (_completed_rate(e.get("tokens"), elapsed) if e.get("status") == "streaming"
+               else e.get("tokens_per_sec"))
         pct = None
         if e.get("max_tokens"):
             pct = min(100, round(e["tokens"] / e["max_tokens"] * 100))
