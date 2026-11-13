@@ -941,8 +941,10 @@ does not need direct access to the host OpenCode auth database. Connect the host
 CLI to the selected plan with `opencode auth login`. The relay sends Hearth's client
 User-Agent and a stable session ID required by OpenCode Go. Inside the agent, Hearth
 registers hosted models under a private compatible-provider ID so OpenCode's native
-provider auth lookup cannot bypass the host relay. After updating Hearth, restart the
-service and resume an assignment blocked by an invalid credential.
+provider auth lookup cannot bypass the host relay. The hosted agent config also omits
+the llama.cpp-only `chat_template_kwargs` extension, which opencode.ai rejects. After
+updating Hearth, restart the service and rerun an assignment blocked by a hosted-provider
+request error.
 
 When an agent request to opencode.ai receives HTTP 402 (credits or plan allowance) or
 429 (rate limit), Hearth records the affected model and the observed time. If the

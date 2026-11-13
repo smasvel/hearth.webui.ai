@@ -754,8 +754,13 @@ class ContainerOpenCode(OpenCode):
         # that consume Qwen-style chat-template kwargs.
         if provider_id in ('lemonade', 'lmstudio'):
             extra_body['enable_thinking'] = enable_thinking
-        extra_body['chat_template_kwargs'] = {**template_kwargs,
-            'enable_thinking': enable_thinking}
+        if provider_id == 'opencode':
+            # OpenCode Go's OpenAI-compatible endpoint rejects this
+            # llama.cpp-specific extension with unsupported_parameter.
+            extra_body.pop('chat_template_kwargs', None)
+        else:
+            extra_body['chat_template_kwargs'] = {**template_kwargs,
+                'enable_thinking': enable_thinking}
         provider['options']['extraBody'] = extra_body
         provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
         # The isolated project worker has its own generated OpenCode config, separate

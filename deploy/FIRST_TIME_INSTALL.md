@@ -386,6 +386,8 @@ an assignment blocked by an invalid credential. Relayed requests use Hearth's cl
 User-Agent and a stable session ID for OpenCode Go routing. Within the isolated agent,
 Hearth registers the hosted model under a private compatible-provider ID so OpenCode's
 native provider-auth lookup cannot bypass the host relay.
+The hosted agent config omits the llama.cpp-only `chat_template_kwargs` extension,
+which opencode.ai rejects as an unsupported request argument.
 
 Hosted agent assignments check model availability without loading or unloading local
 models. After updating Hearth and restarting `ai-webui.service`, use **Resume** on any

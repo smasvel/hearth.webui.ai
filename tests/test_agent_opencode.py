@@ -209,6 +209,15 @@ class ContainerRecoveryTests(unittest.TestCase):
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['temperature'], 0.2)
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['keep'], 'yes')
 
+    def test_opencode_agent_config_omits_unsupported_template_kwargs(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-config-test')
+        provider = {'options': {'extraBody': {
+            'chat_template_kwargs': {'temperature': 0.2}, 'keep': 'yes'}}}
+        config = client._agent_config({'enable_thinking': True}, 'opencode', 'beam-free', provider)
+        extra = config['provider']['hearth-opencode']['options']['extraBody']
+        self.assertNotIn('chat_template_kwargs', extra)
+        self.assertEqual(extra['keep'], 'yes')
+
     def test_agent_config_enables_compaction_by_default(self):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         provider = {'options': {}, 'models': {
