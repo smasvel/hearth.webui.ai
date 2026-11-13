@@ -383,7 +383,9 @@ falls back to Hearth's encrypted Settings key. The agent container does not need
 to the host OpenCode auth database. Connect the host OpenCode CLI to Go or pay-as-you-go
 with `opencode auth login` if no credential is available, then restart Hearth and resume
 an assignment blocked by an invalid credential. Relayed requests use Hearth's client
-User-Agent and a stable session ID for OpenCode Go routing.
+User-Agent and a stable session ID for OpenCode Go routing. Within the isolated agent,
+Hearth registers the hosted model under a private compatible-provider ID so OpenCode's
+native provider-auth lookup cannot bypass the host relay.
 
 Hosted agent assignments check model availability without loading or unloading local
 models. After updating Hearth and restarting `ai-webui.service`, use **Resume** on any

@@ -939,8 +939,10 @@ credential saved by the host OpenCode CLI for the selected plan. Hearth's encryp
 Settings API key is used when that CLI credential is unavailable. The agent container
 does not need direct access to the host OpenCode auth database. Connect the host OpenCode
 CLI to the selected plan with `opencode auth login`. The relay sends Hearth's client
-User-Agent and a stable session ID required by OpenCode Go. After updating Hearth, restart
-the service and resume an assignment blocked by an invalid credential.
+User-Agent and a stable session ID required by OpenCode Go. Inside the agent, Hearth
+registers hosted models under a private compatible-provider ID so OpenCode's native
+provider auth lookup cannot bypass the host relay. After updating Hearth, restart the
+service and resume an assignment blocked by an invalid credential.
 
 When an agent request to opencode.ai receives HTTP 402 (credits or plan allowance) or
 429 (rate limit), Hearth records the affected model and the observed time. If the

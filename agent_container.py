@@ -469,6 +469,13 @@ class _EndpointOpenCode(OpenCode):
 
 class ContainerOpenCode(OpenCode):
     """OpenCode API adapter whose coding sessions execute in locked-down Docker tasks."""
+    @staticmethod
+    def _agent_provider_id(provider_id):
+        # `opencode` is a native OpenCode integration with its own auth lookup.
+        # Agent requests must use Hearth's explicit host relay instead, so give
+        # the compatible provider a private ID inside the isolated config.
+        return 'hearth-opencode' if provider_id == 'opencode' else provider_id
+
     def __init__(self, runtime_directory):
         super().__init__()
         self.runtime_directory = Path(runtime_directory)
@@ -808,8 +815,12 @@ class ContainerOpenCode(OpenCode):
             elif research_provider != 'tinyfish':
                 server['oauth'] = False
             mcp_servers[research_provider] = server
-        config = {'$schema': 'https://opencode.ai/config.json', 'model': f'{provider_id}/{model_id}',
-                'provider': {provider_id: provider},
+        agent_provider_id = self._agent_provider_id(provider_id)
+        if agent_provider_id != provider_id:
+            provider = copy.deepcopy(provider)
+            provider['name'] = 'Hearth hosted-model relay'
+        config = {'$schema': 'https://opencode.ai/config.json', 'model': f'{agent_provider_id}/{model_id}',
+                'provider': {agent_provider_id: provider},
                 'agents': {AGENT: {'description': 'Isolated persistent Hearth project worker',
                     'mode': 'primary', 'system': system,
                     'steps': opencode_steps}},
@@ -946,7 +957,8 @@ class ContainerOpenCode(OpenCode):
         # Keep OpenCode's bearer token and the host relay's expected token in lockstep.
         # Normalize this after composing the full config so provider/model inheritance
         # cannot leave a stale upstream key in the agent's local relay config.
-        selected_provider = config['provider'][job['model']['providerID']]
+        agent_provider_id = self._agent_provider_id(job['model']['providerID'])
+        selected_provider = config['provider'][agent_provider_id]
         selected_options = selected_provider.setdefault('options', {})
         selected_options['baseURL'] = 'http://127.0.0.1:4097/v1'
         selected_options['apiKey'] = proxy_info['token']
@@ -964,8 +976,9 @@ class ContainerOpenCode(OpenCode):
             if can_reuse:
                 self._report(job, 'Reusing the saved Docker container and OpenCode installation.')
                 session = self._endpoint(name, existing)
+                agent_model = {**job['model'], 'providerID': agent_provider_id}
                 data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
-                        'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
+                        'model': agent_model, 'location': {'directory': '/home/node/agents/project'},
                         'permissions': self._permissions(job)}
                 result = session.call('POST', '/api/session', data)['data']['id']
                 # Keep the host-created workspace root. Recreating it as the
@@ -1010,8 +1023,9 @@ class ContainerOpenCode(OpenCode):
                 name, task_id, job,
                 large_only=has_checkpoint and bool(project_archive and not archive_pending))
         session = _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
+        agent_model = {**job['model'], 'providerID': agent_provider_id}
         data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
-                'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
+                'model': agent_model, 'location': {'directory': '/home/node/agents/project'},
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
         self._sync_to_container(name, job['owner'], workspace_id=job['id'])
@@ -1035,7 +1049,7 @@ class ContainerOpenCode(OpenCode):
             return False
         old_config = copy.deepcopy(existing.get('opencode_config') or {})
         new_config = copy.deepcopy(config)
-        provider_id = job['model']['providerID']
+        provider_id = ContainerOpenCode._agent_provider_id(job['model']['providerID'])
         try:
             old_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
             new_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
