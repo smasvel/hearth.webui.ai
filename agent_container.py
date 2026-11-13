@@ -42,6 +42,9 @@ SYSTEM_CA_BUNDLES = ('/etc/ssl/certs/ca-certificates.crt',
 _MODEL_CONFIG_CACHE_SECONDS = 15
 _model_config_lock = threading.Lock()
 _model_config_cache = {'loaded_at': 0.0, 'config': None}
+_opencode_auth_lock = threading.Lock()
+_opencode_auth_cache = {'plan': None, 'loaded_at': 0.0, 'key': None}
+_OPENCODE_AUTH_CACHE_SECONDS = 60
 TOOL_POLICY_VERSION = 'native-tools-v2'
 AGENT_PROMPT_VERSION = 'research-use-directly-v3'
 
@@ -76,6 +79,54 @@ def _generated_model_config():
             return copy.deepcopy(cached) if cached else None
         _model_config_cache.update(loaded_at=now, config=config)
         return copy.deepcopy(config)
+
+
+def _saved_opencode_auth_key():
+    """Use the active OpenCode CLI credential for hosted agent model requests.
+
+    The desktop OpenCode server stores connected provider credentials in its own
+    auth database. Hearth's Settings API key can be stale or belong to a different
+    OpenCode account, so prefer the credential OpenCode itself is currently using.
+    Cache the selected plan's credential in process memory; never log CLI output or
+    write this credential into the agent container's persisted runtime metadata.
+    """
+    plan = 'payg'
+    try:
+        import settings_store
+        plan = (settings_store.get('opencode_api_plan') or 'payg').strip().lower()
+        now = time.monotonic()
+        with _opencode_auth_lock:
+            if (_opencode_auth_cache['plan'] == plan
+                    and now - _opencode_auth_cache['loaded_at'] < _OPENCODE_AUTH_CACHE_SECONDS):
+                return _opencode_auth_cache['key']
+        integration = 'opencode-go' if plan == 'go' else 'opencode'
+        binary = Path.home()/'.opencode/bin/opencode'
+        if not binary.is_file():
+            key = None
+        else:
+            result = subprocess.run([str(binary), 'auth', 'export', integration],
+                                    check=True, capture_output=True, text=True, timeout=30)
+            exported = json.loads(result.stdout)
+            if isinstance(exported, dict):
+                exported = [exported]
+            key = None
+            if isinstance(exported, list):
+                for entry in exported:
+                    if (not isinstance(entry, dict) or entry.get('integrationID') != integration
+                            or entry.get('active') is False):
+                        continue
+                    value = entry.get('value')
+                    if isinstance(value, dict) and value.get('type') == 'key':
+                        candidate = value.get('key')
+                        if isinstance(candidate, str) and candidate.strip():
+                            key = candidate.strip()
+                            break
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # Settings' encrypted API key remains a compatibility fallback below.
+        key = None
+    with _opencode_auth_lock:
+        _opencode_auth_cache.update(plan=plan, loaded_at=time.monotonic(), key=key)
+    return key
 
 
 class _ModelProxyHandler(BaseHTTPRequestHandler):
@@ -119,9 +170,14 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
         if proxy.get('provider_id') == 'opencode':
             try:
                 import settings_store
-                key = (settings_store.get('opencode_api_key') or key or '').strip()
+                key = (_saved_opencode_auth_key() or settings_store.get('opencode_api_key')
+                       or key or '').strip()
             except Exception:
                 pass
+            # OpenCode Go rejects generic HTTP-library identities. The standalone
+            # hosted client identifies Hearth explicitly; keep the agent relay on
+            # that same supported path instead of requests' default User-Agent.
+            headers['User-Agent'] = 'Hearth-local-webui/1.0 (OpenCode project-agent relay)'
         if key: headers['Authorization'] = 'Bearer '+key
         response_started = False
         response = None
@@ -605,7 +661,13 @@ class ContainerOpenCode(OpenCode):
             f'{socket_path}:{agent_name}'.encode()).hexdigest()[:40]
         if provider_id in ('lemonade', 'fastflowlm', 'lmstudio'):
             headers['X-Hearth-Agent-Relay'] = '1'
-        proxy_info = {'base_url': base_url, 'api_key': options.get('apiKey'),
+        api_key = options.get('apiKey')
+        if provider_id == 'opencode':
+            # Warm the host OpenCode auth cache before the agent's first model call.
+            # The credential stays in process memory and is resolved per request.
+            _saved_opencode_auth_key()
+            api_key = None
+        proxy_info = {'base_url': base_url, 'api_key': api_key,
                       'headers': headers, 'verify_tls': _system_ca_bundle(),
                       'socket_path': str(socket_path), 'token': secrets.token_urlsafe(32),
                       'provider_id': provider_id, 'model_id': model_id}

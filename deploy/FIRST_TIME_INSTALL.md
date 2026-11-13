@@ -377,6 +377,14 @@ gateway requires, agent relays forward the client's own session header with a st
 per-task fallback, and both 402 (no credits on the selected plan) and 401/403 (key
 rejected) errors surface as plain guidance in chat.
 
+Project-agent requests are relayed from the Hearth host. For hosted models, the relay
+uses the active credential saved by the host OpenCode CLI for the selected plan, then
+falls back to Hearth's encrypted Settings key. The agent container does not need access
+to the host OpenCode auth database. Connect the host OpenCode CLI to Go or pay-as-you-go
+with `opencode auth login` if no credential is available, then restart Hearth and resume
+an assignment blocked by an invalid credential. Relayed requests use Hearth's client
+User-Agent and a stable session ID for OpenCode Go routing.
+
 Hosted agent assignments check model availability without loading or unloading local
 models. After updating Hearth and restarting `ai-webui.service`, use **Resume** on any
 assignment previously blocked by `Not an opencode.ai model id`; it retries with the
