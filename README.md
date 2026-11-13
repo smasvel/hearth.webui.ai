@@ -263,6 +263,10 @@ administrator to find models, then use **Models** to load and evaluate them.
    its model card and refreshed across open Models pages every five seconds; the current
    error clears after Hearth confirms a successful load. Reviewed model warnings stay
    dismissed after a successful load and return if a later load attempt fails.
+   Lemonade models already present in its shared Hugging Face cache appear here even
+   when Lemonade's catalog incorrectly reports them as not downloaded. Deleting a
+   Lemonade model removes that entry from Hearth even when a sibling variant still
+   needs shared cache files; downloading the model again restores its entry.
 8. Check the maximum context-token label shown on a **Downloads** result when
    metadata reports it. In **Models**, check the context limit shown on each label when choosing
    how much chat history to send. The displayed limit is the model/backend

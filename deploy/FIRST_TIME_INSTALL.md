@@ -1090,6 +1090,10 @@ the `lemonade-cache` named volume. The installer does not install a
 Snap or host package and does not download model weights. Configure the local URL
 in Hearth Settings (the release installer saves its selected endpoint), then
 download models through Hearth's Downloads page.
+The Models page also checks required model files in the shared Hugging Face cache;
+this keeps migrated downloads visible when Lemonade's catalog download flag is stale.
+Deleting a Lemonade model removes its Hearth inventory entry even if another variant
+still uses shared cache files. Download it again to restore the entry.
 On Linux hosts with AMD Ryzen AI NPU support, the installer passes
 `/dev/accel/accel0` and its owning group into the container when that device exists.
 The host NPU driver must be installed. Only Lemonade models that use the FLM/NPU

@@ -31,6 +31,7 @@ import subprocess
 import threading
 import tempfile
 import time
+from pathlib import Path
 
 import psutil
 import requests
@@ -40,6 +41,7 @@ import settings_store
 import q38rocm_client
 import lemonade_templates
 import lemonade_thinking
+import model_metadata_store
 
 _DEFAULT_BASE_URL = "http://localhost:13305"
 _HF_SEARCH_CACHE_TTL = 180
@@ -211,6 +213,83 @@ def _loaded_context_length(entry: dict | None) -> int | None:
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
+def _huggingface_cache_roots() -> list[Path]:
+    """Return Hugging Face Hub cache roots Lemonade may share with Hearth.
+
+    Lemonade's catalog `downloaded` flag can be stale for models migrated into the
+    host's `~/lemonade-hf-cache`; the checkpoint files remain authoritative. Honor
+    standard cache environment variables and the cache path used by Hearth's
+    Lemonade installer, plus the legacy native-service location.
+    """
+    candidates: list[Path] = []
+    for variable in ("HUGGINGFACE_HUB_CACHE", "HF_HUB_CACHE"):
+        value = os.environ.get(variable)
+        if value:
+            candidates.append(Path(os.path.expanduser(value)))
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        home = Path(os.path.expanduser(hf_home))
+        candidates.append(home if home.name == "hub" else home / "hub")
+    candidates.extend((
+        Path.home() / "lemonade-hf-cache" / "hub",
+        Path("/var/lib/lemonade/.cache/huggingface/hub"),
+    ))
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            roots.append(path)
+    return roots
+
+
+def _checkpoint_is_cached(checkpoint: str | None) -> bool:
+    """Check whether an HF repo checkpoint file exists in a shared local cache."""
+    if not isinstance(checkpoint, str) or ":" not in checkpoint:
+        return False
+    repo, filename = checkpoint.split(":", 1)
+    if "/" not in repo or not filename or filename.startswith("/"):
+        return False
+    cache_dirname = "models--" + repo.replace("/", "--")
+    repo_name = repo.rsplit("/", 1)[-1]
+    repo_stem = re.sub(r"-GGUF$", "", repo_name, flags=re.IGNORECASE)
+    filenames = {filename}
+    # Some Lemonade catalog checkpoints use a quantization tag as an alias rather
+    # than the literal HF filename (for example `repo:UD-Q4_K_M`). The migrated HF
+    # cache stores the corresponding `<repo-stem>-<tag>.gguf` filename.
+    if not filename.lower().endswith((".gguf", ".onnx", ".safetensors")):
+        filenames.update((f"{repo_name}-{filename}.gguf", f"{repo_stem}-{filename}.gguf", f"{filename}.gguf"))
+    for root in _huggingface_cache_roots():
+        snapshots = root / cache_dirname / "snapshots"
+        try:
+            for snapshot in snapshots.iterdir():
+                if any((snapshot / name).is_file() for name in filenames):
+                    return True
+                # Lemonade catalog ids and HF filenames can omit different model
+                # family segments while retaining the quantization suffix.
+                if (not filename.lower().endswith(".gguf")
+                        and any(item.is_file() and item.name.endswith(f"-{filename}.gguf")
+                                for item in snapshot.iterdir())):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _catalog_entry_is_cached(entry: dict) -> bool:
+    """True when every required catalog component is already in the HF cache."""
+    statuses = entry.get("checkpoint_status") or []
+    required = [status for status in statuses if status.get("required", True)]
+    checkpoints = entry.get("checkpoints") or {}
+    if required:
+        return all(
+            _checkpoint_is_cached(checkpoints.get(status.get("type")) or entry.get("checkpoint"))
+            for status in required
+        )
+    return _checkpoint_is_cached(entry.get("checkpoint"))
+
+
 def list_models() -> list[dict]:
     """All NPU (FastFlowLM) models pulled through this app, with load state — reshaped
     to the same {id, state, publisher, quantization, type} shape the frontend already
@@ -271,6 +350,14 @@ def list_models() -> list[dict]:
     except requests.RequestException:
         pass
 
+    try:
+        deleted_model_ids = {
+            model_id for model_id, metadata in model_metadata_store.registry("lemonade").items()
+            if metadata.get("deleted") is True
+        }
+    except Exception:
+        deleted_model_ids = set()
+
     models = []
     seen_ids = set()
     for m in models_resp.json().get("data", []):
@@ -278,7 +365,10 @@ def list_models() -> list[dict]:
         # downloads the same repository's Vulkan-compatible Q3_K_M variant.
         if m.get("id") == q38rocm_client._CATALOG_ID:
             continue
-        if m.get("recipe") != "flm" and not m.get("downloaded"):
+        if m.get("id") in deleted_model_ids:
+            continue
+        if (m.get("recipe") != "flm" and not m.get("downloaded")
+                and not _catalog_entry_is_cached(m)):
             continue
         model_id = m.get("id")
         seen_ids.add(model_id)
@@ -352,7 +442,8 @@ def list_models() -> list[dict]:
     # convention, matching how LM Studio's API already labels its embedding model -
     # "transcription"/"tts" need no such remapping, health already reports those as-is.
     for model_id, entry in loaded_by_id.items():
-        if model_id in seen_ids or model_id == q38rocm_client._CATALOG_ID:
+        if (model_id in seen_ids or model_id == q38rocm_client._CATALOG_ID
+                or model_id in deleted_model_ids):
             continue
         raw_type = entry.get("type") or "llm"
         entry_type = "embeddings" if raw_type == "embedding" else raw_type

@@ -530,10 +530,6 @@ def _download_worker_freeform(key: str, query: str, backend: str) -> None:
         if not cancelled:
             _set_download_progress(key, done=True)
             try:
-                model_metadata_store.mark_model_downloaded(backend, model_id)
-            except Exception as exc:
-                print(f"[downloads] Could not record backend for {model_id}: {exc}", flush=True)
-            try:
                 model_metadata_store.mark_model_downloaded(backend, query)
             except Exception as exc:
                 print(f"[downloads] Could not record backend for {query}: {exc}", flush=True)
@@ -571,6 +567,11 @@ def _download_worker_structured(key: str, model_id: str, backend: str, source: s
             cancelled = key in _cancelled_downloads
         if not cancelled:
             _set_download_progress(key, done=True)
+            if backend == "lemonade":
+                try:
+                    model_metadata_store.mark_model_downloaded(backend, model_id)
+                except Exception as exc:
+                    print(f"[downloads] Could not clear deleted state for {model_id}: {exc}", flush=True)
     except (lemonade.LemonadeError, vllm.VLLMError, kobold.KoboldError,
             fastflowlm.FastFlowLMError, q38rocm.Q38RocmError) as exc:
         _set_download_progress(key, error=str(exc))
@@ -4288,6 +4289,10 @@ def api_delete_model():
             lemonade.delete_model(identifier)
         except lemonade.LemonadeError as exc:
             return jsonify({"error": str(exc)}), 502
+        try:
+            model_metadata_store.mark_model_deleted(backend, identifier)
+        except Exception as exc:
+            print(f"[models] Could not record deleted Lemonade model {identifier}: {exc}", flush=True)
         return jsonify({"ok": True})
     try:
         lms.delete_model(identifier)

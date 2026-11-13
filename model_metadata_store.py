@@ -124,8 +124,22 @@ def registry(backend):
 
 def mark_model_downloaded(backend, model_id):
     """Record which backend a model was downloaded under, so the backend can be
-    identified even when the live catalog is unreachable (e.g. Lemonade is down)."""
+    identified even when the live catalog is unreachable (e.g. Lemonade is down).
+    Re-downloading also clears a prior per-model deletion marker."""
     payload = json.dumps({"downloaded": True})
+    now = time.time()
+    with database.connect() as conn:
+        conn.execute(
+            """INSERT INTO model_registry (backend, model_id, payload, updated_at)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (backend, model_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at""",
+            (backend, model_id, payload, now),
+        )
+
+
+def mark_model_deleted(backend, model_id):
+    """Hide a deleted catalog entry when shared cache files remain for another model."""
+    payload = json.dumps({"deleted": True})
     now = time.time()
     with database.connect() as conn:
         conn.execute(
