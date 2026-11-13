@@ -550,7 +550,8 @@ New assignments also accept a result label and platform/output type. Web-page
 assignments preview a completed `index.html`, `dist/index.html`, or
 `build/index.html` in a sandboxed frame on the task page. Choose **JSON results
 (HTML view)** to show a saved JSON artifact or accepted final response in a separate,
-labeled sandboxed report view.
+labeled sandboxed report view. A saved HTML report is previewed directly; otherwise
+JSON records and nested objects render as HTML tables rather than raw JSON text.
 The latest agent response and labeled HTML result appear at the top of the task page,
 before task details, controls, activity, and conversation logs.
 feed, which streams task progress, the agent container's tool inputs and outputs,
@@ -684,7 +685,9 @@ Completed, stopped, or interrupted assignments can be edited with **Edit task** 
 and resubmitted.
 **Save changes** updates the task without starting a run. **Resubmit** saves the
 current edits and queues the same assignment, keeping its saved project files and
-activity history.
+activity history. Manual and scheduled reruns use the latest saved goal, acceptance
+criteria, technical and output requirements, and user refinements; the editor refreshes
+saved values from other sessions unless it has local unsaved edits.
 When a verification command is configured, Hearth includes it in the initial agent
 plan and asks the agent to create and save any missing verifier scripts, fixtures,
 or configuration it needs, then run and repair the command before claiming completion.
@@ -700,7 +703,9 @@ Recurring schedules are optional and are not created by the installer. Open
 Assignments page, then set its
 repeat interval and optional local run time. Each occurrence reruns that same
 assignment from its saved code, project files, progress summary, goal, model, and
-settings; completed parts are reused and no second agent definition is created.
+settings, including the latest saved acceptance criteria, technical and output
+requirements, and user refinements; completed parts are reused and no second agent
+definition is created.
 Daily or weekly schedules use the browser timezone shown in
 the form and keep that wall-clock time across daylight-saving changes. Completed
 and stopped assignments can both be rerun by a schedule, and Hearth recovers a

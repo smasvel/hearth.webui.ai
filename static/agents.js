@@ -118,18 +118,26 @@
     if(editToggle)editToggle.hidden=!['completed','stopped','interrupted','blocked','paused'].includes(task.status);
     if(el('agent-edit-resubmit'))el('agent-edit-resubmit').hidden=task.status==='paused';
     const editForm=el('agent-edit-form');
-    if(editForm && editForm.dataset.loadedTask!==task.id) {
-      for(const name of ['title','goal','assignee','criteria','technical_requirements','memory_notes','html_requirements','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout']) {
-        if(editForm.elements[name])editForm.elements[name].value=task[name] ?? ({shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,opencode_steps:40,verification_timeout:300}[name] ?? '');
+    const editFields=['title','goal','assignee','criteria','technical_requirements','memory_notes','html_requirements','result_label','result_platform','verification_command','shell_mode','max_cycles','opencode_steps','verification_timeout'];
+    const editDefaults={shell_mode:task.auto_commands ? 'auto' : 'ask',max_cycles:50,opencode_steps:40,verification_timeout:300};
+    const editSignature=JSON.stringify([
+      ...editFields.map(name=>task[name] ?? (editDefaults[name] ?? '')),
+      task.enable_thinking !== false, task.skills || [], task.research_providers || [], task.model || null,
+    ]);
+    const shouldRefreshEditForm=editForm && (editForm.dataset.loadedTask!==task.id ||
+      (editForm.dataset.dirty!=='true' && editForm.dataset.loadedVersion!==editSignature));
+    if(shouldRefreshEditForm) {
+      for(const name of editFields) {
+        if(editForm.elements[name])editForm.elements[name].value=task[name] ?? (editDefaults[name] ?? '');
       }
       editForm.elements.enable_thinking.checked=task.enable_thinking !== false;
       setSelectedSkills(el('agent-edit-skill-picker'), task.skills);
       for(const input of editForm.querySelectorAll('[name="research_provider"]'))input.checked=(task.research_providers || []).includes(input.value);
+      const editModel=el('agent-edit-model');
+      if(editModel && task.model)editModel.value=retainSavedModel(editModel,task.model);
       editForm.dataset.loadedTask=task.id;
-    }
-    const editModel=el('agent-edit-model');
-    if(editModel && task.model && editForm?.dataset.modelTask!==task.id) {
-      editModel.value=retainSavedModel(editModel,task.model);
+      editForm.dataset.loadedVersion=editSignature;
+      editForm.dataset.dirty='false';
       editForm.dataset.modelTask=task.id;
     }
     if(el('agent-reset-cycles'))el('agent-reset-cycles').hidden=!['running','waiting_input','paused','blocked','interrupted'].includes(task.status);
@@ -177,6 +185,7 @@
     if(previewWrap&&preview){
       const showPreview=['web','report'].includes(task.result_platform) && task.status==='completed';
       previewWrap.hidden=!showPreview;
+      if(el('agent-result'))el('agent-result').hidden=showPreview && task.result_platform==='report';
       preview.title=`${task.result_label || 'Results'} HTML view`;
       const src=showPreview?`/api/agent-tasks/${encodeURIComponent(task.id)}/preview`:'';
       if(preview.dataset.src!==src){preview.dataset.src=src;preview.src=src || 'about:blank';}
@@ -608,7 +617,7 @@
       const current=modelValue(task?.model);
       el('agent-resume-model').value=(preferred || ([...el('agent-resume-model').options].find(o=>o.value===current && !o.disabled)) || available[0] || {}).value || '';
     }
-    if(el('agent-edit-model') && task?.model) {
+    if(el('agent-edit-model') && task?.model && el('agent-edit-form')?.dataset.dirty!=='true') {
       el('agent-edit-model').value=retainSavedModel(el('agent-edit-model'),task.model);
       const editForm=el('agent-edit-form');
       if(editForm)editForm.dataset.modelTask=task.id;
@@ -625,7 +634,7 @@
     if(el('agent-assign'))el('agent-assign').disabled=true;
     if(el('agent-schedule-create'))el('agent-schedule-create').disabled=true;
     const editModel=el('agent-edit-model');
-    if(editModel && task?.model)editModel.value=retainSavedModel(editModel,task.model);
+    if(editModel && task?.model && el('agent-edit-form')?.dataset.dirty!=='true')editModel.value=retainSavedModel(editModel,task.model);
     if(el('agent-edit-status'))el('agent-edit-status').textContent=`Available models could not be loaded. The task’s saved model is retained; ${e.message}`;
   });
   function readEditValues(form) {
@@ -658,6 +667,7 @@
     try {
       const updated=await api(resubmit?`/api/agent-tasks/${task.id}/edit-rerun`:`/api/agent-tasks/${task.id}/settings`,payload,resubmit?'POST':'PATCH');
       if(archive instanceof File && archive.size)form.elements.project_archive.value='';
+      form.dataset.dirty='false';
       show(updated);
       if(resubmit) {
         rerunAcceptedAt=Date.now();
@@ -669,6 +679,9 @@
     } catch(error) { status.textContent=`${resubmit?'Could not resubmit':'Could not save'}: ${error.message}`; }
     finally { saveButton.disabled=false;resubmitButton.disabled=false; }
   }
+  for(const eventName of ['input','change'])el('agent-edit-form')?.addEventListener(eventName,()=>{
+    el('agent-edit-form').dataset.dirty='true';
+  });
   el('agent-edit-form')?.addEventListener('submit',event=>{
     event.preventDefault();
     saveEditedTask(false);

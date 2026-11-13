@@ -3077,6 +3077,24 @@ def api_agent_tasks_preview(task_id):
             return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
         content = bytes(entry['content'])
     else:
+        html_files = [item for item in files if not item['is_dir']
+                      and not Path(item['path']).name.startswith('.')
+                      and str(item['path']).lower().endswith(('.html', '.htm'))]
+        preferred_html = {'results.html': 0, 'result.html': 1, 'report.html': 2, 'index.html': 3}
+        html_files.sort(key=lambda item: (
+            preferred_html.get(Path(item['path']).name.lower(),
+                4 if any(term in Path(item['path']).name.lower() for term in ('result', 'report')) else 5),
+            -float(item.get('updated_at') or 0), item['path'].lower()))
+        if html_files:
+            # The report platform often produces a finished HTML deliverable beside
+            # its source JSON. Show that requested result rather than the JSON
+            # fallback generated from the agent's final response.
+            content = bytes(html_files[0]['content'])
+            response = Response(content, mimetype='text/html')
+            response.headers['Content-Security-Policy'] = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; sandbox"
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Cache-Control'] = 'no-store'
+            return response
         json_files = [item for item in files if not item['is_dir'] and item['path'].lower().endswith('.json')]
         preferred = {'results.json': 0, 'result.json': 1, 'report.json': 2, 'scan.json': 3}
         json_files.sort(key=lambda item: (
@@ -3104,16 +3122,59 @@ def api_agent_tasks_preview(task_id):
             except json.JSONDecodeError:
                 report = {'final_response': final_text}
             report_name = 'Accepted agent final response'
+
+        def render_report_value(value, depth=0):
+            if depth >= 8:
+                return '<span class="muted">Nested content</span>'
+            if isinstance(value, dict):
+                if not value:
+                    return '<span class="muted">No data</span>'
+                rows = ''.join(
+                    '<tr><th scope="row">'+html.escape(str(key))+'</th><td>'+
+                    render_report_value(item, depth + 1)+'</td></tr>'
+                    for key, item in list(value.items())[:500]
+                )
+                return '<div class="table-scroll"><table><tbody>'+rows+'</tbody></table></div>'
+            if isinstance(value, list):
+                if not value:
+                    return '<span class="muted">No rows</span>'
+                if all(isinstance(item, dict) for item in value):
+                    columns = list(dict.fromkeys(
+                        key for item in value for key in item.keys()
+                    ))[:100]
+                    if not columns:
+                        return '<span class="muted">No fields</span>'
+                    head = ''.join('<th scope="col">'+html.escape(str(key))+'</th>' for key in columns)
+                    body = ''.join(
+                        '<tr>'+''.join('<td>'+render_report_value(item.get(key), depth + 1)+'</td>'
+                                       for key in columns)+'</tr>'
+                        for item in value[:2500]
+                    )
+                    extra = (f'<p class="muted">Showing 2,500 of {len(value)} rows.</p>'
+                             if len(value) > 2500 else '')
+                    return '<div class="table-scroll"><table><thead><tr>'+head+'</tr></thead><tbody>'+body+'</tbody></table></div>'+extra
+                items = ''.join('<li>'+render_report_value(item, depth + 1)+'</li>' for item in value[:2500])
+                extra = f'<li class="muted">{len(value) - 2500} more items</li>' if len(value) > 2500 else ''
+                return '<ul>'+items+extra+'</ul>'
+            if value is None:
+                return '<span class="muted">—</span>'
+            if isinstance(value, bool):
+                return 'Yes' if value else 'No'
+            return html.escape(str(value))
+
         label = html.escape(str(job.get('result_label') or 'Results'))
         heading = html.escape(report_name or 'Results')
-        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        rendered = render_report_value(report)
         content = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                    f"<title>{label}</title><style>body{{font:15px system-ui,sans-serif;margin:24px;color:#202124}}"
-                   "h1{font-size:1.35rem}p{color:#555}pre{white-space:pre-wrap;overflow-wrap:anywhere;"
-                   "padding:16px;background:#f4f5f7;border-radius:8px}</style>"
+                   "h1{font-size:1.35rem}p{color:#555}.table-scroll{max-width:100%;overflow:auto;margin:12px 0 20px}"
+                   "table{border-collapse:collapse;width:100%;background:#fff}th,td{border:1px solid #d8dce3;"
+                   "padding:9px 11px;text-align:left;vertical-align:top;overflow-wrap:anywhere}"
+                   "thead th{background:#f0f2f5;position:sticky;top:0}tbody th{background:#f7f8fa;min-width:150px}"
+                   "ul{padding-left:22px}.muted{color:#687080}</style>"
                    f"<h1>{label}</h1><p>{heading} · accepted agent result</p>"
-                   f"<pre>{html.escape(rendered)}</pre></html>").encode('utf-8')
+                   f"{rendered}</html>").encode('utf-8')
     response = Response(content, mimetype='text/html')
     response.headers['Content-Security-Policy'] = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; sandbox"
     response.headers['X-Content-Type-Options'] = 'nosniff'

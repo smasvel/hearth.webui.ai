@@ -995,9 +995,8 @@ class Manager:
                     prompt = (
                         'This is a scheduled continuation of an existing assignment. The project workspace contains code and files '
                         'built during earlier runs. Inspect and reuse that work; do not start over or recreate completed parts. '
-                        'Continue from the current project state, preserve working code, and make only the changes needed for this occurrence.\n\n'
-                        'Assignment goal:\n'+job['goal']+'\n\nAcceptance criteria:\n'+
-                        (job.get('criteria') or 'Complete and verify the requested goal.')+
+                        'Continue from the current project state, preserve working code, and make only the changes needed for this occurrence.\n\n'+
+                        self._assignment_scope(job)+
                         ('\n\nSaved progress summary from the previous run:\n'+previous_summary if previous_summary else '')+
                         ('\n\nUser refinements:\n'+'\n'.join(refinements) if refinements else '')
                     )

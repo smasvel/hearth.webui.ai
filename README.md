@@ -1501,7 +1501,9 @@ criteria, model, output settings, and work limits. **Save changes** stores the e
 without starting a run; **Resubmit** saves the current edits and queues the same
 assignment from its latest saved project files. Use **Edit task** in the assignment
 header to open the editor. This does not create a second assignment or discard the
-existing code and activity history. The saved model remains selected if it is no longer
+existing code and activity history. Manual and scheduled reruns use the latest saved
+task goal, criteria, technical and output requirements, and refinements. The editor
+refreshes saved values from other sessions unless you have local unsaved edits. The saved model remains selected if it is no longer
 in the available model list or the list cannot load; you can keep that model while
 editing other settings. Selecting a different model still requires an available model.
 When a run finishes, Hearth stops and retains that assignment's Docker container.
@@ -1591,8 +1593,9 @@ contains an implementation placeholder, and continues the assignment instead.
 Use **Recurring agent schedules** to select an existing assignment from the
 **Assignments** page and set its repeat interval, from 5 minutes to 365 days.
 Each occurrence continues that assignment from its saved project files and progress,
-using its saved goal, model, and settings; it reuses existing code instead of
-recreating completed parts. Schedules do not create a second agent definition. The first
+using the latest saved goal, acceptance criteria, technical and output requirements,
+model, settings, and user refinements. It reuses existing code instead of recreating
+completed parts. Schedules do not create a second agent definition. The first
 run starts after one interval. Daily or weekly schedules can specify a local run
 time using the browser timezone shown in the form, and keep that wall-clock time
 across daylight-saving changes. Hearth skips an occurrence if the selected
@@ -1638,7 +1641,10 @@ assignments can also set a result label and output platform. For web-page
 results, Hearth previews a completed `index.html` (or `dist/index.html` or
 `build/index.html`) in a sandboxed frame. Choose **JSON results (HTML view)** to render
 a saved JSON artifact or the accepted agent final response in a separate labeled,
-sandboxed report view. The result label and output type appear above the response.
+sandboxed report view with records, fields, and nested values rendered as HTML tables
+instead of raw JSON text. When the project contains a saved HTML report, Hearth previews
+that deliverable and hides the raw response text. The result label and output type appear
+above the response.
 Stopped assignments can be deleted; active assignments must first be stopped or
 paused.
 
