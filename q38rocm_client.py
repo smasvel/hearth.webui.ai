@@ -81,7 +81,6 @@ def _cached_model_file() -> Path | None:
     repo_folder = "models--" + _HF_REPO.replace("/", "--")
     roots = (
         Path.home() / ".cache/huggingface/hub",
-        Path("/var/snap/lemonade-server/common/.cache/huggingface/hub"),
         Path("/var/lib/lemonade/.cache/huggingface/hub"),
     )
     for root in roots:

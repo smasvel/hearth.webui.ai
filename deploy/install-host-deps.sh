@@ -54,9 +54,6 @@ if command -v caddy >/dev/null; then
     --owner "$target_user" \
     --system-file /etc/caddy/Caddyfile
 fi
-if ! snap list lemonade-server >/dev/null 2>&1 && ! dpkg-query -W -f='${Status}' lemonade-server 2>/dev/null | grep -q 'install ok installed'; then
-  apt-get install -y lemonade-server
-fi
 apt-get install -y "${target_home}/.local/share/hearth/downloads/fastflowlm.deb"
 usermod -aG render,video,docker "$target_user"
 render_template "${project_dir}/flm.service" /etc/systemd/system/flm.service

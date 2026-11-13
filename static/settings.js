@@ -20,6 +20,15 @@
           `${escapeHtml(s.service)}: ${escapeHtml(s.status)}${s.detail ? " — " + escapeHtml(s.detail) : ""} (updated ${new Date(s.updated_at * 1000).toLocaleTimeString()})`
         ).join("<br/>");
       }
+      // Update dedicated Lemonade status display
+      const lemonadeStatusEl = document.getElementById("lemonade-sudo-status");
+      if (lemonadeStatusEl && data.services) {
+        const lemon = data.services.find(s => s.service.startsWith("Lemonade") && s.service !== "Lemonade");
+        if (lemon) {
+          const statusColor = lemon.status === "active" ? "green" : lemon.status === "inactive" ? "orange" : "gray";
+          lemonadeStatusEl.innerHTML = `Lemonade service: <span style="color:${statusColor}">${escapeHtml(lemon.service)}</span> — <span style="color:${statusColor}">${escapeHtml(lemon.status)}</span>${lemon.detail ? " — " + escapeHtml(lemon.detail) : ""}`;
+        }
+      }
     } catch (e) { /* ignore */ }
   }
   // Render per-backend start/stop controls
@@ -72,6 +81,12 @@
 
   loadRestartHistory();
 
+  // Auto-refresh service status periodically for live labels
+  setInterval(() => {
+    loadRestartHistory();
+    renderBackendControls();
+  }, 5000);
+
   async function pollRestartJob(jobId) {
     const interval = setInterval(async () => {
       try {
@@ -80,12 +95,14 @@
         if (restartStatusEl) {
           restartStatusEl.textContent = `${data.status}: ${data.progress}/${data.total} — ${data.detail || ""}`;
         }
+        // Refresh service labels live during restart
+        loadRestartHistory();
+        renderBackendControls();
         if (data.status === "done" || data.status === "error") {
           clearInterval(interval);
           restartBackendsBtn.disabled = false;
           restartHearthBtn.disabled = false;
           if (restartQ38rocmBtn) restartQ38rocmBtn.disabled = false;
-          loadRestartHistory();
         }
       } catch (e) {
         clearInterval(interval);

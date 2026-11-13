@@ -2835,6 +2835,10 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
 .agent-primary-fields label { min-width:0; }
 .agent-form-card .agent-form { gap:20px; }
 .agent-form-card .agent-form > label { gap:8px;font-weight:600; }
+.agent-form-card .project-zip-upload { padding:14px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
+.agent-form-card .project-zip-title { font-weight:700; }
+.agent-form-card .project-zip-file { display:block!important;width:100%;min-height:48px;padding:8px;border:1px dashed var(--border);border-radius:9px;background:var(--panel);color:var(--text); }
+.agent-form-card .project-zip-file::file-selector-button { min-height:34px;margin-right:10px;padding:6px 14px;border:1px solid var(--border);border-radius:7px;background:var(--accent);color:#fff;font:inherit;font-weight:650;cursor:pointer; }
 .agent-form-card .panel-input { min-height:48px;border-radius:11px;padding:12px 14px;font-size:1rem; }
 .agent-form-card textarea.panel-input { min-height:118px; }
 .agent-goal-input { font-size:1.05rem!important;line-height:1.55; }

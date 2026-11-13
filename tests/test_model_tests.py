@@ -644,7 +644,7 @@ class ModelHandoffVerificationTests(unittest.TestCase):
              patch.object(app, '_unload_reasoning_models_before_load') as unload, \
              patch.object(app, '_test_loaded_reasoning_models', return_value=[good]):
             app._test_load_model(target)
-        unload.assert_called_once_with('target', force=True)
+        unload.assert_not_called()
         for inventory in ([], [wrong], [good, wrong]):
             with self.subTest(inventory=inventory), \
                  patch.object(app, 'api_load_model', Mock(__wrapped__=lambda: app.jsonify({'ok': True}))), \

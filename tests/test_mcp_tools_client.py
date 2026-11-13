@@ -117,9 +117,28 @@ class PlaywrightNavigationTests(unittest.IsolatedAsyncioTestCase):
         add_visit.assert_called_once_with(
             url="https://example.com",
             title="Playwright MCP navigation",
-            query="https://example.com",
+            query="Agent browser navigation",
             source="playwright-mcp",
             ok=True,
+        )
+
+    @patch.object(mcp_tools_client.browse_history_store, "add_visit")
+    @patch.object(mcp_tools_client.asyncio, "run_coroutine_threadsafe")
+    @patch.object(mcp_tools_client, "ensure_started")
+    def test_open_alias_logs_redirected_url_from_tool_result(self, _started, submit, add_visit):
+        original_loop = mcp_tools_client._loop
+        self.addCleanup(setattr, mcp_tools_client, '_loop', original_loop)
+        mcp_tools_client._loop = Mock()
+        future = Mock()
+        future.result.return_value = "Opened https://example.org/final"
+        submit.return_value = future
+
+        mcp_tools_client.call_tool("playwright__open", {"url": "https://example.org/start"})
+        submit.call_args.args[0].close()
+
+        add_visit.assert_called_once_with(
+            url="https://example.org/start", title="Playwright MCP navigation",
+            query="Agent browser navigation", source="playwright-mcp", ok=True,
         )
 
 

@@ -1350,6 +1350,29 @@ def settings_page():
     return render_template("settings.html", username=session.get("username"))
 
 
+def _restart_lemonade_backend():
+    """Restart Lemonade server via Docker container,
+    falling back to user-level guard shim if unavailable."""
+    # Try Docker restart
+    try:
+        result = subprocess.run(
+            ["docker", "restart", "lemonade-server"],
+            check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(["systemctl", "--user", "restart", "lemonade-guard-shim.service"],
+                       check=False, capture_output=True, text=True, timeout=120)
+        return result
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        # Fall back to shim only
+        try:
+            return subprocess.run(
+                ["systemctl", "--user", "restart", "lemonade-guard-shim.service"],
+                check=True, capture_output=True, text=True, timeout=120)
+        except Exception:
+            raise RuntimeError(
+                "Lemonade service could not be restarted via Docker; "
+                "restart manually with 'docker restart lemonade-server'. Original error: " + str(exc)[:200]) from exc
+
+
 @app.post("/api/admin/restart-backends")
 @admin_required
 def api_restart_backends():
@@ -1365,7 +1388,7 @@ def api_restart_backends():
 
     all_services = {
         "LM Studio": lambda: lms._run_lms(["server", "stop"], timeout=120),
-        "Lemonade": lambda: subprocess.run(["systemctl", "--user", "restart", "lemonade-guard-shim.service"], check=True, capture_output=True, text=True, timeout=120),
+        "Lemonade": lambda: _restart_lemonade_backend(),
         "vLLM": lambda: vllm._systemctl("restart", timeout=120),
         "KoboldCPP": lambda: kobold._systemctl("restart", timeout=120),
         "q38rocm": restart_q38_if_running,
@@ -1510,6 +1533,36 @@ def api_service_status():
             svc["status"] = "ok" if lm_ok else "error"
             if not lm_ok:
                 svc["detail"] = "LM Studio API server is not reachable on port 1234."
+    # Real-time Lemonade service status via Docker container inspection
+    docker_active = None
+    docker_detail = ""
+    try:
+        docker_res = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "lemonade-server"],
+            capture_output=True, text=True, timeout=5
+        )
+        if docker_res.returncode == 0:
+            docker_active = docker_res.stdout.strip() == "true"
+            docker_detail = f"docker container lemonade-server is {'running' if docker_active else 'stopped'}"
+        else:
+            docker_detail = "docker container not found"
+    except Exception as exc:
+        docker_detail = f"docker check failed: {exc}"
+    # Determine final status and detail
+    if docker_active is not None:
+        service_name = "Lemonade (docker)"
+        status = "active" if docker_active else "inactive"
+        detail = docker_detail
+    else:
+        service_name = "Lemonade"
+        status = "unknown"
+        detail = docker_detail or "status unknown"
+    services.append({
+        "service": service_name,
+        "status": status,
+        "updated_at": time.time(),
+        "detail": detail
+    })
     return jsonify({"services": services})
 
 
@@ -2461,11 +2514,33 @@ def _test_load_model(target):
         return
     _model_test_context.active = True
     try:
+        expected = (target['backend'], target['id'])
+        # If the requested model is already the only reasoning model in memory,
+        # reuse it instead of an unload/reload round-trip. This avoids reloading
+        # the same model when an agent or test targets a model that is already
+        # serving, and it avoids the unload stall risk. When the requested context
+        # length is larger than the currently loaded one, still reload so the
+        # larger context is applied. Otherwise (different model, or extra resident
+        # models) fall through and isolate the target as before.
+        observed_models = _test_loaded_reasoning_models()
+        observed = [(m.get('backend'), m.get('id')) for m in observed_models]
+        if observed == [expected]:
+            loaded_context = (observed_models[0] or {}).get('loaded_context_length')
+            requested_context = target.get('context_length')
+            context_ok = True
+            if isinstance(requested_context, int):
+                if isinstance(loaded_context, int):
+                    context_ok = loaded_context >= requested_context
+            if context_ok:
+                return
         # Ordinary model switches may keep a resident model when memory allows
         # both. A compatibility test needs an isolated target so results and the
         # exclusive handoff check cannot include output from another backend.
         _unload_reasoning_models_before_load(target['id'], force=True)
-        with app.test_request_context('/api/models/load', method='POST', json={'model': target['id']}):
+        with app.test_request_context('/api/models/load', method='POST',
+                                     json={'model': target['id'],
+                                           **({'context_length': target['context_length']}
+                                              if target.get('context_length') else {})}):
             response = app.make_response(api_load_model.__wrapped__())
             if response.status_code >= 400:
                 raise RuntimeError((response.get_json() or {}).get('error', 'Model load failed'))
@@ -2473,7 +2548,6 @@ def _test_load_model(target):
         # loaded target. A backend accepting /load is not proof it switched, and
         # a silent unload failure must not contaminate another model's results.
         loaded = _test_loaded_reasoning_models()
-        expected = (target['backend'], target['id'])
         observed = [(m.get('backend'), m.get('id')) for m in loaded]
         if observed != [expected]:
             raise RuntimeError(f'Model handoff verification failed: expected only {expected}, found {observed}.')
@@ -2610,7 +2684,18 @@ def _prepare_agent_model(job):
                 # Keep the existing explicit load path as the authoritative fallback
                 # when a backend cannot confirm its current model state.
                 pass
-        _test_load_model({'backend': model['providerID'], 'id': model['id']})
+        backend = model['providerID']
+        saved_context = _saved_model_context(backend, model['id'])
+        if saved_context is None:
+            saved_context = 16384
+        if saved_context < 16384:
+            model_info = next((entry for entry in client.list_models()
+                               if entry.get('id') == model['id']), {}) if client else {}
+            maximum = model_info.get('max_context_length')
+            if type(maximum) is int and maximum >= 16384:
+                saved_context = 16384
+        _test_load_model({'backend': backend, 'id': model['id'],
+                          **({'context_length': saved_context} if saved_context else {})})
 
 
 @app.get('/agents')
@@ -2755,20 +2840,51 @@ def _agent_execution_started_at(job):
     return latest_dispatch if latest_dispatch > started else (started or None)
 
 
+def _agent_assignment_request():
+    request.max_content_length = agent_store.MAX_PROJECT_ARCHIVE_BYTES + 2 * 1024 * 1024
+    project_archive = None
+    if request.mimetype == 'multipart/form-data':
+        try:
+            body = json.loads(request.form.get('assignment', '{}'))
+        except (TypeError, ValueError):
+            raise ValueError('The agent assignment form is invalid.')
+        project_archive = request.files.get('project_archive')
+        if project_archive and project_archive.filename:
+            filename = secure_filename(project_archive.filename)
+            if not filename or Path(filename).suffix.casefold() != '.zip':
+                raise ValueError('Choose a project archive with a .zip filename.')
+            project_archive.filename = filename
+        else:
+            project_archive = None
+    else:
+        body = request.get_json(silent=True)
+    return body, project_archive
+
+
 @app.post('/api/agent-tasks')
 @agent_workflow_required
 def api_agent_tasks_create():
     if any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
         return jsonify({'error': 'Wait for model validation to finish before assigning an agent.'}), 409
-    body = request.get_json(silent=True)
+    try:
+        body, project_archive = _agent_assignment_request()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     if not isinstance(body, dict):
         return jsonify({'error': 'An assignment object is required.'}), 400
     try:
-        return jsonify(_agent_tasks.create(body, session['user_id'])), 201
+        return jsonify(_agent_tasks.create(body, session['user_id'], project_archive)), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': str(exc)}), 503
+
+
+@app.errorhandler(413)
+def handle_agent_project_archive_size_error(error):
+    if request.path == '/api/agent-tasks' or request.path.endswith(('/edit-rerun', '/settings')):
+        return jsonify({'error': 'Project ZIP uploads are limited to 16 GiB.'}), 413
+    return error
 
 
 @app.get('/api/agent-tasks/<task_id>')
@@ -3057,7 +3173,10 @@ def api_agent_tasks_edit_rerun(task_id):
         return jsonify({'error': 'Assignment not found.'}), 404
     if any(j['status'] in model_tests.ACTIVE for j in _model_test_registry.list()):
         return jsonify({'error': 'Wait for model validation to finish before resubmitting an agent.'}), 409
-    body = request.get_json(silent=True)
+    try:
+        body, project_archive = _agent_assignment_request()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     if not isinstance(body, dict):
         return jsonify({'error': 'Updated task details are required.'}), 400
     try:
@@ -3067,7 +3186,7 @@ def api_agent_tasks_edit_rerun(task_id):
             ))
         if not _agent_tasks.thread or not _agent_tasks.thread.is_alive():
             return jsonify({'error': 'The agent supervisor is not running; the task was not queued.'}), 503
-        return jsonify(_agent_tasks.edit_and_rerun(task_id, body))
+        return jsonify(_agent_tasks.edit_and_rerun(task_id, body, project_archive))
     except KeyError:
         return jsonify({'error': 'Assignment not found.'}), 404
     except ValueError as exc:
@@ -3082,11 +3201,14 @@ def api_agent_tasks_edit_rerun(task_id):
 def api_agent_tasks_settings(task_id):
     if not _agent_task_visible_to_current_user(_agent_tasks.get(task_id)):
         return jsonify({'error': 'Assignment not found.'}), 404
-    body = request.get_json(silent=True)
+    try:
+        body, project_archive = _agent_assignment_request()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     if not isinstance(body, dict):
         return jsonify({'error': 'Updated task details are required.'}), 400
     try:
-        return jsonify(_agent_tasks.update_assignment(task_id, body))
+        return jsonify(_agent_tasks.update_assignment(task_id, body, project_archive))
     except KeyError:
         return jsonify({'error': 'Assignment not found.'}), 404
     except ValueError as exc:
@@ -3735,13 +3857,24 @@ def _claim_selected_npu(backend, model: str):
             fastflowlm.load_model(model)
         elif backend is lemonade:
             _free_npu_except("lemonade", npu_lock_held=True)
-            loaded = any(
-                m.get("id") == model and m.get("state") == "loaded"
-                for m in lemonade.list_models()
-            )
-            if not loaded:
-                lemonade.load_model(model, context_length=(
-                    (_saved_model_context("lemonade", model) if (_saved_model_context("lemonade", model) or 0) > 32768 else 32768) if 'k2-horizon' in str(model).lower() else (_saved_model_context("lemonade", model) or 65536)))
+            loaded_entry = next((m for m in lemonade.list_models()
+                                 if m.get("id") == model and m.get("state") == "loaded"), None)
+            # An already-loaded Lemonade model may still have a smaller --ctx-size
+            # than the window Hearth advertises to OpenCode. In that case OpenCode
+            # compacts at the smaller live limit even though its model config says
+            # 65,536. Reapply the saved/default context when the live model is
+            # undersized; otherwise keep the warm model in place.
+            saved_context = _saved_model_context("lemonade", model)
+            is_k2_horizon = 'k2-horizon' in str(model).lower()
+            target_context = saved_context or (32768 if is_k2_horizon else 65536)
+            if is_k2_horizon and target_context < 32768:
+                target_context = 32768
+            if loaded_entry and isinstance(loaded_entry.get("max_context_length"), int):
+                target_context = min(target_context, loaded_entry["max_context_length"])
+            loaded_context = (loaded_entry or {}).get("loaded_context_length")
+            if (not loaded_entry or type(loaded_context) is not int
+                    or loaded_context < target_context):
+                lemonade.load_model(model, context_length=target_context)
         return handle
     except Exception:
         npu_request_lock.release(handle)

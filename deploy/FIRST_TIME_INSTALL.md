@@ -4,10 +4,10 @@ The Lemonade gateway removes disabled tool schemas for `tool_choice: none`, avoi
 native parser failures on ordinary answers. Restart `lemonade-guard-shim.service`
 after updating the gateway code to apply this behavior.
 
-Lemonade's `Ornith-1.5-35B-A3B-GGUF` uses the CPU backend when Hearth detects an
+Lemonade's `Ornith-1.5-35B-A3B-GGUF` and `K2-Horizon-MoVA-36B-A4B-GGUF` use the CPU backend when Hearth detects an
 AMD shared GPU memory pool below 32 GiB. This avoids Vulkan memory exhaustion at
 load time, at the cost of slower replies. Restart Hearth and
-`lemonade-guard-shim.service` after updating, then reload Ornith from Models.
+`lemonade-guard-shim.service` after updating, then reload the model from Models.
 The 9B variant and devices with larger GPU pools keep their default backend.
 
 Hearth checks other backends before switching reasoning models, including when
@@ -117,14 +117,14 @@ KoboldCpp conversation, preserving RAG while the optional sidecar is offline. On
 sidecar responds, KoboldCpp uses its own vector namespace. Start a new conversation when
 older context is essential.
 
-Generated OpenCode configurations turn automatic compaction off by default so an
-assignment continues with its exact conversation while it fits the loaded model.
-After updating, copy the new LAN or Tailscale configuration from Help and restart
-OpenCode, or run `python3 tools/sync_opencode_config.py` to refresh the desktop
-configuration. The generated limit uses the actual served context for a loaded model;
-a saved larger maximum applies only after the model is reloaded. If a request exceeds
-that limit, load a larger supported window or choose a larger model before continuing.
-Settings can re-enable automatic compaction if summaries are preferred.
+Generated OpenCode configurations enable automatic compaction by default so older turns
+are summarized before the loaded context fills. Settings can disable it or change retained
+history and buffer. After changing a model's loading ctx-size, copy the new LAN or Tailscale
+configuration from Help and restart OpenCode, or run `python3 tools/sync_opencode_config.py`
+to refresh the desktop configuration. The generated limit uses the actual served context
+for a loaded model; a saved larger maximum applies only after the model is reloaded. Continue
+for VS Code receives each model's advertised loaded context, while its own settings control
+compaction. Every client remains subject to the model's actual loaded limit.
 Search all backends on Downloads checks the latest public Lemonade catalog and LM
 Studio's model catalog as well as the backend and Hugging Face searches. These public
 matches require internet access; new Lemonade GGUF entries download through Hugging
@@ -286,8 +286,8 @@ The metrics page compares each supported local model's latest comprehensive test
 Hearth tracks backend and service lifecycle in PostgreSQL:
 
 - **Selective backend restarts**: `POST /api/admin/restart-backends` accepts a `backends` list (e.g. `["Lemonade", "vLLM"]`) and a `preserve_mandatory` flag. Mandatory support models (RAG/embedding, STT, TTS) are preserved during restart by default.
-- **Restart progress**: each restart creates a row in the `restart_jobs` table with `progress`/`total` counters. Poll `GET /api/admin/restart-status/<job_id>` for live status.
-- **Service status**: the `service_status` table records each service's current state (`started`, `stopped`, `restarting`, `error`) with a timestamp and optional detail. Query via `GET /api/admin/service-status`.
+- **Restart progress**: each restart creates a row in the `restart_jobs` table with `progress`/`total` counters. Poll `GET /api/admin/restart-status/<job_id>` for live status. The Settings page now auto-refreshes service labels every 5 seconds and streams restart progress live during a restart.
+- **Service status**: the `service_status` table records each service's current state (`started`, `stopped`, `restarting`, `error`) with a timestamp and optional detail. Query via `GET /api/admin/service-status`. The API now also returns real-time status for the Lemonade service via Docker container inspection for a container named `lemonade-server` (e.g., `docker run -d --name lemonade-server -p 13305:13305 -v lemonade-cache:/opt/lemonade/.cache/huggingface -v lemonade-llama:/opt/lemonade/llama -v lemonade-data:/opt/lemonade/.cache/lemonade -v lemonade-config:/opt/lemonade/.config/lemonade ghcr.io/lemonade-sdk/lemonade-server:latest`), displayed prominently in Settings.
 - **Model load/unload events**: the `model_load_events` table records every model load and unload attempt with backend, model ID, event type, status, error text, and timestamp. Errors include full text for copy/display.
 - **Model backend tracking**: when a model is downloaded, its backend is recorded in the `model_registry` table so the backend can be identified even when the live catalog is unreachable (e.g. Lemonade is down).
 Legacy backend URL and API key entries in `.env` are migrated during setup (or at app
@@ -315,6 +315,23 @@ configuration and model relay files alongside it. PostgreSQL remains the durable
 source of truth. OpenCode file tools are confined to the project folder and
 external directories are denied. Agent project and OpenCode files do not use
 `/tmp`; the container keeps it for system runtime needs.
+Each agent reaches its selected model through a task-specific Unix socket mounted
+only inside that isolated container; the relay port is bound to container loopback.
+When creating or editing an agent, you can attach an optional ZIP project archive. In
+**Edit task**, archive files merge into the current project and replace matching paths;
+the new ZIP replaces the saved source archive, so include any large archive-backed
+files that should remain available. Hearth stores
+the compressed bytes as a PostgreSQL large object in the separate
+`agent_project_archives` table and streams them into the agent container for safe
+extraction before work begins. Uploads can be up to 16 GiB compressed and 64 GiB
+expanded. Files up to 512 MiB each and 2 GiB total are checkpointed normally; larger
+uploaded files remain archive-backed source data and are restored when a container is
+rebuilt. Agents should leave those source files unchanged and write results separately.
+Encrypted ZIPs and archives with unsafe paths or links are rejected. The archive is
+removed when its assignment is deleted. Docker builds the updated versioned agent image
+on first use. Keep enough free space in Hearth's upload temp storage and PostgreSQL for
+the compressed archive, and on Docker host storage for its staging copy plus extracted
+project contents.
 Agents record verified, reusable environment and project facts in the project-root
 `AGENT_MEMORY.md`, including available interpreter names, dependency setup, working
 verification commands, and project conventions. Hearth combines local embedding
@@ -392,11 +409,15 @@ the limit to 0 for snippets only; pasted URLs still follow the separate direct-U
 For general online research, chat uses Hearth's supplied search evidence instead of making
 the model repeat the lookup through many browser tool calls. The tool-call round budget
 defaults to 100 and is configurable in Settings for specific multi-step browser tasks.
-For local KoboldCPP, Hearth starts its tool compatibility bridge automatically on a
-loopback-only ephemeral port. It withholds tool schemas for an explicit "do not call
-more tools" follow-up and repairs a missing parallel call only when the request names
-two literal values for the same required string field. KoboldCPP model tests use this
-bridge too; no separate service or setup step is needed.
+For local KoboldCPP, Hearth runs a persistent compatibility shim on 127.0.0.1:13308
+via the systemd user service `kobold-shim.service`. The service starts
+`kobold_tool_shim.py` and runs `wire_kobold_proxy.py` on ExecStartPost to patch Caddy's
+8446 gateway block so LAN OpenCode/Continue requests are proxied through the shim
+instead of directly to KoboldCPP's 5001. Each proxied request is reported to Hearth's
+live metrics feed with `backend=kobold`, making KoboldCPP traffic visible in Live logs
+and Metrics. The shim withholds tool schemas for an explicit "do not call more tools"
+follow-up and repairs a missing parallel call only when the request names two literal
+values for the same required string field. KoboldCPP model tests use this bridge too.
 
 After signing in, open **Agents**. Use **New agent** to enter a required agent name,
 name the task, and describe what you want in everyday language; the agent name identifies
@@ -410,7 +431,10 @@ For a completed, stopped, interrupted, blocked, or paused assignment, choose **E
 and expand **Online research** to enable or remove DuckDuckGo, Exa, Firecrawl, Parallel,
 Tavily, or TinyFish. DuckDuckGo uses a community-maintained MCP server bundled in the
 agent image and requires no key. See the [server project](https://github.com/nickclyde/duckduckgo-mcp-server).
-Saved providers are checked automatically. Enter a replacement API key to
+Saved providers are checked automatically. When an assignment needs current or external
+information, the agent uses those providers directly and infers search terms from its
+goal and project context; it does not ask you to provide search terms or confirm use of
+already-saved providers. Enter a replacement API key to
 change it; a blank key field retains the saved key, and deselecting a provider removes
 its saved key. Tavily requires a key while selected.
 The **Skills** tab on the Agents page manages your private agent skill library. Add a
@@ -547,10 +571,12 @@ form when needed. Hearth encrypts keys in PostgreSQL separately from task detail
 passes them only to that assignment's isolated OpenCode MCP configuration. Agents are
 instructed to put search terms in the required `query` field and retry with a nonempty
 query if a search tool reports that it is missing. Agents must use the exact available
-search tool names rather than assuming names such as `web_search`. Before fetching full pages, agents
+search tool names. OpenCode MCP names include the configured server prefix and tool
+name; agents must not invent generic aliases such as `web_search` or `web_fetch`. Before fetching full pages, agents
 check search titles and snippets against the task's goal, entities, location, and time
 period; they discard unrelated or duplicate hits and refine poor-fit queries before
-deep-diving. Existing agent sessions refresh once on resume to load these instructions.
+deep-diving. Existing agent sessions refresh on resume or the next run to load corrected
+search-tool guidance.
 Provider
 terms, rate limits, and any usage charges are controlled by the provider. No Hearth
 restart is needed. The first agent run after an update builds a new versioned runtime
@@ -591,12 +617,17 @@ cycle, so provider resets do not use up the task's cycle budget. Existing relay 
 are reused rather than replaced during concurrent checks. On Hearth startup, relay
 listeners for saved agent sessions are restored before workers run, reconnecting
 persistent Docker containers to the host model bridge after an app restart.
-Automatic OpenCode compaction is off by default for desktop and project agents. A
-project assignment continues with its full OpenCode conversation while it fits the
-loaded model. Context overflow stops the assignment for review rather than retrying
-or compacting repeatedly. Load a larger supported window or change models, then
-continue. When compaction is enabled or requested manually and fails, Hearth retries in a fresh session from the
-saved project checkpoint without advancing the work-cycle counter.
+Automatic OpenCode compaction is on by default for desktop and project agents. Hearth
+generates a separate compaction-enabled OpenCode config inside each agent container. Its
+OpenCode relay also shortens oversized historical tool results to their useful beginnings
+and endings. A project assignment continues with its OpenCode conversation while it fits
+the loaded model. Agent startup applies the selected model's saved loading ctx-size when it
+needs to load that model. If context overflow still occurs, Hearth saves the project
+checkpoint and automatically retries once in a fresh OpenCode session without advancing
+the work-cycle counter. Its first prompt is kept short and does not repeat project memory or
+verification instructions. A repeated overflow remains saved for review. When compaction fails,
+Hearth also retries in a fresh session from the saved project checkpoint without advancing
+the work-cycle counter.
 For project agents, Hearth also caps retained recent turns at one eighth of the
 selected model's context up to a 65K-token window; Lemonade/Muse-style 65K+ models
 get a large recent-context budget (`keep.tokens` capped at 65,536). On a 65,536-token
@@ -838,9 +869,11 @@ reports can be deleted while another test is running; the active report stays
 protected. **Test Model** on a model card starts a test of that card's model;
 automatic repair stays off for this run. **Reset repair** opens that page as well.
 Failed workflow steps mark dependent checks as blocked; only checks
-that ran are included in repair comparisons. Automatic repair is optional and is
-off by default. The Lemonade proxy translates named-function choices into a required
-call with only the requested function offered. If the user message supplies exact
+that ran are included in repair comparisons. An upstream 502/503 or unreachable
+backend is recorded once, and later dependent checks are skipped. Automatic repair
+is optional and is off by default. The Lemonade proxy translates named-function
+choices into a required call with only the requested function offered. If the user
+message supplies exact
 arguments for that function, Hearth preserves the requested call when the model
 returns prose or another function. It also converts supported model-native tool markup to
 structured calls only for functions offered in that request. An instruction not to
@@ -882,9 +915,9 @@ supported kernel can prevent the model from loading. q38rocm uses the context
 installed in `q38rocm.service`; its 131,072-token desktop setting fits the GPU,
 while the native 262,144-token maximum exceeded the available allocation.
 Desktop OpenCode config sync advertises the installed q38rocm setting.
-Lemonade's gateway also preserves large file and tool outputs in OpenCode requests;
-it no longer trims older results before forwarding. Long requests still must fit the
-model's loaded context window.
+Lemonade's gateway shortens oversized historical tool outputs to useful head and tail
+excerpts before forwarding them to OpenCode. Automatic OpenCode compaction is enabled
+by default, and long requests still must fit the model's loaded context window.
 
 ## Verify and maintain
 
@@ -946,17 +979,22 @@ report uses fixed shared column widths; dashboard cards and filters fit the avai
 Agent HTML result previews also work when workspace synchronization stores the entry
 file path with a leading `./`.
 
-Model validation reports accept spelled-out test counts and common Markdown
-emphasis. The suite checks parallel calls separately from OpenCode's multi-file
-read continuation scenario, so a model can report independent results for each
-behavior. Automatic compatibility repair is off by default, including when a
-test run starts from a model card. **Test Model** tests the model from that card.
+Model validation reports accept spelled-out test counts, common Markdown emphasis,
+and summaries such as “passed all 4 tests.” The suite checks parallel calls
+separately from OpenCode's multi-file read continuation scenario, so a model can
+report independent results for each behavior. Automatic compatibility repair is
+off by default, including when a test run starts from a model card. **Test Model**
+tests the model from that card.
 The Model tests dropdown also selects Ornith by default when available, and allows
 choosing another installed model. Select the repair option on the Model tests
 page to enable repairs for a run; the option appears on the full run and on the
 core, coding-workflow, and extra-tool tabs, which all support the verified recipe.
 
-Administrators can open **Browse history** to search and page through browser visits.
+Administrators can open **Browse history** to search and page through visits from chat
+research and agent tasks, including URLs returned by configured agent research providers
+and agent browser navigation. Agent task text and provider credentials are not copied into
+history; agent searches use a generic task-search label. Repeated task snapshots do not
+create duplicate entries.
 Delete individual entries from their rows or clear the entire history with **Delete all
 history**; both actions ask for confirmation.
 
@@ -975,8 +1013,10 @@ packages; plain `-r` skips packages that are already installed. The current floo
 `cryptography>=50` and `mcp>=1.30,<2`. The separate vLLM virtualenv is updated on its
 own; keep its `setuptools` at the version the installed vLLM release pins, since a forced
 upgrade makes vLLM refuse to start. Update model runtimes through their own installers or
-package managers (for example `sudo snap refresh lemonade-server` for Lemonade and
-`sudo tailscale update` for Tailscale), then restart their services and Hearth. Re-run the
+package managers (for example `sudo tailscale update` for Tailscale), then restart their
+services and Hearth. Lemonade runs in Docker and can be updated with
+`docker pull ghcr.io/lemonade-sdk/lemonade-server:latest` followed by
+`docker restart lemonade-server`. Re-run the
 administrator host security scan after the upgrade.
 
 The agent image is built by the installer as the regular Hearth user, using the
@@ -1021,15 +1061,29 @@ port 1234 stops responding. After updating, run
 systemd still need `lms daemon up` and
 `lms server start --port 1234` at each login. Pass `--skip-lmstudio-server` to omit
 this bootstrap unit when you start the API server yourself.
-Lemonade automatic installation supports Ubuntu, uses its
-[official stable PPA](https://lemonade-server.ai/docs/guide/install/ubuntu/), and
-requires sudo for missing packages. Existing Lemonade CLI or snap installations
-are preserved. Its package manages the service at `http://localhost:13305`.
-Other operating systems require manual Lemonade installation; unsupported choices
-stop setup before either runtime is installed. Installation failures stop setup
-and show the failed command; rerun after resolving the error, or skip runtime installation.
-These choices do not download models. Configure the local URL in Hearth Settings
-(the release installer saves its selected endpoint), then download a model in Hearth.
+Lemonade installation uses Docker and starts the official
+`ghcr.io/lemonade-sdk/lemonade-server:latest` image as the `lemonade-server`
+container at `http://localhost:13305`. Lemonade stores models in Docker volumes;
+when `~/lemonade-hf-cache` exists, the installer mounts that existing cache so
+migrated models appear without copying hundreds of gigabytes. Otherwise, it uses
+the `lemonade-cache` named volume. The installer does not install a
+Snap or host package and does not download model weights. Configure the local URL
+in Hearth Settings (the release installer saves its selected endpoint), then
+download models through Hearth's Downloads page.
+On Linux hosts with AMD Ryzen AI NPU support, the installer passes
+`/dev/accel/accel0` and its owning group into the container when that device exists.
+The host NPU driver must be installed. Only Lemonade models that use the FLM/NPU
+recipe run on the NPU; GGUF models continue to use their configured CPU or GPU
+recipe. On Linux hosts exposing `/dev/kfd` or `/dev/dri`, Hearth also passes available
+GPU device nodes and their owning groups into Docker for Vulkan/ROCm GGUF recipes.
+To apply NPU or GPU passthrough to an existing Lemonade container, run
+`bash deploy/install-first-time.sh --install-backends lemonade`; Hearth recreates
+the container with its existing model cache, preserving downloaded models.
+For OpenCode, Hearth advertises Lemonade's loaded context and checks it before reusing
+a loaded model. If the live context is below the saved Models-page setting, Hearth
+reloads the model at that size; otherwise the default Lemonade context is 65,536 tokens.
+This keeps OpenCode's advertised limit aligned with the running Lemonade model and
+prevents compaction from triggering at a stale smaller context.
 An explicitly configured remote URL is preserved even when local runtimes are installed.
 
 Administrators can restart managed inference services from **Settings → Service

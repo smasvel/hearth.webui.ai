@@ -51,7 +51,7 @@ _UPSTREAM_BACKEND = {
     # used to hit flm.service (see that module's docstring) — either upstream port means
     # "this Caddy block is the lemonade one."
     "13305": "lemonade", "13306": "lemonade",
-    "8000": "vllm", "5001": "kobold",
+    "8000": "vllm", "5001": "kobold", "13308": "kobold",
     # 52625 = FastFlowLM's own server; 52626 = flm_tool_shim.py, which Caddy's fastflowlm block
     # now proxies to instead so LAN clients get real tool_calls (see that module's docstring) —
     # either upstream port means "this Caddy block is the fastflowlm one."
@@ -117,7 +117,9 @@ def compaction_settings() -> dict:
             buffer = int(raw_buffer)
         except (TypeError, ValueError):
             buffer = None
-    auto = (settings_store.get("opencode_compaction_auto") or "false") == "true"
+    # Generated configs compact before the loaded model window fills. Admins can
+    # still turn this off explicitly when they prefer a fully preserved transcript.
+    auto = (settings_store.get("opencode_compaction_auto") or "true") == "true"
     return {"auto": auto, "keep_tokens": max(0, keep), "buffer": buffer}
 
 

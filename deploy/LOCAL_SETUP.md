@@ -51,7 +51,7 @@ inference with its system service's unlimited memory-lock allowance.
 
 Enabled user services: `ai-webui`, `lmstudio`, `comfyui`,
 `lemonade-guard-shim`, `lmstudio-shim`, and `flm-tool-shim`. User lingering is enabled.
-Lemonade runs through its installed snap daemon. `kobold`, `vllm` and the
+Lemonade runs in the `lemonade-server` Docker container. `kobold`, `vllm` and the
 system `flm` service start when selected, rather than loading all chat models
 at once. The final selected default is `lmstudio/qwen/qwen3.5-4b` with a
 32,768-token context. Restarting Hearth preserves an already-loaded instance.

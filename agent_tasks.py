@@ -6,6 +6,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 import tarfile
 import textwrap
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_opencode import OpenCode, SYSTEM
 import agent_store
+import browse_history_store
 import database
 import live_requests
 
@@ -212,6 +214,11 @@ class Manager:
         if not sync:
             return
         sync(self.client, job)
+        archive = agent_store.get_project_archive(job['id'])
+        runtime = agent_store.get_runtime(job['id'])
+        saved_archive_oid = ((runtime or {}).get('model_proxy') or {}).get('project_archive_oid')
+        if archive and str(saved_archive_oid or '') == str(archive['archive_oid']):
+            agent_store.mark_project_archive_checkpointed(job['id'], archive['archive_oid'])
         try:
             files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'])
             note = next((item for item in files
@@ -294,6 +301,17 @@ class Manager:
         lines.extend('- '+hit['content'][:1400] for hit in hits)
         return '\n'.join(lines)
 
+    def _fresh_session_context_recovery(self, job):
+        """Keep context-overflow recovery kickoff small; project files are checkpointed."""
+        criteria = str(job.get('criteria') or '').strip()
+        prompt = ('The previous OpenCode conversation exceeded the model context. '
+                  'Continue the existing assignment in a fresh OpenCode session from the current project files. '
+                  'Inspect the workspace state, preserve completed work, and finish only '
+                  'the remaining acceptance criteria. Do not repeat completed work.')
+        if criteria:
+            prompt += '\nAcceptance criteria:\n'+criteria[:6000]
+        return prompt
+
     def _assignment_scope(self, job):
         return ('Assignment goal:\n'+job['goal']+'\nAcceptance criteria:\n'+
                 (job.get('criteria') or 'Complete and verify the requested goal.')+
@@ -307,7 +325,7 @@ class Manager:
         if job.get('session_id'):
             self.client.interrupt(job['session_id'])
             self._sync_project(job, force=True)
-        limit = 1 if counter == 'compaction_recovery_attempts' else MAX_SESSION_RECOVERIES
+        limit = 1 if counter in ('compaction_recovery_attempts', 'context_overflow_recovery_attempts') else MAX_SESSION_RECOVERIES
         if attempts >= limit:
             job.update(status='blocked', error=reason+' Automatic recovery limit reached; review the saved work and continue.')
             self.note(job, job['error'])
@@ -317,16 +335,20 @@ class Manager:
         scope = self._assignment_scope(job)
         if job.get('instructions'):
             scope += '\nUser refinements (latest takes precedence):\n'+'\n'.join(job['instructions'])
+        recovery_prompt = (self._fresh_session_context_recovery(job)
+                           if counter == 'context_overflow_recovery_attempts' else None)
         job.update(session_id=None, resume_session=False, status='running',
                    handled_message=None, activity_tool_state={}, agent_model_progress=None,
                    awaiting_since=0, agent_last_progress_at=0, agent_no_request_since=None,
                    errors=0, error=None, transport_retries=0, prose_only_turns=0,
                    next_retry=time.time()+2,
-                   pending_prompt={'id': 'msg_'+uuid.uuid4().hex, 'text': scope+'\n\n'+reason+
+                   pending_prompt={'id': 'msg_'+uuid.uuid4().hex, 'text': recovery_prompt or scope+'\n\n'+reason+
                        '\nContinue in this fresh session from the saved project files. Inspect the current workspace, '
                        'preserve completed work, and use the file and shell tools to finish the remaining criteria. '
                        'Write the implementation to files rather than returning code in chat. Verify before claiming completion.'},
-                   retry_current_cycle=True, retry_current_cycle_reason=reason)
+                   retry_current_cycle=True,
+                   retry_current_cycle_reason=('a context overflow' if counter == 'context_overflow_recovery_attempts'
+                                               else reason))
         job[counter] = attempts+1
         self.note(job, reason+f' Starting a fresh session from the saved project checkpoint (attempt {attempts+1}/{limit}).')
         self.save(job)
@@ -595,8 +617,10 @@ class Manager:
                 'result_platform': result_platform, 'skills': skills,
                 'research_providers': list(dict.fromkeys(research_providers))}
 
-    def create(self, values, owner):
+    def create(self, values, owner, project_archive=None):
         assignment = self._normalize_assignment(values, owner=owner)
+        archive_info = (agent_store.validate_project_archive(project_archive.stream)
+                        if project_archive else None)
         raw_credentials = values.get('research_keys', {})
         if not isinstance(raw_credentials, dict):
             raise ValueError('Online research credentials must be a provider/key object.')
@@ -625,6 +649,16 @@ class Manager:
             self.note(job, 'Assignment queued. Project files are stored in this account’s private PostgreSQL workspace.')
             self.jobs[job['id']] = job
             self.save(job)
+            if project_archive:
+                try:
+                    agent_store.save_project_archive(
+                        job['id'], owner, project_archive.filename, project_archive.stream, archive_info)
+                    self.note(job, 'Initial project ZIP saved in PostgreSQL and will be unpacked in the isolated agent container.')
+                    self.save(job)
+                except Exception:
+                    self.jobs.pop(job['id'], None)
+                    agent_store.delete_task(job['id'])
+                    raise
             agent_store.save_research_credentials(job['id'], credentials)
             return copy.deepcopy(job)
 
@@ -978,8 +1012,10 @@ class Manager:
                 self.save(job)
                 return copy.deepcopy(job)
 
-    def update_assignment(self, key, values):
+    def update_assignment(self, key, values, project_archive=None):
         """Save edited task settings without starting another run."""
+        archive_info = (agent_store.validate_project_archive(project_archive.stream)
+                        if project_archive else None)
         with self.lock:
             existing_model = self.jobs[key].get('model')
             owner = self.jobs[key].get('owner')
@@ -1019,6 +1055,11 @@ class Manager:
                 self._sync_project(sync_snapshot)
             with self.lock:
                 job = self.jobs[key]
+                if project_archive:
+                    agent_store.save_project_archive(
+                        task_id, owner, project_archive.filename,
+                        project_archive.stream, archive_info)
+                    self.note(job, 'Replacement project ZIP saved; its files will merge into the project on the next run.')
                 job.update(assignment, auto_commands=assignment['shell_mode'] == 'auto')
                 agent_store.save_research_credentials(task_id, credentials)
                 if steps_changed and job.get('status') in ('interrupted', 'blocked'):
@@ -1030,10 +1071,10 @@ class Manager:
                 self.save(job)
                 return copy.deepcopy(job)
 
-    def edit_and_rerun(self, key, values):
+    def edit_and_rerun(self, key, values, project_archive=None):
         """Save edited settings and queue the assignment from its existing workspace."""
         with self.dispatch_lock:
-            self.update_assignment(key, values)
+            self.update_assignment(key, values, project_archive)
             return self.rerun(key)
 
     def _interrupt(self, job):
@@ -1111,7 +1152,8 @@ class Manager:
         with self.dispatch_lock:
             memory_context = ''
             session_id = job.get('session_id')
-            if session_id and job.get('agent_memory_context_session_id') != session_id:
+            if (session_id and job.get('agent_memory_context_session_id') != session_id
+                    and not job.get('retry_current_cycle_reason') == 'a context overflow'):
                 memory_context = self._agent_memory_context(job)
             with self.lock:
                 if job['status'] not in WORKING:
@@ -1130,7 +1172,7 @@ class Manager:
                 if memory_context and 'Relevant project notes recalled from this account’s saved agent project work.' not in job['pending_prompt']['text']:
                     job['pending_prompt']['text'] += '\n\n'+memory_context
                 verification_guidance = self._verification_guidance(job)
-                if verification_guidance not in job['pending_prompt']['text']:
+                if (not retrying_cycle or job.get('retry_current_cycle_reason') != 'a context overflow') and verification_guidance not in job['pending_prompt']['text']:
                     job['pending_prompt']['text'] += '\n\n'+verification_guidance
                 self.save(job)
                 pending = copy.deepcopy(job['pending_prompt'])
@@ -1286,7 +1328,7 @@ class Manager:
                 for message in reversed(snap['messages'][:50]):
                     parts = []
                     raw_time = message.get('time') or message.get('createdAt')
-                    for part in message.get('content', []):
+                    for index, part in enumerate(message.get('content', [])):
                         if part.get('type') == 'text':
                             parts.append({'type': 'text', 'text': part.get('text', '')[-8000:]})
                         elif part.get('type') == 'tool':
@@ -1304,6 +1346,36 @@ class Manager:
                                 'input': json.dumps(state.get('input') or {})[:2000],
                                 'output': output[-8000:],
                                 'error': tool_error[-4000:] if tool_error else None})
+                            # Agent research runs in provider MCP servers inside its
+                            # isolated container, so it does not pass through Hearth's
+                            # normal page-scraper history hook. Capture completed
+                            # search calls here, using only returned URLs and a
+                            # non-sensitive label (never task prompts or API keys).
+                            tool_name = str(part.get('name') or '')
+                            server_name, separator, method = tool_name.partition('__')
+                            if not separator:
+                                server_name, _, method = tool_name.partition('_')
+                            research_servers = {'duckduckgo', 'exa', 'firecrawl',
+                                                'parallel', 'tavily', 'tinyfish'}
+                            if server_name.casefold() in research_servers and (
+                                    'search' in method.casefold() or 'crawl' in method.casefold()):
+                                status = str(state.get('status') or '').casefold()
+                                failed = status == 'error' or bool(tool_error)
+                                urls = list(dict.fromkeys(re.findall(
+                                    r'https?://[^\s<>"\'\\)\]]+', output)))[:20]
+                                if not urls:
+                                    # Keep failed attempts visible even when the
+                                    # provider returned no result URL.
+                                    urls = [f'https://{server_name}.invalid/']
+                                for result_url in urls:
+                                    browse_history_store.add_visit_once(
+                                        url=result_url,
+                                        title=f'Agent research ({server_name})',
+                                        query='Agent task online search',
+                                        source=f'agent-{server_name}',
+                                        ok=not failed,
+                                        dedupe_key=f"{job['id']}:{message.get('id')}:{index}:{tool_name}:{result_url}",
+                                    )
                     recent.append({'id': message['id'], 'type': message.get('type'),
                                    'time': raw_time, 'content': parts})
                 job.update(messages=recent, forms=snap['forms'], permissions=snap['permissions'])
@@ -1399,14 +1471,11 @@ class Manager:
                             return
                         if latest.get('error'):
                             if is_context_overflow(latest['error']):
-                                job.update(status='blocked', handled_message=latest['id'],
-                                           pending_prompt={'id': 'msg_'+uuid.uuid4().hex,
-                                                           'text': 'Continue the assigned goal from this exact conversation and the current project files. Preserve completed work and finish the remaining criteria.'},
-                                           error='The selected model reached its loaded context limit. '
-                                                 'Load it with a larger supported ctx-size or choose a larger-window model, '
-                                                 'then continue this assignment. The full conversation was not compacted.')
-                                self.note(job, job['error'])
-                                self.save(job)
+                                self._restart_session(
+                                    job,
+                                    'The selected model reached its loaded context limit. '
+                                    'Hearth saved the current project checkpoint and is continuing in a fresh OpenCode session.',
+                                    counter='context_overflow_recovery_attempts')
                                 return
                             if is_provider_transport_error(latest['error']):
                                 retries = job.get('transport_retries', 0) + 1

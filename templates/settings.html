@@ -68,6 +68,7 @@
               <button id="restart-hearth" class="panel-btn" type="button">Restart Hearth</button>
             </div>
             <div id="restart-status" class="hint" aria-live="polite" style="margin-top: 8px;"></div>
+            <div id="lemonade-sudo-status" class="hint" style="margin-top: 4px; font-weight: bold;"></div>
             <div id="restart-results" class="hint" aria-live="polite"></div>
             <div id="restart-history" class="hint" style="margin-top: 8px; max-height: 200px; overflow-y: auto;"></div>
             <div style="margin-top: 12px;">
@@ -384,10 +385,10 @@
           <div class="console-card span-all">
             <h2>OpenCode compaction</h2>
             <p class="hint">
-              Automatic compaction is off by default so OpenCode keeps the exact conversation
-              when you continue a task. A model still has a finite context window; if a turn
-              exceeds its loaded limit, use a larger model or start a fresh session. Turn
-              compaction on here if you want OpenCode to summarize older turns automatically.
+              Automatic compaction is on by default so OpenCode summarizes older turns before
+              the loaded context fills. A model still has a finite context window; if a turn
+              exceeds its loaded limit, use a larger model or increase its loading ctx-size.
+              Turn compaction off to keep the full transcript when you prefer.
               Keep tokens and Buffer apply when compaction is enabled or requested manually.
             </p>
             <div class="download-row">

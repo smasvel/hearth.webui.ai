@@ -136,7 +136,7 @@ def reports_passed_tests(text, expected):
         # Present tense ("All 4 tests pass (`pytest -q` exit code 0)") reports the same
         # verified count; observed live 2026-10-30 with mimo-v2.6-distill.
         r'\b(\d+)\s+tests?\s+pass(?:es)?\b',
-        r'\bpassed\s+(\d+)\s+tests?\b',
+        r'\bpassed\s+(?:all\s+)?(\d+)\s+tests?\b',
         # Also accept common summaries such as "All tests passed: 4 tests, exit code 0".
         r'\btests?\s+passed\b[^0-9]{0,20}(\d+)\s+tests?\b',
     )
@@ -304,6 +304,12 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             result.update(passed=True, usage=usage)
         except Exception as exc:
             if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+                unavailable = name
+                result['backend_unavailable'] = True
+            elif (isinstance(exc, requests.HTTPError) and exc.response is not None
+                  and exc.response.status_code in (502, 503)):
+                # Preserve the first upstream failure, then skip dependent checks
+                # instead of reporting an outage as repeated model incompatibilities.
                 unavailable = name
                 result['backend_unavailable'] = True
             detail = str(exc)

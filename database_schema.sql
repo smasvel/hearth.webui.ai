@@ -71,6 +71,35 @@ CREATE TABLE IF NOT EXISTS agent_research_credentials (
     encrypted_value TEXT NOT NULL,
     updated_at DOUBLE PRECISION NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_project_archives (
+    task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    archive_oid OID NOT NULL,
+    filename TEXT NOT NULL,
+    archive_size BIGINT NOT NULL,
+    expanded_size BIGINT NOT NULL,
+    large_paths TEXT[] NOT NULL DEFAULT '{}',
+    checkpointed_at DOUBLE PRECISION,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+ALTER TABLE agent_project_archives ADD COLUMN IF NOT EXISTS large_paths TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE agent_project_archives ADD COLUMN IF NOT EXISTS checkpointed_at DOUBLE PRECISION;
+CREATE OR REPLACE FUNCTION hearth_unlink_agent_project_archive() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM lo_unlink(OLD.archive_oid);
+        RETURN OLD;
+    END IF;
+    IF OLD.archive_oid IS DISTINCT FROM NEW.archive_oid THEN
+        PERFORM lo_unlink(OLD.archive_oid);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS agent_project_archive_unlink ON agent_project_archives;
+CREATE TRIGGER agent_project_archive_unlink
+BEFORE UPDATE OF archive_oid OR DELETE ON agent_project_archives
+FOR EACH ROW EXECUTE FUNCTION hearth_unlink_agent_project_archive();
 CREATE TABLE IF NOT EXISTS agent_workspace_files (
     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL DEFAULT '',

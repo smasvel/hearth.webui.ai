@@ -45,6 +45,7 @@ def load_options(model_id: str, current: dict | None = None) -> dict:
     if (model_id.lower() in {
             'nvidia-nemotron-3.5-lightning-30b-a3b-gguf',
             'ornith-1.5-35b-a3b-gguf',
+            'k2-horizon-mova-36b-a4b-gguf',
         }
             and _small_amd_memory_budget()):
         # These models exhaust the small shared GPU pool during initialization

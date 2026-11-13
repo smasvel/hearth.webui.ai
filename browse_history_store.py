@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import database
 import time
+import hashlib
 
 DATA_DIR = database.DATA_DIR
 
@@ -27,6 +28,9 @@ CREATE TABLE IF NOT EXISTS browse_history (
     source TEXT,
     ok INTEGER NOT NULL DEFAULT 1
 );
+ALTER TABLE browse_history ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browse_history_dedupe_key
+    ON browse_history(dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_browse_history_visited_at
     ON browse_history(visited_at DESC);
 """
@@ -51,6 +55,23 @@ def add_visit(url: str, title: str | None, query: str | None, source: str | None
                 "INSERT INTO browse_history (visited_at, url, title, query, source, ok) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (time.time(), url, title or None, query or None, source or None, 1 if ok else 0),
+            )
+    except database.Error:
+        pass
+
+
+def add_visit_once(url: str, title: str | None, query: str | None, source: str | None,
+                   ok: bool, dedupe_key: str) -> None:
+    """Record an externally observed visit once, even when a task snapshot repeats it."""
+    try:
+        key = hashlib.sha256(dedupe_key.encode("utf-8", errors="replace")).hexdigest()
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO browse_history (visited_at, url, title, query, source, ok, dedupe_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (dedupe_key) "
+                "WHERE dedupe_key IS NOT NULL DO NOTHING",
+                (time.time(), url, title or None, query or None, source or None,
+                 1 if ok else 0, key),
             )
     except database.Error:
         pass

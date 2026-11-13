@@ -17,11 +17,19 @@ class TailscaleHelpTests(unittest.TestCase):
 
     @patch.object(help_data.settings_store, "get", side_effect=lambda key:
                   "true" if key == "opencode_compaction_auto" else None)
-    def test_auto_compaction_can_be_enabled_explicitly(self, _get):
+    def test_auto_compaction_defaults_on_and_can_be_disabled(self, _get):
         cfg = json.loads(help_data.build_opencode_config(
             "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
             {"lemonade": ["Muse"]}, {}))
         self.assertTrue(cfg["compaction"]["auto"])
+
+    @patch.object(help_data.settings_store, "get", side_effect=lambda key:
+                  "false" if key == "opencode_compaction_auto" else None)
+    def test_auto_compaction_can_be_disabled_explicitly(self, _get):
+        cfg = json.loads(help_data.build_opencode_config(
+            "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["Muse"]}, {}))
+        self.assertFalse(cfg["compaction"]["auto"])
 
     def test_help_context_uses_supported_maximum_not_loading_size(self):
         cfg = json.loads(help_data.build_opencode_config(
@@ -45,7 +53,7 @@ class TailscaleHelpTests(unittest.TestCase):
                 self.assertEqual(cfg['provider']['lemonade']['models'][model]['limit'],
                                  {'context': 4096, 'output': 2048})
                 self.assertEqual(cfg['compaction'],
-                                 {'auto': False, 'keep': {'tokens': 1024}, 'buffer': 1024})
+                                 {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
 
     @patch.object(help_data.settings_store, "get", side_effect=lambda key:
                   '32768' if key == 'opencode_compaction_buffer' else None)
@@ -55,7 +63,7 @@ class TailscaleHelpTests(unittest.TestCase):
             {'lemonade': ['Muse'], 'lmstudio': ['small']}, {},
             ctx_by_model={('lemonade', 'Muse'): 65536, ('lmstudio', 'small'): 4096}))
         self.assertEqual(cfg['compaction'],
-                         {'auto': False, 'keep': {'tokens': 1024}, 'buffer': 1024})
+                         {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
 
     @patch.object(help_data.flm_context, "context_limit", side_effect=lambda model=None: 262144 if model and "minicpm" in model else 8192)
     def test_continue_uses_model_specific_flm_limits(self, _limit):

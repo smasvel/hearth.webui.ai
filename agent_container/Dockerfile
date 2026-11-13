@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim
 
 ARG OPENCODE_VERSION=2.1.2
+COPY extract_project_zip.py /opt/hearth/extract_project_zip.py
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update \

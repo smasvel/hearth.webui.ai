@@ -2,9 +2,11 @@
 import json
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import tarfile
 import time
 import uuid
+import zipfile
 
 import numpy as np
 
@@ -13,6 +15,10 @@ import secret_store
 
 MAX_PROJECT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 512 * 1024 * 1024
+MAX_PROJECT_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024
+MAX_PROJECT_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
+MAX_PROJECT_ARCHIVE_ENTRIES = 100_000
+MAX_PROJECT_ARCHIVE_LARGE_FILES = 10_000
 SKIP_PARTS = {'.git', 'node_modules', '.venv', 'venv', '__pycache__'}
 MAX_SKILL_BODY_CHARS = 200_000
 
@@ -66,6 +72,41 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_project_archives (
+                task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
+                owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                archive_oid OID NOT NULL,
+                filename TEXT NOT NULL,
+                archive_size BIGINT NOT NULL,
+                expanded_size BIGINT NOT NULL,
+                large_paths TEXT[] NOT NULL DEFAULT '{}',
+                checkpointed_at DOUBLE PRECISION,
+                updated_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE OR REPLACE FUNCTION hearth_unlink_agent_project_archive() RETURNS trigger AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    PERFORM lo_unlink(OLD.archive_oid);
+                    RETURN OLD;
+                END IF;
+                IF OLD.archive_oid IS DISTINCT FROM NEW.archive_oid THEN
+                    PERFORM lo_unlink(OLD.archive_oid);
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """)
+        conn.execute("ALTER TABLE agent_project_archives ADD COLUMN IF NOT EXISTS large_paths TEXT[] NOT NULL DEFAULT '{}'")
+        conn.execute("ALTER TABLE agent_project_archives ADD COLUMN IF NOT EXISTS checkpointed_at DOUBLE PRECISION")
+        conn.execute("DROP TRIGGER IF EXISTS agent_project_archive_unlink ON agent_project_archives")
+        conn.execute("""
+            CREATE TRIGGER agent_project_archive_unlink
+            BEFORE UPDATE OF archive_oid OR DELETE ON agent_project_archives
+            FOR EACH ROW EXECUTE FUNCTION hearth_unlink_agent_project_archive()
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_research_credentials (
                 task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
@@ -176,6 +217,161 @@ def get_task(task_id):
     with database.connect() as conn:
         row = conn.execute("SELECT payload FROM agent_tasks WHERE id = %s", (task_id,)).fetchone()
     return json.loads(row['payload']) if row else None
+
+
+def validate_project_archive(stream):
+    """Validate an uploaded ZIP without extracting it on the Hearth host."""
+    try:
+        stream.seek(0, 2)
+        archive_size = stream.tell()
+        stream.seek(0)
+        if archive_size <= 0:
+            raise ValueError('The project ZIP is empty.')
+        if archive_size > MAX_PROJECT_ARCHIVE_BYTES:
+            raise ValueError('Project ZIP uploads are limited to 16 GiB.')
+        with zipfile.ZipFile(stream) as archive:
+            entries = archive.infolist()
+            if not entries:
+                raise ValueError('The project ZIP does not contain any files.')
+            if len(entries) > MAX_PROJECT_ARCHIVE_ENTRIES:
+                raise ValueError('The project ZIP contains too many entries.')
+            expanded_size = 0
+            checkpoint_size = 0
+            large_paths = []
+            file_count = 0
+            seen = set()
+            for entry in entries:
+                normalized = entry.filename.replace('\\', '/')
+                while normalized.startswith('./'):
+                    normalized = normalized[2:]
+                if normalized in ('', '.'):
+                    continue
+                path = PurePosixPath(normalized.rstrip('/'))
+                if (path.is_absolute() or not path.parts or
+                        any(part in ('', '.', '..') for part in path.parts) or
+                        re.match(r'^[A-Za-z]:', normalized) or '\x00' in normalized or
+                        '\n' in normalized or '\r' in normalized or len(normalized) > 4096):
+                    raise ValueError('The project ZIP contains an unsafe path.')
+                normalized_path = path.as_posix()
+                if normalized_path in seen:
+                    raise ValueError('The project ZIP contains duplicate paths.')
+                seen.add(normalized_path)
+                mode = (entry.external_attr >> 16) & 0xFFFF
+                kind = stat.S_IFMT(mode)
+                if kind == stat.S_IFLNK or kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise ValueError('The project ZIP may contain only regular files and folders.')
+                if entry.flag_bits & 0x1:
+                    raise ValueError('Encrypted project ZIP files are not supported.')
+                if entry.is_dir() or kind == stat.S_IFDIR:
+                    continue
+                if any(part in SKIP_PARTS for part in path.parts):
+                    continue
+                file_count += 1
+                expanded_size += entry.file_size
+                if expanded_size > MAX_PROJECT_ARCHIVE_EXPANDED_BYTES:
+                    raise ValueError('Expanded project ZIP contents are limited to 64 GiB.')
+                if entry.file_size > MAX_FILE_BYTES:
+                    large_paths.append(normalized_path)
+                    if len(large_paths) > MAX_PROJECT_ARCHIVE_LARGE_FILES:
+                        raise ValueError('Project ZIPs can contain at most 10,000 archive-backed large files.')
+                else:
+                    checkpoint_size += entry.file_size
+                    if checkpoint_size > MAX_PROJECT_BYTES:
+                        raise ValueError('Project files up to 512 MiB each are limited to 2 GiB total.')
+                if entry.file_size and entry.compress_size == 0:
+                    raise ValueError('The project ZIP contains an invalid compressed file entry.')
+            if not file_count:
+                raise ValueError('The project ZIP does not contain any files.')
+        stream.seek(0)
+        return {'archive_size': archive_size, 'expanded_size': expanded_size,
+                'large_paths': large_paths}
+    except zipfile.BadZipFile as exc:
+        stream.seek(0)
+        raise ValueError('Choose a valid, unencrypted ZIP project archive.') from exc
+
+
+def save_project_archive(task_id, owner_id, filename, stream, archive_info):
+    """Store a project ZIP in PostgreSQL's 64-bit large-object store."""
+    archive_size = int(archive_info['archive_size'])
+    if archive_size <= 0 or archive_size > MAX_PROJECT_ARCHIVE_BYTES:
+        raise ValueError('Project ZIP uploads are limited to 16 GiB.')
+    stream.seek(0)
+    with database.connect() as conn:
+        with conn.transaction():
+            archive_oid = conn.execute('SELECT lo_create(0) AS oid').fetchone()['oid']
+            offset = 0
+            while offset < archive_size:
+                chunk = stream.read(min(8 * 1024 * 1024, archive_size - offset))
+                if not chunk:
+                    raise ValueError('The project ZIP upload ended before all bytes were stored.')
+                conn.execute('SELECT lo_put(%s, %s, %s)', (archive_oid, offset, chunk))
+                offset += len(chunk)
+            if stream.read(1):
+                raise ValueError('The project ZIP changed while it was being stored.')
+            conn.execute(
+                "INSERT INTO agent_project_archives "
+                "(task_id, owner_id, archive_oid, filename, archive_size, expanded_size, large_paths, checkpointed_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s) "
+                "ON CONFLICT (task_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, "
+                "archive_oid = EXCLUDED.archive_oid, filename = EXCLUDED.filename, "
+                "archive_size = EXCLUDED.archive_size, expanded_size = EXCLUDED.expanded_size, "
+                "large_paths = EXCLUDED.large_paths, checkpointed_at = NULL, "
+                "updated_at = EXCLUDED.updated_at",
+                (task_id, owner_id, archive_oid, filename, archive_size,
+                 int(archive_info['expanded_size']), archive_info['large_paths'], time.time()),
+            )
+
+
+def get_project_archive(task_id):
+    with database.connect() as conn:
+        return conn.execute(
+            "SELECT archive_oid, filename, archive_size, expanded_size, large_paths, checkpointed_at "
+            "FROM agent_project_archives WHERE task_id = %s", (task_id,)
+        ).fetchone()
+
+
+def get_project_archive_large_paths(task_id):
+    archive = get_project_archive(task_id)
+    return list(archive['large_paths'] or []) if archive else []
+
+
+def mark_project_archive_checkpointed(task_id, archive_oid):
+    with database.connect() as conn:
+        conn.execute(
+            "UPDATE agent_project_archives SET checkpointed_at = %s "
+            "WHERE task_id = %s AND archive_oid = %s",
+            (time.time(), task_id, archive_oid),
+        )
+
+
+def has_workspace_checkpoint(owner_id, workspace_id):
+    with database.connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
+            (owner_id, workspace_id),
+        ).fetchone() is not None
+
+
+def stream_project_archive(task_id, sink):
+    """Stream the saved large object directly into a binary sink in bounded chunks."""
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT archive_oid, archive_size FROM agent_project_archives WHERE task_id = %s",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        offset = 0
+        while offset < row['archive_size']:
+            chunk = conn.execute(
+                'SELECT lo_get(%s, %s, %s) AS chunk',
+                (row['archive_oid'], offset, min(8 * 1024 * 1024, row['archive_size'] - offset)),
+            ).fetchone()['chunk']
+            if not chunk:
+                raise RuntimeError('The saved project ZIP large object is truncated.')
+            sink.write(bytes(chunk))
+            offset += len(chunk)
+        return True
 
 
 def save_research_credentials(task_id, credentials):

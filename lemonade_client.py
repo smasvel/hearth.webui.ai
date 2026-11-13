@@ -10,9 +10,8 @@ Studio, which has no HTTP model-management API and needs the `lms` CLI for that 
 Lemonade exposes model list/load/unload/pull over plain REST, so no CLI shelling
 out is needed here at all.
 
-Installed and verified end-to-end (see README) via
-`sudo add-apt-repository ppa:lemonade-team/stable && sudo apt install lemonade-server`.
-Every function below is still best-effort / fails soft exactly like colibri_client.py
+Installed and verified end-to-end in Docker (see README). Every function below is
+still best-effort / fails soft exactly like colibri_client.py
 used to, though — if the server isn't installed or running (or gets uninstalled later),
 list_models() returns [] and this backend just doesn't appear, rather than breaking
 the rest of the app.

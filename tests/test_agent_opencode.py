@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import requests
 import socket
 from agent_opencode import OpenCode
+import agent_container
 from agent_container import ContainerOpenCode, _ModelProxy, _system_ca_bundle
 import tempfile
 from pathlib import Path
@@ -151,7 +152,10 @@ class ContainerRecoveryTests(unittest.TestCase):
                    'session_id': name + '::saved-session'}
             empty_skill_hash = hashlib.sha256(b'{}').hexdigest()
             runtime = {'tool_policy_version': 'native-tools-v2',
-                       'model_proxy': {'skill_bundle_hash': empty_skill_hash},
+                       'model_proxy': {'skill_bundle_hash': empty_skill_hash,
+                                       'agent_prompt_version': agent_container.AGENT_PROMPT_VERSION,
+                                       'research_providers_hash': '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+                                       'research_credentials_hash': '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'},
                        'opencode_config': {'provider': {'lmstudio': {'options': {
                            'extraBody': {'enable_thinking': True,
                                          'chat_template_kwargs': {'enable_thinking': True}}}}}}}
@@ -168,7 +172,10 @@ class ContainerRecoveryTests(unittest.TestCase):
         job = {'id': 'c'*32, 'model': {'providerID': 'lmstudio', 'id': 'fixture'},
                'enable_thinking': True, 'session_id': 'hearth-agent-'+'c'*24+'::old'}
         info = {'tool_policy_version': 'native-tools-v2',
-                'model_proxy': {'skill_bundle_hash': 'old-skill-hash'},
+                'model_proxy': {'skill_bundle_hash': 'old-skill-hash',
+                                'agent_prompt_version': agent_container.AGENT_PROMPT_VERSION,
+                                'research_providers_hash': '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+                                'research_credentials_hash': '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'},
                 'opencode_config': {'provider': {'lmstudio': {'options': {'extraBody': {
                     'enable_thinking': True,
                     'chat_template_kwargs': {'enable_thinking': True}}}}}}}
@@ -201,6 +208,25 @@ class ContainerRecoveryTests(unittest.TestCase):
         self.assertFalse(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['enable_thinking'])
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['chat_template_kwargs']['temperature'], 0.2)
         self.assertEqual(disabled['provider']['lemonade']['options']['extraBody']['keep'], 'yes')
+
+    def test_agent_config_enables_compaction_by_default(self):
+        client = ContainerOpenCode('/tmp/hearth-agent-test')
+        provider = {'options': {}, 'models': {
+            'model': {'limit': {'context': 32768, 'output': 8192}}}}
+        config = client._agent_config({}, 'lemonade', 'model', provider)
+        self.assertTrue(config['compaction']['auto'])
+
+    def test_container_reuse_check_accepts_proxy_info(self):
+        existing = {'tool_policy_version': agent_container.TOOL_POLICY_VERSION,
+                    'model': {'providerID': 'lemonade', 'id': 'model'},
+                    'model_proxy': {'base_url': 'http://127.0.0.1:13305/v1',
+                                    'api_key': 'key', 'headers': {}, 'verify_tls': True},
+                    'opencode_config': {'provider': {'lemonade': {'options': {'apiKey': 'old'}}}}}
+        job = {'model': {'providerID': 'lemonade', 'id': 'model'}}
+        config = {'provider': {'lemonade': {'options': {'apiKey': 'new'}}}}
+        proxy_info = {'base_url': 'http://127.0.0.1:13305/v1',
+                      'api_key': 'key', 'headers': {}, 'verify_tls': True}
+        self.assertTrue(ContainerOpenCode._can_reuse_container(existing, job, config, proxy_info))
 
     def test_agent_config_bounds_compaction_to_selected_model_context(self):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
@@ -267,7 +293,7 @@ class ContainerRecoveryTests(unittest.TestCase):
                     probe.settimeout(2)
                     probe.connect(str(path))
                     probe.sendall(b'GET /health HTTP/1.1\r\nHost: local\r\n\r\n')
-                    self.assertIn(b'403',probe.recv(1024))
+                    self.assertIn(b'404',probe.recv(1024))
             finally:
                 owner.close()
 
@@ -317,7 +343,10 @@ class ContainerRecoveryTests(unittest.TestCase):
                    'session_id':'hearth-agent-'+'a'*24+'::old-session'}
             empty_skill_hash = hashlib.sha256(b'{}').hexdigest()
             runtime = {'tool_policy_version': 'native-tools-v2',
-                       'model_proxy': {'skill_bundle_hash': empty_skill_hash},
+                       'model_proxy': {'skill_bundle_hash': empty_skill_hash,
+                                       'agent_prompt_version': agent_container.AGENT_PROMPT_VERSION,
+                                       'research_providers_hash': '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+                                       'research_credentials_hash': '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'},
                        'opencode_config': {'provider': {'lmstudio': {'options': {
                            'extraBody': {'enable_thinking': True,
                                          'chat_template_kwargs': {'enable_thinking': True}}}}}}}

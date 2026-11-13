@@ -149,9 +149,9 @@ def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
 
 
 def _prepare_agent_request(body: dict) -> dict:
-    # Keep large file/tool results byte-for-byte for OpenCode continuation. The model's
-    # real context limit is advertised separately, so overflow stops for review.
-    return agent_request_policy.prepare(body, compact_history=False)
+    # Tool output can exceed the loaded context window even when OpenCode compaction
+    # is enabled. Keep useful head/tail excerpts to preserve continuity across turns.
+    return agent_request_policy.prepare(body, compact_history=True)
 
 
 def _tool_schemas(request_body: dict | None) -> dict[str, dict]:

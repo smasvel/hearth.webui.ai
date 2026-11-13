@@ -306,20 +306,28 @@ def call_tool(qualified_name: str, arguments: dict | str) -> str:
         # Browser actions initiated by a model bypass page_scraper.fetch_pages(), the
         # normal history choke point. Record explicit MCP navigations here so online
         # history remains complete whether research was server-driven or tool-driven.
-        if server_name == "playwright" and tool_name in {"navigate", "browser_navigate"}:
+        if server_name == "playwright" and tool_name in {
+                "navigate", "browser_navigate", "browser_open", "go", "open"}:
             url = arguments.get("url") if isinstance(arguments, dict) else None
+            if not isinstance(url, str):
+                url = next((line.strip() for line in result.splitlines()
+                            if "http://" in line or "https://" in line), None)
+                if url:
+                    match = re.search(r"https?://[^\s\])>]+", url)
+                    url = match.group(0).rstrip(".,;:") if match else None
             if isinstance(url, str) and url.startswith(("http://", "https://")):
                 failed = result.startswith(("Error:", "Tool error:"))
                 browse_history_store.add_visit(
                     url=url,
                     title="Playwright MCP navigation",
-                    query=url,
+                    query="Agent browser navigation",
                     source="playwright-mcp",
                     ok=not failed,
                 )
         return result
     except Exception as exc:
-        if server_name == "playwright" and tool_name in {"navigate", "browser_navigate"}:
+        if server_name == "playwright" and tool_name in {
+                "navigate", "browser_navigate", "browser_open", "go", "open"}:
             url = arguments.get("url") if isinstance(arguments, dict) else None
             if isinstance(url, str) and url.startswith(("http://", "https://")):
                 browse_history_store.add_visit(

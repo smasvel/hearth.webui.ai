@@ -36,7 +36,7 @@ class AgentContainerTests(unittest.TestCase):
         provider = {'options': {}, 'models': {'fixture-model': {'limit': {'context': 16384}}}}
         proxy = Mock(info={'socket_path': '/fixture/model.sock'})
         with patch.object(self.client, '_ensure_image'), \
-             patch.object(self.client, '_host_provider', return_value=({'enable_thinking': True}, provider, {})), \
+             patch.object(self.client, '_host_provider', return_value=({'enable_thinking': True}, provider, {'token': 'test-token'})), \
              patch('agent_container.agent_store.get_runtime', return_value=None), \
              patch.object(self.client, '_make_proxy', return_value=proxy), \
              patch.object(self.client, '_write_runtime'), \

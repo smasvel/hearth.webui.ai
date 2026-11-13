@@ -15,7 +15,8 @@
   const active = new Set(['queued', 'running', 'waiting_input', 'verifying', 'pausing', 'stopping']);
   const modelValue = model => JSON.stringify({providerID:model?.providerID || '',id:model?.id || ''});
   async function api(path, body, method='POST') {
-    const r = await fetch(path, body === undefined ? {} : {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const isForm=body instanceof FormData;
+    const r = await fetch(path, body === undefined ? {} : isForm ? {method, body} : {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const data = await r.json(); if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`); return data;
   }
   function node(tag, text, parent) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (parent) parent.append(n); return n; }
@@ -518,8 +519,12 @@
     values.research_providers=[...form.querySelectorAll('[name="research_provider"]:checked')].map(input=>input.value);
     values.research_keys=Object.fromEntries(['exa','firecrawl','parallel','tavily','tinyfish'].map(provider=>[provider,form.elements[`research_key_${provider}`].value]));
     for(const provider of ['exa','firecrawl','parallel','tavily','tinyfish'])delete values[`research_key_${provider}`];
+    const archive=values.project_archive;delete values.project_archive;
+    const payload=new FormData();payload.append('assignment',JSON.stringify(values));
+    if(archive instanceof File && archive.size)payload.append('project_archive',archive,archive.name);
     el('agent-assign').disabled=true;
-    try { const created=await api('/api/agent-tasks',values);window.location.assign(`/agents/${created.id}`); }
+    if(archive instanceof File && archive.size)el('agent-create-status').textContent='Uploading the project ZIP to PostgreSQL; large archives may take a while…';
+    try { const created=await api('/api/agent-tasks',payload);window.location.assign(`/agents/${created.id}`); }
     catch(error){el('agent-create-status').textContent=error.message;}
     finally{if(el('agent-assign'))el('agent-assign').disabled=false;}
   });
@@ -644,16 +649,23 @@
     let values;
     try { values=readEditValues(form); }
     catch(error) { status.textContent=`Choose an available model before saving: ${error.message}`;return; }
+    const archive=values.project_archive;delete values.project_archive;
+    const payload=new FormData();payload.append('assignment',JSON.stringify(values));
+    if(archive instanceof File && archive.size)payload.append('project_archive',archive,archive.name);
     saveButton.disabled=true;resubmitButton.disabled=true;
-    status.textContent=resubmit?'Saving changes and queuing the task…':'Saving task details…';
+    status.textContent=archive instanceof File && archive.size ?
+      'Uploading the project ZIP and saving changes…' : resubmit?'Saving changes and queuing the task…':'Saving task details…';
     try {
-      const updated=await api(resubmit?`/api/agent-tasks/${task.id}/edit-rerun`:`/api/agent-tasks/${task.id}/settings`,values,resubmit?'POST':'PATCH');
+      const updated=await api(resubmit?`/api/agent-tasks/${task.id}/edit-rerun`:`/api/agent-tasks/${task.id}/settings`,payload,resubmit?'POST':'PATCH');
+      if(archive instanceof File && archive.size)form.elements.project_archive.value='';
       show(updated);
       if(resubmit) {
         rerunAcceptedAt=Date.now();
         if(el('agent-rerun-status'))el('agent-rerun-status').textContent='Task resubmitted from the existing project workspace.';
         status.textContent='';
-      } else status.textContent='Changes saved. The task has not been resubmitted.';
+      } else status.textContent=archive instanceof File && archive.size ?
+        'ZIP saved. Its files will merge into the project on the next run; the task was not resubmitted.' :
+        'Changes saved. The task has not been resubmitted.';
     } catch(error) { status.textContent=`${resubmit?'Could not resubmit':'Could not save'}: ${error.message}`; }
     finally { saveButton.disabled=false;resubmitButton.disabled=false; }
   }

@@ -257,6 +257,25 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(tool['status'], 'error')
         self.assertEqual(tool['error'], '{"message": "Could not read requested file", "name": "FileError"}')
 
+    def test_completed_provider_search_urls_are_added_to_browse_history(self):
+        key = self.create()
+        self.snap['active'] = True
+        self.snap['messages'] = [{
+            'id': 'research', 'type': 'assistant', 'time': {'completed': time.time()},
+            'content': [{'type': 'tool', 'name': 'duckduckgo_search', 'state': {
+                'status': 'completed', 'input': {'query': 'private assignment wording'},
+                'content': [{'type': 'text', 'text': 'Found https://example.org/result'}],
+            }}],
+        }]
+        with patch('agent_tasks.browse_history_store.add_visit_once') as add_visit:
+            self.manager.tick()
+
+        add_visit.assert_called_once_with(
+            url='https://example.org/result', title='Agent research (duckduckgo)',
+            query='Agent task online search', source='agent-duckduckgo', ok=True,
+            dedupe_key=f"{key}:research:0:duckduckgo_search:https://example.org/result",
+        )
+
     def test_active_model_token_progress_is_reported_in_activity(self):
         key = self.create()
         job = self.manager.jobs[key]
@@ -346,17 +365,28 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.client.create.call_count, 2)
         self.assertEqual(self.client.prompt.call_count, 2)
 
-    def test_context_overflow_blocks_without_compacting_or_retrying(self):
+    def test_context_overflow_restarts_in_a_fresh_session_from_saved_project(self):
         key = self.create()
+        self.client.create.side_effect = ['ses_fresh']
         self.snap['messages'] = [assistant('too-long', '', error={
             'type': 'provider.error', 'message': 'request exceeds the available context size'})]
         self.manager.tick()
         self.manager.tick()
-        blocked = self.manager.get(key)
-        self.assertEqual(blocked['status'], 'blocked')
-        self.assertEqual(blocked['session_id'], 'ses_fixture')
-        self.assertEqual(self.client.prompt.call_count, 1)
-        self.assertIn('larger supported ctx-size', blocked['error'])
+        retry = self.manager.get(key)
+        self.assertEqual(retry['status'], 'running')
+        self.assertIsNone(retry['session_id'])
+        self.assertTrue(retry['retry_current_cycle'])
+        self.assertIn('fresh OpenCode session', retry['pending_prompt']['text'])
+        self.assertLess(len(retry['pending_prompt']['text']), 1200)
+        self.assertNotIn('Assignment goal:', retry['pending_prompt']['text'])
+        self.assertEqual(retry['context_overflow_recovery_attempts'], 1)
+
+        self.manager.jobs[key]['next_retry'] = 0
+        self.manager.tick()
+        resumed = self.manager.get(key)
+        self.assertEqual(resumed['session_id'], 'ses_fresh')
+        self.assertFalse(resumed['retry_current_cycle'])
+        self.assertEqual(self.client.create.call_count, 2)
 
     def test_compaction_failure_recovery_supports_lemonade_muse_models(self):
         self.client.models.return_value = [{'providerID': 'lemonade', 'id': 'Muse-Glimmer-30B-GGUF',
@@ -982,14 +1012,26 @@ class AgentAPITests(unittest.TestCase):
         model = {'providerID': 'lemonade', 'id': 'Ornith-1.5-9B-GGUF'}
         with patch.object(app.lemonade, 'list_models', return_value=[{
                 'id': model['id'], 'state': 'loaded', 'loaded_context_length': 8192,
+                'max_context_length': 65536,
         }]), patch.object(app, '_test_load_model') as load:
             app._prepare_agent_model({'model': model})
-        load.assert_called_once_with({'backend': 'lemonade', 'id': model['id']})
+        load.assert_called_once_with({'backend': 'lemonade', 'id': model['id'],
+                                      'context_length': 16384})
+
+    def test_agent_reload_passes_saved_model_context(self):
+        model = {'providerID': 'lemonade', 'id': 'Ornith-1.5-9B-GGUF'}
+        with patch.object(app.lemonade, 'list_models', return_value=[{
+                'id': model['id'], 'state': 'loaded', 'loaded_context_length': 8192,
+        }]), patch.object(app, '_saved_model_context', return_value=65536), \
+             patch.object(app, '_test_load_model') as load:
+            app._prepare_agent_model({'model': model})
+        load.assert_called_once_with({'backend': 'lemonade', 'id': model['id'],
+                                      'context_length': 65536})
 
     def test_explicit_resume_loads_a_manually_unloaded_model(self):
         with patch.object(app.fastflowlm,'requests_paused',return_value=True), patch.object(app,'_test_load_model') as load:
             app._prepare_agent_model({'model':MODEL})
-        load.assert_called_once_with({'backend':MODEL['providerID'],'id':MODEL['id']})
+        load.assert_called_once_with({'backend':MODEL['providerID'],'id':MODEL['id'],'context_length':16384})
 
     def test_startup_preserves_agent_backend(self):
         self.manager.busy.return_value=True

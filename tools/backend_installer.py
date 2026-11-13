@@ -1,6 +1,7 @@
 """Optional local inference runtimes for first-time setup (no model downloads)."""
 import platform
 import ctypes.util
+import os
 import shutil
 import subprocess
 import tempfile
@@ -75,17 +76,57 @@ def install_backends(backends):
             subprocess.run([lms, 'server', 'start', '--port', '1234'], check=True)
             print('LM Studio API started at http://localhost:1234 (no models downloaded).')
         elif backend == 'lemonade':
-            if not (shutil.which('lemonade-server') or shutil.which('lemond')):
-                # Preserve an existing snap installation rather than installing a second server.
-                snap = subprocess.run(['snap', 'list', 'lemonade-server'], capture_output=True) if shutil.which('snap') else None
-                if not snap or snap.returncode:
-                    subprocess.run(['sudo', 'apt-get', 'update'], check=True)
-                    subprocess.run(['sudo', 'apt-get', 'install', '-y', 'software-properties-common'], check=True)
-                    subprocess.run(['sudo', 'add-apt-repository', '-y', 'ppa:lemonade-team/stable'], check=True)
-                    subprocess.run(['sudo', 'apt-get', 'update'], check=True)
-                    subprocess.run(['sudo', 'apt-get', 'install', '-y', 'lemonade-server'], check=True)
-            if Path('/run/systemd/system').is_dir():
-                print('Lemonade installed. Its package manages the service at http://localhost:13305.')
+            if not shutil.which('docker'):
+                raise RuntimeError('Docker is required for the Lemonade backend. Install Docker first.')
+            subprocess.run(['docker', 'pull', 'ghcr.io/lemonade-sdk/lemonade-server:latest'], check=True)
+            npu_device = Path('/dev/accel/accel0')
+            gpu_devices = [Path('/dev/kfd'), *sorted(Path('/dev/dri').glob('card[0-9]*')),
+                           *sorted(Path('/dev/dri').glob('renderD*'))]
+            gpu_devices = [device for device in gpu_devices if device.exists()]
+            migrated_cache = Path.home() / 'lemonade-hf-cache'
+            use_migrated_cache = migrated_cache.is_dir()
+            docker_args = [
+                'docker', 'run', '-d', '--name', 'lemonade-server',
+                '--restart', 'unless-stopped', '-p', '13305:13305',
+                '-v', 'lemonade-llama:/opt/lemonade/llama',
+                '-v', 'lemonade-data:/opt/lemonade/.cache/lemonade',
+                '-v', 'lemonade-config:/opt/lemonade/.config/lemonade',
+            ]
+            cache_mount = (f'{migrated_cache}:/opt/lemonade/.cache/huggingface'
+                           if use_migrated_cache else
+                           'lemonade-cache:/opt/lemonade/.cache/huggingface')
+            docker_args += ['-v', cache_mount]
+            if use_migrated_cache:
+                print(f'Using migrated Lemonade model cache at {migrated_cache}.')
+            if npu_device.exists():
+                # FLM-recipe models use the AMD NPU. Pass through only the device
+                # node and its owning group; Docker volumes keep model data when
+                # the container is recreated to apply this device mapping.
+                docker_args += ['--device', str(npu_device), '--group-add', str(os.stat(npu_device).st_gid)]
+                print(f'Passing AMD NPU device {npu_device} into Lemonade Docker.')
             else:
-                print('Lemonade installed; systemd is unavailable. Start lemond manually to serve http://localhost:13305.')
+                print(f'AMD NPU device {npu_device} is unavailable; Lemonade will use the model recipe’s available backend.')
+            gpu_group_ids = set()
+            for device in gpu_devices:
+                docker_args += ['--device', str(device)]
+                gpu_group_ids.add(os.stat(device).st_gid)
+            for group_id in sorted(gpu_group_ids):
+                docker_args += ['--group-add', str(group_id)]
+            if gpu_devices:
+                print('Passing host GPU devices and owning groups into Lemonade Docker for Vulkan/ROCm models.')
+
+            inspect = subprocess.run(
+                ['docker', 'inspect', '-f', '{{json .HostConfig.Devices}} {{json .HostConfig.GroupAdd}} {{json .Mounts}}', 'lemonade-server'],
+                capture_output=True, text=True,
+            )
+            already_configured = inspect.returncode == 0 and (
+                not npu_device.exists() or str(npu_device) in inspect.stdout
+            ) and all(str(device) in inspect.stdout for device in gpu_devices) and all(
+                str(os.stat(device).st_gid) in inspect.stdout for device in gpu_devices
+            ) and (not use_migrated_cache or str(migrated_cache) in inspect.stdout)
+            if not already_configured:
+                if inspect.returncode == 0:
+                    subprocess.run(['docker', 'rm', '-f', 'lemonade-server'], check=True)
+                subprocess.run(docker_args + ['ghcr.io/lemonade-sdk/lemonade-server:latest'], check=True)
+            print('Lemonade Docker container started at http://localhost:13305.')
             print('No models downloaded.')

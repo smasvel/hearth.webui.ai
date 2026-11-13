@@ -43,7 +43,7 @@ _MODEL_CONFIG_CACHE_SECONDS = 15
 _model_config_lock = threading.Lock()
 _model_config_cache = {'loaded_at': 0.0, 'config': None}
 TOOL_POLICY_VERSION = 'native-tools-v2'
-AGENT_PROMPT_VERSION = 'research-toolnames-v1'
+AGENT_PROMPT_VERSION = 'research-use-directly-v3'
 
 
 def _system_ca_bundle():
@@ -90,23 +90,11 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
 
     def _proxy(self):
         proxy = self.server.proxy_config
-        if not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer '+proxy['token']):
-            rejected_path = unquote(urlsplit(self.path).path)
-            if self.command == 'POST' and rejected_path == '/v1/chat/completions':
-                # Record relay authorization failures without reading or retaining
-                # the rejected prompt body. This makes otherwise invisible 403s
-                # diagnosable in Live logs while keeping unauthenticated content private.
-                request_id = live_requests.start(
-                    source=(proxy.get('headers') or {}).get('X-Hearth-Agent-Name') or 'agent',
-                    backend=proxy.get('provider_id') or 'agent',
-                    model=proxy.get('model_id') or 'unknown',
-                )
-                live_requests.finish(
-                    request_id, status='error', status_code=403,
-                    error_detail='Agent model relay authorization rejected.',
-                )
-            self.send_error(403)
-            return
+        # This handler is reachable only through a per-task Unix socket mounted into
+        # that task's isolated container, then a loopback-only port inside the same
+        # container. OpenCode may select provider auth from its model config instead
+        # of this provider option, so a bearer-token check here rejects valid requests
+        # despite the socket already enforcing the task boundary.
         request_path = unquote(urlsplit(self.path).path)
         if (not request_path.startswith('/v1/') or request_path.startswith('//')
                 or '\\' in request_path or any(part in ('.', '..') for part in request_path.split('/'))):
@@ -617,8 +605,13 @@ class ContainerOpenCode(OpenCode):
         return config, provider, proxy_info
 
     def _agent_config(self, original, provider_id, model_id, provider, opencode_steps=40, skills=None,
-                      research_providers=None, research_credentials=None):
+                      research_providers=None, research_credentials=None, large_project_assets=False):
         system = SYSTEM
+        if large_project_assets:
+            system += ('\nThis project includes large uploaded source-data files backed by the saved ZIP archive. '
+                       'Use them as input assets and do not edit, rename, or delete them; changes to files '
+                       'larger than 512 MiB are not included in workspace checkpoints. Write generated '
+                       'results to separate project files instead.')
         if skills:
             # Include each exact path-derived ID so models do not confuse Hearth's
             # private database ID with the name OpenCode's skill tool expects.
@@ -629,15 +622,23 @@ class ContainerOpenCode(OpenCode):
                        'then follow its instructions.')
         if research_providers:
             providers = ', '.join(research_providers)
-            system += ('\nOnline research providers enabled for this assignment: '+providers+'. '
-                       'For research questions, call the selected providers in parallel when practical, '
+            system += ('\nOnline research providers saved and enabled for this assignment: '+providers+'. '
+                       'When the goal needs current or external information, immediately search with '
+                       'the available tools from these providers. Infer search queries from the task '
+                       'and project context; do not ask the user for search terms, provider choice, '
+                       'or permission to use these already-configured tools. Ask only when an '
+                       'essential scope or decision cannot be inferred and blocks the assignment. '
+                       'Call selected providers in parallel when practical, '
                        'compare their findings, and include source URLs with factual conclusions. '
                        'Every web-search call must include the search text in its required `query` field; '
                        'never call a search tool with empty arguments. If a tool reports a missing query, '
                        'retry it with a non-empty query. Use only the exact search tool names shown in '
-                       'the current available-tools list; do not invent aliases such as `web_search` or '
-                       '`websearch`. If no search tool is listed, do not call an assumed name; report that '
-                       'search is unavailable. Before opening pages or fetching full content, '
+                       'the current available-tools list. OpenCode names MCP tools using the configured '
+                       'server prefix and tool name (normalized as `<server>_<tool>`); do not call '
+                       'generic aliases such as `web_search`, `websearch`, or `web_fetch`. If a tool is '
+                       'missing, try the other configured providers; if all '
+                       'are unavailable, report that limitation after trying them. Before opening pages '
+                       'or fetching full content, '
                        'review the search snippets and titles against the assignment goal and the exact '
                        'entities, place, and time period requested. Discard unrelated, duplicate, or '
                        'weakly matched results. If the results do not directly address the goal, refine '
@@ -667,7 +668,9 @@ class ContainerOpenCode(OpenCode):
             'enable_thinking': enable_thinking}
         provider['options']['extraBody'] = extra_body
         provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
-        comp = copy.deepcopy(original.get('compaction') or {'auto': False})
+        # The isolated project worker has its own generated OpenCode config, separate
+        # from desktop/Help config. Compact automatically unless explicitly disabled.
+        comp = copy.deepcopy(original.get('compaction') or {'auto': True})
         model_config = (provider.get('models') or {}).get(model_id) or {}
         model_limit = model_config.get('limit') or {}
         context_limit = model_limit.get('context')
@@ -712,7 +715,7 @@ class ContainerOpenCode(OpenCode):
                 }
                 continue
             url, header = endpoints[research_provider]
-            server = {'type': 'remote', 'url': url, 'codemode': False}
+            server = {'type': 'remote', 'url': url, 'enabled': True, 'codemode': False}
             credential = credentials.get(research_provider)
             if credential:
                 env_name = 'HEARTH_RESEARCH_'+research_provider.upper()+'_KEY'
@@ -789,7 +792,7 @@ class ContainerOpenCode(OpenCode):
         environment = ['--env', 'HOME=/home/node', '--env', 'OPENCODE_CONFIG=/home/node/agents/opencode.json',
             '--env', 'HEARTH_OPENCODE_CONFIG='+json.dumps(info['opencode_config'], separators=(',', ':')),
             '--env', 'OPENCODE_SERVER_USERNAME=opencode', '--env', 'OPENCODE_SERVER_PASSWORD='+password]
-        for provider, credential in (job.get('research_credentials') or {}).items():
+        for provider, credential in ((job or {}).get('research_credentials') or {}).items():
             if provider in {'exa', 'firecrawl', 'parallel', 'tavily', 'tinyfish'} and credential:
                 environment += ['--env', 'HEARTH_RESEARCH_'+provider.upper()+'_KEY='+credential]
         self._docker('run', '--detach', '--name', name, '--label', 'hearth.agent-task='+info['task_id'],
@@ -844,6 +847,8 @@ class ContainerOpenCode(OpenCode):
             skill_bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         research_credentials = job.get('research_credentials') or {}
         research_providers = job.get('research_providers') or []
+        project_archive = agent_store.get_project_archive(task_id)
+        proxy_info['project_archive_oid'] = project_archive['archive_oid'] if project_archive else None
         proxy_info['research_providers_hash'] = hashlib.sha256(json.dumps(
             sorted(set(research_providers)), separators=(',', ':')).encode()).hexdigest()
         proxy_info['research_credentials_hash'] = hashlib.sha256(json.dumps(
@@ -853,7 +858,15 @@ class ContainerOpenCode(OpenCode):
                                     job['model']['providerID'], job['model']['id'], provider,
                                     job.get('opencode_steps', 40), skills=job.get('skills') or [],
                                     research_providers=research_providers,
-                                    research_credentials=research_credentials)
+                                    research_credentials=research_credentials,
+                                    large_project_assets=bool(agent_store.get_project_archive_large_paths(task_id)))
+        # Keep OpenCode's bearer token and the host relay's expected token in lockstep.
+        # Normalize this after composing the full config so provider/model inheritance
+        # cannot leave a stale upstream key in the agent's local relay config.
+        selected_provider = config['provider'][job['model']['providerID']]
+        selected_options = selected_provider.setdefault('options', {})
+        selected_options['baseURL'] = 'http://127.0.0.1:4097/v1'
+        selected_options['apiKey'] = proxy_info['token']
         existing = agent_store.get_runtime(task_id)
         if existing:
             can_reuse = self._can_reuse_container(existing, job, config, proxy_info)
@@ -879,6 +892,11 @@ class ContainerOpenCode(OpenCode):
                              'find /home/node/agents/project -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && '
                              f'chown {os.getuid()}:{os.getgid()} /home/node/agents/project && '
                              'chmod 700 /home/node/agents/project')
+                has_checkpoint = agent_store.has_workspace_checkpoint(job['owner'], task_id)
+                archive_checkpointed = bool(
+                    project_archive and project_archive['checkpointed_at'] is not None)
+                self._extract_project_archive(
+                    name, task_id, job, large_only=has_checkpoint and archive_checkpointed)
                 self._sync_to_container(name, job['owner'], workspace_id=task_id)
                 existing.update(last_sync=0, tool_policy_version=TOOL_POLICY_VERSION)
                 self._write_runtime(name, existing)
@@ -901,12 +919,21 @@ class ContainerOpenCode(OpenCode):
                 'last_sync': 0, 'manifest': [], 'project_directory': '/home/node/agents/project'}
         self._write_runtime(name, info)
         self._start_container(name, info, task_dir, job)
+        has_checkpoint = agent_store.has_workspace_checkpoint(job['owner'], task_id)
+        archive_pending = bool(project_archive and project_archive['checkpointed_at'] is None)
+        merge_archive_after_workspace = archive_pending and has_checkpoint
+        if not merge_archive_after_workspace:
+            self._extract_project_archive(
+                name, task_id, job,
+                large_only=has_checkpoint and bool(project_archive and not archive_pending))
         session = _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
         data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
                 'model': job['model'], 'location': {'directory': '/home/node/agents/project'},
                 'permissions': self._permissions(job)}
         result = session.call('POST', '/api/session', data)['data']['id']
         self._sync_to_container(name, job['owner'], workspace_id=job['id'])
+        if merge_archive_after_workspace:
+            self._extract_project_archive(name, task_id, job, replace=True)
         self._report(job, 'Project synced. The agent is ready to start its first work cycle.')
         return name+SESSION_SEPARATOR+result
 
@@ -919,7 +946,8 @@ class ContainerOpenCode(OpenCode):
             return False
         old_proxy = existing.get('model_proxy') or {}
         proxy_fields = ('base_url', 'api_key', 'headers', 'verify_tls', 'skill_bundle_hash',
-                        'research_providers_hash', 'research_credentials_hash', 'agent_prompt_version')
+                        'research_providers_hash', 'research_credentials_hash', 'agent_prompt_version',
+                        'project_archive_oid')
         if any(old_proxy.get(key) != proxy_info.get(key) for key in proxy_fields):
             return False
         old_config = copy.deepcopy(existing.get('opencode_config') or {})
@@ -958,6 +986,17 @@ class ContainerOpenCode(OpenCode):
         if not session_id or SESSION_SEPARATOR not in str(session_id):
             return self.create(job)
         _name, _raw, info = self._split(session_id)
+        current_archive = agent_store.get_project_archive(job['id'])
+        current_archive_oid = current_archive['archive_oid'] if current_archive else None
+        saved_archive_oid = (info.get('model_proxy') or {}).get('project_archive_oid')
+        if saved_archive_oid != current_archive_oid:
+            try:
+                self.snapshot(session_id)
+                self.sync(job, force=True)
+            except Exception:
+                logging.exception('Could not checkpoint agent %s before applying its updated project ZIP.', job.get('id'))
+            self._report(job, 'Applying the updated project ZIP to the saved assignment workspace.')
+            return self.create(job)
         if info.get('tool_policy_version') != TOOL_POLICY_VERSION:
             self._report(job, 'Starting a fresh session with the current native tool policy from the saved workspace.')
             return self.create(job)
@@ -1142,6 +1181,34 @@ class ContainerOpenCode(OpenCode):
             process.kill(); process.wait(timeout=5)
             raise
 
+    def _extract_project_archive(self, name, task_id, job=None, large_only=False, replace=False):
+        archive = agent_store.get_project_archive(task_id)
+        if not archive:
+            return False
+        self._report(job, f"Streaming saved project ZIP {archive['filename']} from PostgreSQL into the isolated container.")
+        command = ['docker', 'exec', '-i', name, 'python3', '/opt/hearth/extract_project_zip.py',
+                   '/home/node/agents/project']
+        if large_only:
+            command.append('--large-only')
+        if replace:
+            command.append('--replace')
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            agent_store.stream_project_archive(task_id, process.stdin)
+            process.stdin.close()
+            code = process.wait(timeout=3600)
+            error = process.stderr.read().decode('utf-8', 'replace')[-1500:]
+            if code:
+                raise RuntimeError('Could not unpack the saved project ZIP in the isolated container: '+error)
+            self._report(job, 'Initial project ZIP safely unpacked in the isolated container.')
+            return True
+        except Exception:
+            process.kill()
+            process.wait(timeout=5)
+            raise
+
     @staticmethod
     def _skill_bundle(job):
         """Return selected skill Markdown keyed by the skill IDs OpenCode discovers."""
@@ -1186,6 +1253,13 @@ class ContainerOpenCode(OpenCode):
         tar_args = ['docker', 'exec', name, 'tar', '-C', '/home/node/agents/project']
         for part in sorted(SKIP_PARTS):
             tar_args.append('--exclude='+part)
+        large_paths = agent_store.get_project_archive_large_paths(job['id'])
+        exclude_file = self.runtime_directory/job['id']/'project-archive-large-paths.txt'
+        if large_paths:
+            exclude_file.write_text('\n'.join('./'+path for path in large_paths)+'\n', encoding='utf-8')
+            exclude_file.chmod(0o600)
+            tar_args.extend(['--no-wildcards', '--anchored',
+                             '--exclude-from=/home/node/agents/project-archive-large-paths.txt'])
         tar_args.extend(['-cf', '-', '.'])
         process = subprocess.Popen(tar_args,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1200,6 +1274,9 @@ class ContainerOpenCode(OpenCode):
         except Exception:
             process.kill(); process.wait(timeout=5)
             raise
+        finally:
+            if large_paths:
+                exclude_file.unlink(missing_ok=True)
         info['last_sync'] = now
         self._write_runtime(name, info)
 

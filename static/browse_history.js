@@ -1,5 +1,5 @@
-// AI Browser History page: searchable, paginated table of every page the AI's
-// headless browser visited. "Live" search = debounced re-query as you type (300ms),
+// AI Browser History page: searchable, paginated table of pages visited during chat
+// research and agent tasks. "Live" search = debounced re-query as you type (300ms),
 // resetting to page 1 — server-side filtering via /api/browse-history so search
 // works across the whole history, not just the currently loaded page of rows.
 (() => {
@@ -57,14 +57,14 @@
 
     countEl.textContent = q
       ? `${data.total} match${data.total === 1 ? "" : "es"}`
-      : `${data.total} visit${data.total === 1 ? "" : "s"} recorded`;
+      : `${data.total} entr${data.total === 1 ? "y" : "ies"} recorded`;
     pageLabel.textContent = `Page ${data.page} of ${totalPages}`;
     prevBtn.disabled = data.page <= 1;
     nextBtn.disabled = data.page >= totalPages;
 
     rowsEl.innerHTML = "";
     emptyEl.classList.toggle("hidden", data.entries.length > 0);
-    emptyEl.textContent = q ? "No matches." : "No visits recorded yet.";
+    emptyEl.textContent = q ? "No matches." : "No browsing history recorded yet.";
 
     for (const e of data.entries) {
       const tr = document.createElement("tr");
