@@ -53,15 +53,14 @@ with contextlib.ExitStack() as stack:
   # empty new session idle to dispatch its first goal.
   snap['active']=False;manager.tick();snap['active']=True
   form={'id':'form_browser','title':'Implementation choices','fields':[
-   {'key':'database','type':'string','title':'Database','required':True,'default':'sqlite','options':[{'label':'SQLite','value':'sqlite'},{'label':'PostgreSQL','value':'postgres'}]},
+   {'key':'database','type':'string','title':'Database','required':True,'default':'postgres','options':[{'label':'PostgreSQL','value':'postgres'}]},
    {'key':'features','type':'multiselect','title':'Features','options':[{'label':'API','value':'api'},{'label':'CLI','value':'cli'}],'custom':True,'default':['api']},
    {'key':'timeout','type':'integer','title':'Optional timeout'},
    {'key':'keep_tests','type':'boolean','title':'Keep tests','default':True}]}
   snap['forms']=[form];manager.tick()
   expect(page.get_by_text('Implementation choices',exact=True)).to_be_visible(timeout=7000)
-  expect(page.get_by_label('Database',exact=True)).to_have_value('sqlite')
+  expect(page.get_by_label('Database',exact=True)).to_have_value('postgres')
   expect(page.get_by_label('Keep tests',exact=True)).to_be_checked()
-  page.get_by_label('Database',exact=True).select_option('postgres')
   page.get_by_label('API',exact=True).check();page.get_by_label('CLI',exact=True).check()
   page.get_by_role('button',name='Answer and continue').click()
   expect(page.locator('#agent-status')).to_contain_text('running')

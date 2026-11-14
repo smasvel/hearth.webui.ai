@@ -59,6 +59,9 @@ def prepare_environment(port):
     postgres = dotenv_values(postgres_path)
     if not postgres.get('DATABASE_URL') or not postgres.get('POSTGRES_PASSWORD'):
         raise RuntimeError('.env.postgres is incomplete; restore its database URL and password.')
+    database_url = str(postgres['DATABASE_URL']).strip().lower()
+    if not database_url.startswith(('postgresql://', 'postgres://')):
+        raise RuntimeError('.env.postgres must select PostgreSQL; Hearth does not support SQLite as its application database.')
     if values.get('DATABASE_URL') and values['DATABASE_URL'] != postgres['DATABASE_URL']:
         raise RuntimeError('.env and .env.postgres select different databases. Setup will not switch an existing installation.')
     if not env_path.exists():

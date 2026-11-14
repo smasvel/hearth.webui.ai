@@ -679,9 +679,10 @@ OpenCode relay also trims oversized historical tool results to useful head and t
 If OpenCode or an agent reports a context overflow, check the model's **loaded** context in
 Models: its maximum supported context can be much larger. Use the card's **ctx-size** field
 to load a larger supported window; agent startup applies the saved ctx-size automatically.
-For Lemonade Muse models, Hearth ignores a transient compaction headroom value (such as
-11,264 tokens) and advertises the known 65,536-token model window, avoiding a repeated
-context rejection and compaction cycle.
+For every backend and model, generated OpenCode context and compaction budgets use the
+currently loaded context size. When a model is unloaded, Hearth uses its saved per-model
+ctx-size or the backend default. Hearth does not inflate a loaded window from the model's
+larger advertised maximum.
 Refresh the generated LAN or Tailscale config from Help and restart OpenCode after changing
 the loaded window. Continue for VS Code receives each model's advertised loaded context;
 its own client settings control compaction. Every model still has a finite loaded window.
@@ -778,7 +779,7 @@ Tailscale Serve or tailnet access policy.
 | Translation | Local voice, image, and video translation with configured compatible models | Chat translation controls |
 | Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
 | Study and practice | Built-in and user-created quiz decks, generated questions, and state DMV practice | Quizzes; DMV |
-| Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, and supported NPU statistics | Metrics; system statistics |
+| Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, supported NPU statistics, and live CPU/RAM/disk/temperature readings on Chat, Downloads, Live logs, and Model tests | Metrics; system statistics |
 | User administration | Accounts, roles, password resets, per-user agent workflow access, per-user data, gateway-token controls, and admin-only login/password audit history including the acting administrator | Users |
 | Runtime settings | Backend URLs and credentials, connection tests, context settings, and configured Tailscale controls | Settings |
 | Host security checks | Administrator-triggered security scans and reports using the configured host tools | [Security scanner](#metrics-and-diagnostics) |
@@ -1569,14 +1570,16 @@ listeners for saved agent sessions are restored before workers run, so persisten
 containers can reconnect to the host model bridge after an app restart.
 Automatic OpenCode compaction is on by default for desktop and isolated project agents;
 Hearth generates a separate compaction-enabled OpenCode config inside each agent container.
-The Help page's generated OpenCode config displays a model context limit of 65,536 tokens
-when the model supports at least that much, or 8,192 tokens otherwise. Muse models on
-Lemonade keep their known 65,536-token window if Lemonade reports only the temporarily
-available headroom during compaction (for example 11,264 tokens); otherwise repeated
-context-limit rejections can trigger compaction after every step. This is based on the
-model's supported maximum, not the Models page's model loading ctx-size field; the
-generated client config must be refreshed after changing a loaded window. Agent startup
-applies the saved per-model ctx-size when it needs to load the selected model. Oversized
+The shared config derives its compaction budget from the selected default model's loaded
+context, so a small sibling model no longer forces a tiny keep/buffer budget on a larger
+loaded model. Blank Keep and Buffer settings use the formula; explicit overrides are
+bounded by its safe limits.
+The Help page's generated OpenCode config uses the selected model's loaded context size
+and derives compaction budgets from that same window. When unloaded, it uses the saved
+per-model ctx-size or the backend default. It does not replace a smaller loaded window
+with the model's larger supported maximum. Refresh the generated client config after
+changing the loaded window. Agent startup applies the saved per-model ctx-size when it
+needs to load the selected model. Oversized
 historical tool results are shortened to their useful beginning and end. If the assignment
 still reaches the loaded context limit, Hearth checkpoints the project and retries once in a
 fresh session; a repeated overflow remains saved for review.
@@ -1586,20 +1589,22 @@ tries this compaction recovery once per assignment; another compaction failure s
 assignment for review. Load a larger supported context or choose a larger model before continuing.
 interrupts the old runner, forces a current checkpoint before retiring its container,
 and includes the original goal, acceptance criteria, and refinements in the new session.
-When compaction is enabled, agent compaction settings are bounded by the selected model's actual context window:
-the retained recent-turn budget is capped at one eighth of context up to a 65K-token
-window. Lemonade/Muse-style 65K+ models get a large recent-context budget (`keep.tokens`
-capped at 65,536), but `keep` never equals the window: OpenCode's own compaction sends a
-summarization request over the retained history, so `keep` + `buffer` + prompt overhead
-must fit inside the window. On a 65,536-token window `keep` is 40,960 and `buffer`
-16,384; a `keep` equal to the whole window reproducibly fails compaction with "The
-compaction request cannot be reduced further without losing the latest exchange or
-checkpoint". The buffer is also the headroom left when auto-compaction fires, and a
-single agentic step (system prompt + tool schema + latest exchange or file read) can
-reach ~11K tokens — an 8,192 buffer let a 10,830-token step (and then the compaction
-summarization itself) overrun the 9,984 tokens left on a 65,536-token window, failing
-the session with "request exceeds the available context size". 65K+ windows therefore
-reserve a quarter of the window as the buffer, which no observed single step exceeds.
+When compaction is enabled, keep and buffer are derived from the selected model's loaded
+context. Hearth uses integer division so the same formula scales across model sizes:
+
+```text
+buffer        = max(1, context // 12)
+prompt_reserve = max(1, context // 64)
+keep          = max(0, context - buffer - prompt_reserve)
+```
+
+For a 65,536-token window, this gives `buffer=5,461`, `prompt_reserve=1,024`, and
+`keep=59,051`. Blank Keep and Buffer settings use these formula values. A Keep override
+can lower the formula's keep value; a Buffer override can raise the formula value, up to
+one quarter of the loaded context. Keep plus buffer plus the prompt reserve stays within
+the context window. A keep value equal to the entire window cannot fit OpenCode's
+summarization request and fails with "The compaction request cannot be reduced further
+without losing the latest exchange or checkpoint".
 The selected model's own context is the floor, too: a global config
 from a smaller sibling model cannot leave a larger-window assignment with only a tiny
 retained history. This prevents the agent repeatedly re-reading the same large file after
@@ -1686,6 +1691,9 @@ traces. The feed refreshes about once per second, shows requests from the last 4
 Streaming rows stay at the top of the feed and update their displayed token count, rate,
 and elapsed time. They hide rates that round to zero; completed rows keep all three values
 fixed at finish.
+Chat, **Downloads**, **Live logs**, and **Model tests** show the same live CPU percentage, used/total
+RAM and percentage, free disk space, and CPU temperature when the host exposes a
+readable sensor. These readings refresh every three seconds.
 Completed rows remain available for two days. Agent model requests are reported by Hearth's relay and labeled with the
 task's agent name. Administrators can use **Reset all metrics** to erase saved request history
 and coding reviews after two confirmation warnings; new requests begin accumulating again
@@ -1720,6 +1728,45 @@ pins to the top of each table's own scroll area so every column stays aligned at
 The model report uses fixed shared column widths; dashboard cards and filters fit the screen width.
 Agent HTML previews recognize saved workspace entry files whether their stored path
 includes a leading `./` or not.
+
+### Observed local model speeds
+
+The following are peak successful generation speeds recorded by this Hearth installation
+through **November 14, 2026**. The host is an AMD Ryzen AI 9 HX 470 with Radeon 890M
+graphics, 12 CPU cores / 24 threads, and 43.7 GiB RAM. Each value is the highest
+`tokens_per_sec` measurement saved for that model/backend; the sample count shows how
+many successful measurements were available. These are observed peaks, not controlled
+benchmark scores: prompts, context sizes, model quantizations, warm/cold state, and
+backend settings vary. Hosted OpenCode models are omitted because their inference runs
+remotely. Only models with at least one recorded successful speed measurement appear.
+
+| Backend | Model | Peak recorded speed (tokens/s) | Samples |
+|---|---|---:|---:|
+| FastFlowLM | `llama3.2:1b` | 51.00 | 106 |
+| FastFlowLM | `minicpm-v-4.7:1b` | 40.80 | 270 |
+| FastFlowLM | `qwen3.5:2b` | 22.70 | 244 |
+| FastFlowLM | `qwen3.8-mtp:27b` | 4.30 | 278 |
+| KoboldCPP | `Qwen3.8-2B-Q8_0` | 19.10 | 274 |
+| Lemonade | `Devstral-Small-2507-GGUF` | 2.80 | 475 |
+| Lemonade | `esatapedico-Qwen3.8-27B-NVFP4-MTP-GGUF` | 7.10 | 1,259 |
+| Lemonade | `Gemma-4-26B-A4B-it-GGUF` | 10.30 | 500 |
+| Lemonade | `Gemma-4-26B-A4B-it-MTP-GGUF` | 18.80 | 500 |
+| Lemonade | `GLM-4.7-Flash-GGUF` | 14.70 | 876 |
+| Lemonade | `granite-4.0-h-tiny-GGUF` | 29.80 | 224 |
+| Lemonade | `K2-Horizon-32B-GGUF` | 1.91 | 268 |
+| Lemonade | `K2-Horizon-MoVA-36B-A4B-GGUF` | 10.90 | 1,492 |
+| Lemonade | `mradermacher-Moon-Beam-16B-A3B-i1-GGUF` | 21.10 | 333 |
+| Lemonade | `Muse-Glimmer-30B-GGUF` | 8.00 | 1,838 |
+| Lemonade | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF` | 17.60 | 387 |
+| Lemonade | `Ornith-1.5-35B-A3B-GGUF` | 19.30 | 214 |
+| Lemonade | `Ornith-1.5-9B-GGUF` | 16.40 | 521 |
+| Lemonade | `PhillyLabs-KAT-Coder-V2.5-Dev-35B-A3B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS` | 14.90 | 382 |
+| LM Studio | `mimo-v2.6-distill-qwen-9b` | 7.11 | 200 |
+| LM Studio | `qwen3.8-2b-distill` | 29.71 | 479 |
+| q38rocm | `Qwen3.8-27B-Q3_K_M` | 2.80 | 549 |
+
+These numbers describe this host and its saved request history. For a repeatable comparison,
+run the same model test, prompt, context size, and backend configuration on each model.
 
 For coding clients, send a stable attribution header such as:
 
@@ -2041,11 +2088,12 @@ The installer also passes the host's Tailscale CLI and daemon socket into the
 container, so Help → Connect over Tailscale reports this route automatically.
 
 
-First-time setup validates database ports and service availability before prompting
+First-time setup validates that the configured application database URL selects
+PostgreSQL, along with database ports and service availability, before prompting
 for optional runtime installation. Without systemd, the shell installer reports
 `--no-service` before installing packages. Both setup paths refuse to create a fresh
-database over an unconfigured installation with populated legacy SQLite files;
-configure the existing installation's `DATABASE_URL` first. Runtime and agent-image
+database over an unconfigured installation with populated legacy local database
+files; configure the existing installation's `DATABASE_URL` first. Runtime and agent-image
 installation follow this check. Rerunning the normal service installer restarts
 `ai-webui.service` so updated code and renewed certificates take effect; active
 assignments may be interrupted and can be resumed after restart. Use `--no-service`

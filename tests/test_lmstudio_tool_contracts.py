@@ -107,7 +107,7 @@ class LMStudioContractTests(unittest.TestCase):
 
     def test_question_defaults_are_repaired_after_fragment_assembly(self):
         args = {'questions': [{'header': 'Database', 'question': 'Which database?',
-            'options': [{'label': 'SQLite', 'description': 'Embedded'}]}]}
+            'options': [{'label': 'PostgreSQL', 'description': 'Database server'}]}]}
         fn = {'name': 'question', 'arguments': json.dumps(args)}
         completion = {'choices': [{'message': {'tool_calls': [{'id': 'q1', 'function': fn}]},
                                   'finish_reason': 'tool_calls'}]}

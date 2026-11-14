@@ -31,27 +31,40 @@ class TailscaleHelpTests(unittest.TestCase):
             {"lemonade": ["Muse"]}, {}))
         self.assertFalse(cfg["compaction"]["auto"])
 
-    def test_help_context_uses_supported_maximum_not_loading_size(self):
+    def test_help_context_uses_loaded_size_instead_of_supported_maximum(self):
         cfg = json.loads(help_data.build_opencode_config(
             "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
             {"lemonade": ["large", "small"]}, {},
             ctx_by_model={("lemonade", "large"): 8192, ("lemonade", "small"): 8192},
-            max_ctx_by_model={("lemonade", "large"): 131072,
-                              ("lemonade", "small"): 32768}))
+            ))
         entries = cfg["provider"]["lemonade"]["models"]
-        self.assertEqual(entries["large"]["limit"]["context"], 65536)
+        self.assertEqual(entries["large"]["limit"]["context"], 8192)
         self.assertEqual(entries["small"]["limit"]["context"], 8192)
 
     @patch.object(help_data.settings_store, "get", side_effect=lambda key: None)
-    def test_muse_transient_compaction_headroom_does_not_shrink_model_window(self, _get):
+    def test_compaction_budget_uses_loaded_context_for_any_model(self, _get):
         cfg = json.loads(help_data.build_opencode_config(
             "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
-            {"lemonade": ["Muse-Glimmer-30B-GGUF"]}, {},
-            ctx_by_model={("lemonade", "Muse-Glimmer-30B-GGUF"): 11264}))
-        entry = cfg["provider"]["lemonade"]["models"]["Muse-Glimmer-30B-GGUF"]
-        self.assertEqual(entry["limit"]["context"], 65536)
+            {"lemonade": ["arbitrary-large-context-model"]}, {},
+            ctx_by_model={("lemonade", "arbitrary-large-context-model"): 32768}))
+        entry = cfg["provider"]["lemonade"]["models"]["arbitrary-large-context-model"]
+        self.assertEqual(entry["limit"]["context"], 32768)
         self.assertEqual(cfg["compaction"], {
-            "auto": True, "keep": {"tokens": 15000}, "buffer": 16384})
+            "auto": True, "keep": {"tokens": 29526}, "buffer": 2730})
+
+    @patch.object(help_data.settings_store, "get", return_value=None)
+    def test_compaction_budget_uses_selected_model_loaded_context(self, _get):
+        cfg = json.loads(help_data.build_opencode_config(
+            "203.0.113.10", "test-key", help_data._DEFAULT_PORTS,
+            {"lemonade": ["large-model", "small-model"],
+             "lmstudio": ["tiny-model"]},
+            {"lemonade": ["large-model"]},
+            ctx_by_model={("lemonade", "large-model"): 65536,
+                          ("lemonade", "small-model"): 4096,
+                          ("lmstudio", "tiny-model"): 2048}))
+        self.assertEqual(cfg["model"], "lemonade/large-model")
+        self.assertEqual(cfg["compaction"], {
+            "auto": True, "keep": {"tokens": 59051}, "buffer": 5461})
 
     @patch.object(help_data.settings_store, "get", return_value=None)
     def test_small_lemonade_window_bounds_compaction_without_flm(self, _get):
@@ -64,17 +77,17 @@ class TailscaleHelpTests(unittest.TestCase):
                 self.assertEqual(cfg['provider']['lemonade']['models'][model]['limit'],
                                  {'context': 4096, 'output': 2048})
                 self.assertEqual(cfg['compaction'],
-                                 {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
+                                 {'auto': True, 'keep': {'tokens': 3691}, 'buffer': 341})
 
     @patch.object(help_data.settings_store, "get", side_effect=lambda key:
                   '32768' if key == 'opencode_compaction_buffer' else None)
-    def test_mixed_backends_bound_global_buffer_to_smallest_window(self, _get):
+    def test_mixed_backend_compaction_uses_selected_default_model_window(self, _get):
         cfg = json.loads(help_data.build_opencode_config(
             '203.0.113.10', 'test-key', help_data._DEFAULT_PORTS,
             {'lemonade': ['Muse'], 'lmstudio': ['small']}, {},
             ctx_by_model={('lemonade', 'Muse'): 65536, ('lmstudio', 'small'): 4096}))
         self.assertEqual(cfg['compaction'],
-                         {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024})
+                         {'auto': True, 'keep': {'tokens': 59051}, 'buffer': 16384})
 
     @patch.object(help_data.flm_context, "context_limit", side_effect=lambda model=None: 262144 if model and "minicpm" in model else 8192)
     def test_continue_uses_model_specific_flm_limits(self, _limit):

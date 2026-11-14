@@ -83,16 +83,16 @@ def scenarios():
          'expected': [], 'passed_tests': 4},
     ]
     variants = [
-        ('single-choice', question('Which database?', 'Database', [('SQLite (Recommended)', 'Embedded database'), ('PostgreSQL', 'Database server')]),
+        ('single-choice', question('Which database?', 'Database', [('PostgreSQL', 'Database server')]),
          [['PostgreSQL']], 'PostgreSQL'),
         ('multiple-choice', question('Which features?', 'Features', [('API', 'HTTP endpoints'), ('CLI', 'Terminal interface'), ('UI', 'Browser interface')], True),
          [['API', 'CLI']], 'API and CLI'),
         ('custom-answer', question('Which package name?', 'Package', [('atlas', 'Default package'), ('demo', 'Example package')]),
          [['atlas_enterprise']], 'atlas_enterprise'),
         ('batched-questions', {'questions': [
-            question('Which database?', 'Database', [('SQLite', 'Embedded'), ('PostgreSQL', 'Server')])['questions'][0],
+            question('Which database?', 'Database', [('PostgreSQL', 'Server')])['questions'][0],
             question('Which interface?', 'Interface', [('CLI', 'Terminal'), ('API', 'HTTP')])['questions'][0]]},
-         [['SQLite'], ['API']], 'SQLite and API'),
+         [['PostgreSQL'], ['API']], 'PostgreSQL and API'),
     ]
     workflows = [('build', build)]
     for name, args, answers, selected in variants:

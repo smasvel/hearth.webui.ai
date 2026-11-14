@@ -9,31 +9,28 @@ BE, MODEL = 'lemonade', 'Muse-Glimmer-30B-GGUF'
 
 
 class CompactionForWindowTests(unittest.TestCase):
-    def test_65k_window_keeps_room_for_the_compaction_request(self):
+    def test_65k_window_derives_keep_and_buffer_as_context_percentages(self):
         budgets = help_data.compaction_for_window(65536)
-        self.assertEqual(budgets, {'keep': 40960, 'buffer': 16384})
-        self.assertLessEqual(budgets['keep'] + budgets['buffer'] + 4096, 65536)
+        self.assertEqual(budgets, {'keep': 59051, 'buffer': 5461})
+        prompt_reserve = 65536 // 64
+        self.assertLessEqual(budgets['keep'] + budgets['buffer'] + prompt_reserve, 65536)
 
-    def test_65k_buffer_covers_a_single_large_step(self):
-        # A production agent step reached 10,830 tokens; the buffer (headroom left
-        # when auto-compaction fires) must be larger than such a step.
-        self.assertGreater(help_data.compaction_for_window(65536)['buffer'], 11000)
-
-    def test_large_windows_cap_keep_at_65536(self):
+    def test_large_windows_keep_and_buffer_scale_with_context(self):
         self.assertEqual(help_data.compaction_for_window(131072),
-                         {'keep': 65536, 'buffer': 32768})
+                         {'keep': 118102, 'buffer': 10922})
 
-    def test_output_reserve_cannot_shrink_the_safety_cushion(self):
-        # A small output reserve must not shrink the buffer below window // 4:
-        # the cushion exists to absorb a single large step, not just the reserve.
-        self.assertEqual(help_data.compaction_for_window(65536, 4096),
-                         {'keep': 40960, 'buffer': 16384})
-
-    def test_small_windows_scale_to_one_eighth(self):
-        for window, expected in ((8192, (1024, 1024)), (32768, (4096, 4096))):
+    def test_small_windows_use_the_same_percentages(self):
+        for window, expected in ((8192, (7382, 682)), (32768, (29526, 2730))):
             with self.subTest(window=window):
                 budgets = help_data.compaction_for_window(window)
                 self.assertEqual((budgets['keep'], budgets['buffer']), expected)
+
+    def test_configured_budgets_default_to_formula_and_bound_overrides(self):
+        self.assertEqual(help_data.configured_compaction_for_window(65536),
+                         {'keep': 59051, 'buffer': 5461})
+        self.assertEqual(help_data.configured_compaction_for_window(
+            65536, keep_override=12000, buffer_override=32000),
+            {'keep': 12000, 'buffer': 16384})
 
 
 class SyncConfigTests(unittest.TestCase):
@@ -51,7 +48,9 @@ class SyncConfigTests(unittest.TestCase):
                 config_path.write_text(json.dumps(existing, indent=2))
             with patch.object(sync, 'CONFIG_PATH', config_path), \
                  patch.object(sync.help_data, 'build',
-                              return_value={'opencode_config': json.dumps(generated)}):
+                              return_value={'opencode_config': json.dumps(generated)}), \
+                 patch.object(sync.help_data, 'compaction_settings',
+                              return_value={'auto': True, 'keep_tokens': None, 'buffer': None}):
                 old_stdout = _sys.stdout
                 _sys.stdout = io.StringIO()
                 try:
@@ -72,7 +71,7 @@ class SyncConfigTests(unittest.TestCase):
         self.assertEqual(result['model'], f'{BE}/{MODEL}')
         self.assertIn('custom', result.get('agents', {}))
         self.assertEqual(result['compaction'],
-                         {'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384})
+                         {'auto': True, 'keep': {'tokens': 59051}, 'buffer': 5461})
 
     def test_idempotent_when_config_matches_generation(self):
         first = self._run(

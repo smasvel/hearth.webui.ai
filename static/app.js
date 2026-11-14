@@ -2,10 +2,6 @@
   const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
-  const statCpuEl = document.getElementById("stat-cpu");
-  const statRamEl = document.getElementById("stat-ram");
-  const statDiskEl = document.getElementById("stat-disk");
-  const statTempEl = document.getElementById("stat-temp");
   const refreshBtn = document.getElementById("refresh-models");
   const messagesEl = document.getElementById("messages");
   const chatForm = document.getElementById("chat-form");
@@ -295,45 +291,6 @@
   function setStatus(ok, text) {
     statusDot.className = "status-dot " + (ok ? "ok" : "err");
     statusText.textContent = text;
-  }
-
-  function severityClass(value, thresholds = [70, 90]) {
-    const [warn, danger] = thresholds;
-    if (value >= danger) return "stat-danger";
-    if (value >= warn) return "stat-warn";
-    return "stat-ok";
-  }
-
-  let systemStatsPending = false;
-  async function fetchSystemStats() {
-    if (systemStatsPending || document.hidden) return;
-    systemStatsPending = true;
-    try {
-      const res = await fetch("/api/system-stats");
-      if (!res.ok) return;
-      const d = await res.json();
-      statCpuEl.textContent = `CPU ${Math.round(d.cpu_percent)}%`;
-      statCpuEl.className = severityClass(d.cpu_percent);
-      statRamEl.textContent = `RAM ${d.mem_used_gb}/${d.mem_total_gb} GB (${Math.round(d.mem_percent)}%)`;
-      statRamEl.className = severityClass(d.mem_percent);
-      statDiskEl.textContent = `Disk ${d.disk_free_gb} GB free`;
-      // Disk filling up is bad the same direction CPU/RAM being full is bad, so
-      // severity still keys off percent *used*, not the free number being displayed.
-      statDiskEl.className = severityClass(d.disk_percent);
-      // Not every host exposes a readable CPU die sensor (e.g. some VMs/platforms) —
-      // just omit the stat rather than show a misleading placeholder.
-      if (typeof d.cpu_temp_c === "number") {
-        statTempEl.textContent = `${Math.round(d.cpu_temp_c)}°C`;
-        statTempEl.className = severityClass(d.cpu_temp_c, [70, 85]);
-      } else {
-        statTempEl.textContent = "";
-        statTempEl.className = "";
-      }
-    } catch {
-      // transient — leave the last known values showing rather than blanking them
-    } finally {
-      systemStatsPending = false;
-    }
   }
 
   async function fetchModels() {
@@ -2293,11 +2250,4 @@
   fetchConversations();
   const previousChat = sessionStorage.getItem("hearth-current-chat");
   if (previousChat) loadConversation(previousChat);
-  // System stats (CPU/RAM/disk) are admin-only — the template omits #system-stats for
-  // non-admins, so only poll when the widget is actually present (the endpoint is
-  // admin-gated server-side too).
-  if (statCpuEl) {
-    fetchSystemStats();
-    setInterval(fetchSystemStats, 3000);
-  }
 })();

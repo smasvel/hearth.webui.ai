@@ -770,27 +770,19 @@ class ContainerOpenCode(OpenCode):
         model_config = (provider.get('models') or {}).get(model_id) or {}
         model_limit = model_config.get('limit') or {}
         context_limit = model_limit.get('context')
-        if isinstance(context_limit, int) and not isinstance(context_limit, bool) and context_limit >= 8192:
-            # Do not let a generated desktop config's large keep budget consume the
-            # entire agent context. Larger Lemonade/Muse-style models still need their
-            # full recent-context and output budgets: a 65K-token window should not be
-            # truncated by a smaller sibling's 1K budget; buffer is the output reserve.
+        if isinstance(context_limit, int) and not isinstance(context_limit, bool) and context_limit > 0:
+            # Derive both budgets from this worker's selected model context, regardless
+            # of the desktop default or other models in the shared config.
             keep = comp.get('keep')
             if not isinstance(keep, dict):
                 keep = {}
                 comp['keep'] = keep
-            current_keep = keep.get('tokens', 0)
-            if not isinstance(current_keep, int) or isinstance(current_keep, bool) or current_keep < 0:
-                current_keep = 0
-            current_buffer = comp.get('buffer')
-            if not isinstance(current_buffer, int) or isinstance(current_buffer, bool) or current_buffer < 0:
-                current_buffer = 0
             from hearth.core import help_data
-            budgets = help_data.compaction_for_window(context_limit, model_limit.get('output'))
-            keep_budget, buffer_budget = budgets['keep'], budgets['buffer']
-            keep['tokens'] = min(max(current_keep, keep_budget),
-                                 max(keep_budget, context_limit - buffer_budget - max(4096, context_limit // 8)))
-            comp['buffer'] = min(max(current_buffer, buffer_budget), context_limit // 4)
+            settings = help_data.compaction_settings()
+            budgets = help_data.configured_compaction_for_window(
+                context_limit, settings['keep_tokens'], settings['buffer'])
+            keep['tokens'] = budgets['keep']
+            comp['buffer'] = budgets['buffer']
         mcp_servers = {}
         endpoints = {
             'exa': ('https://mcp.exa.ai/mcp', 'x-api-key'),

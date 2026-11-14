@@ -326,7 +326,7 @@
     settingsChatMaxMessagesEl.value = data.chat_max_messages ?? 500;
     settingsChatMaxMessageCharsEl.value = data.chat_max_message_chars ?? 2000000;
     settingsChatMaxToolRoundsEl.value = data.chat_max_tool_rounds ?? 100;
-    settingsOpencodeCompactionKeepTokensEl.value = data.opencode_compaction_keep_tokens ?? 15000;
+    settingsOpencodeCompactionKeepTokensEl.value = data.opencode_compaction_keep_tokens ?? "";
     settingsOpencodeCompactionBufferEl.value = data.opencode_compaction_buffer ?? "";
     settingsOpencodeCompactionAutoEl.checked = data.opencode_compaction_auto === true;
     settingsOpencodeAdvertiseLoadedContextEl.checked = data.opencode_advertise_loaded_context ?? true;

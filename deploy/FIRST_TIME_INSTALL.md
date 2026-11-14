@@ -302,6 +302,13 @@ Model test runs and performance metrics are stored in PostgreSQL and shared acro
 
 The metrics page compares each supported local model's latest comprehensive test run (All tests or Complete) from the full saved history; narrow suites do not replace it, and saved reports are not automatically trimmed to the newest 30. Hosted OpenCode catalog results are excluded from this report, including historical saved runs. It shows pass/fail/skip counts, pass rate (skips excluded), reasoning benchmark score, generated tokens per second, generated tokens per test, and average test time. Recommendation is quality-first: pass rate is weighted at 70%, reasoning benchmark at 20%, speed at 5%, and lower token use at 5%; values are scaled against the other models, with available dimensions reweighted. The reasoning score uses the 12-question benchmark when present and is not a human IQ score. Token, speed, and reasoning fields show as unavailable when a run did not record those results. On narrow screens, scroll the report horizontally; its 12 columns stay aligned with the headers.
 
+The repository README includes a dated snapshot of peak successful generation speeds for
+local models recorded on the development host, along with that host's CPU and memory specs.
+Treat those values as installation-specific observations rather than expected speeds: model
+quantization, context size, prompts, backend settings, and warm/cold state affect throughput.
+Hosted models are excluded because inference runs on remote hardware. Your own Metrics page
+records request speeds for your installation.
+
 ## Backend restarts and service tracking
 
 Hearth tracks backend and service lifecycle in PostgreSQL:
@@ -653,10 +660,12 @@ are reused rather than replaced during concurrent checks. On Hearth startup, rel
 listeners for saved agent sessions are restored before workers run, reconnecting
 persistent Docker containers to the host model bridge after an app restart.
 Automatic OpenCode compaction is on by default for desktop and project agents. Hearth
-generates a separate compaction-enabled OpenCode config inside each agent container. For
-Lemonade Muse models, Hearth keeps the known 65,536-token context window if Lemonade
-reports only temporarily available compaction headroom (for example 11,264 tokens),
-preventing repeated context-limit rejections from triggering compaction after every step. Its
+generates a separate compaction-enabled OpenCode config inside each agent container.
+The generated context and compaction budgets use the selected model's loaded context
+size, so a smaller sibling or a larger advertised maximum cannot override that window.
+When unloaded, Hearth uses the saved per-model ctx-size or the backend default. Blank
+Keep and Buffer settings use the formula; explicit overrides are bounded by its safety
+limits. Its
 OpenCode relay also shortens oversized historical tool results to their useful beginnings
 and endings. A project assignment continues with its OpenCode conversation while it fits
 the loaded model. Agent startup applies the selected model's saved loading ctx-size when it
@@ -666,20 +675,21 @@ the work-cycle counter. Its first prompt is kept short and does not repeat proje
 verification instructions. A repeated overflow remains saved for review. When compaction fails,
 Hearth also retries in a fresh session from the saved project checkpoint without advancing
 the work-cycle counter.
-For project agents, Hearth also caps retained recent turns at one eighth of the
-selected model's context up to a 65K-token window; Lemonade/Muse-style 65K+ models
-get a large recent-context budget (`keep.tokens` capped at 65,536). On a 65,536-token
-window `keep` is 40,960 and `buffer` 16,384 — `keep` never equals the window, because
-OpenCode's own compaction must fit a summarization request (`keep` + `buffer` + prompt
-overhead) inside it; `keep` equal to the whole window fails with "The compaction
-request cannot be reduced further without losing the latest exchange or checkpoint".
-The buffer is also the headroom a single agentic step has when compaction fires: one
-step can reach ~11K tokens, so 65K+ windows reserve a quarter of the window as the
-buffer (an older 8,192 buffer let a 10,830-token step overrun the 9,984 tokens left
-and fail the session). Smaller windows still
-scale to one eighth of their context. The selected model's own context is the
-floor, too: a smaller sibling in the shared config cannot leave a larger-window
-assignment with only a tiny retained history.
+For project agents, keep and buffer are derived from the selected model's loaded
+context using integer division:
+
+```text
+buffer        = max(1, context // 12)
+prompt_reserve = max(1, context // 64)
+keep          = max(0, context - buffer - prompt_reserve)
+```
+
+A 65,536-token window yields `buffer=5,461`, `prompt_reserve=1,024`, and
+`keep=59,051`; other context sizes scale by the same ratios. Blank Keep and Buffer
+settings use these formula values. A Keep override can lower formula keep, and a Buffer
+override can raise formula buffer up to one quarter of the loaded context. Keep plus
+buffer plus the prompt reserve fits within the window, so a smaller sibling in the shared
+config cannot shrink the selected model's budgets.
 This formula lives in one place (`help_data.compaction_for_window`). Hearth now
 shows the generated OpenCode config in Help for manual copy/save and no longer
 rewrites `~/.config/opencode/opencode.jsonc` automatically. Run
@@ -989,6 +999,9 @@ embedding endpoint handling, fail-soft behavior, and separate-vector-space retri
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
 automatically, shows requests from the last 48 hours (up to 500 most recent), and loads trace text only when opened.
+Chat, **Downloads**, **Live logs**, and **Model tests** also show live CPU percentage, used/total RAM
+and percentage, free disk space, and CPU temperature when a readable sensor is
+available. These host readings refresh every three seconds.
 Streaming rows stay at the top of the feed and update their displayed token count, rate,
 and elapsed time. They hide rates that round to zero; completed rows keep all three values
 fixed at finish.
@@ -1355,11 +1368,12 @@ The Continue and OpenCode configurations in Help use these keys when the app can
 downloaded from Help, which is the certificate clients must trust for the gateway.
 
 
-First-time setup validates database ports and service availability before prompting
+First-time setup validates that the configured application database URL selects
+PostgreSQL, along with database ports and service availability, before prompting
 for optional runtime installation. Without systemd, the shell installer reports
 `--no-service` before installing packages. Both setup paths refuse to create a fresh
-database over an unconfigured installation with populated legacy SQLite files;
-configure the existing installation's `DATABASE_URL` first. Runtime and agent-image
+database over an unconfigured installation with populated legacy local database
+files; configure the existing installation's `DATABASE_URL` first. Runtime and agent-image
 installation follow this check. Rerunning the normal service installer restarts
 `ai-webui.service` so updated code and renewed certificates take effect; active
 assignments may be interrupted and can be resumed after restart. Use `--no-service`

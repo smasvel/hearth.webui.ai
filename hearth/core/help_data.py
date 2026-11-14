@@ -65,41 +65,38 @@ _OUT = {"lmstudio": 8192, "lemonade": 8192, "vllm": 4096, "kobold": 4096, "fastf
 _BACKENDS = ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
 _NON_CHAT = ("embeddings", "transcription", "tts")
 
-# Compaction settings for the generated OpenCode config. OpenCode's own default keep.tokens is
-# 15000, which on a small-context model (e.g. the 32768-context LM Studio default) leaves too
-# little room for the summarization request itself - the session fails with "The compaction
-# request cannot be reduced further without losing the latest exchange or checkpoint". An admin
-# can lower keep.tokens / raise buffer from the Settings panel. These raw settings
-# follow OpenCode defaults; build_opencode_config() bounds them to model windows.
-DEFAULT_COMPACTION_KEEP_TOKENS = 15000
-
-
-def compaction_for_window(window: int, output_reserve: int | None = None) -> dict:
+def compaction_for_window(window: int) -> dict:
     """keep/buffer for an OpenCode config, derived purely from a model's context window.
 
     keep + buffer + the compaction prompt itself must fit inside the window: keep equal
     to the whole window makes OpenCode's own summarization request impossible and the
     session fails with "The compaction request cannot be reduced further without losing
-    the latest exchange or checkpoint". 65K+ windows keep a large recent-context budget
-    (up to 65,536); smaller windows scale to one eighth.
-
-    The buffer is also the headroom a single agentic step (system prompt + tool schema +
-    latest exchange or file read) has left when auto-compaction fires. A single step can
-    reach ~11K tokens (observed in production: a 10,830-token step against 9,984 tokens
-    left on a 65,536 window with the old 8,192 buffer — the step, and then the
-    compaction summarization itself, overran the window and the session failed with
-    "request exceeds the available context size"). So on 65K+ windows the buffer is at
-    least a quarter of the window, not just the model's output reserve: 16,384 on a
-    65,536-token window, which no observed single step exceeds.
+    the latest exchange or checkpoint". The buffer is one twelfth of the loaded window
+    (about 5.3K tokens at 65,536). Keep uses the remaining capacity after the buffer
+    and a one-sixty-fourth prompt reserve, so a 65,536 window retains about 59K tokens. Both
+    values scale with context rather than using model-name-specific settings.
     """
-    reserve = int(output_reserve) if output_reserve and output_reserve > 0 else 8192
-    if window >= 65536:
-        buffer = max(reserve, window // 4)
-        keep = min(65536, window - buffer - max(4096, window // 8))
-    else:
-        keep = max(1024, window // 8)
-        buffer = keep
+    window = max(1, int(window))
+    buffer = max(1, window // 12)
+    prompt_reserve = max(1, window // 64)
+    keep = max(0, window - buffer - prompt_reserve)
     return {"keep": keep, "buffer": buffer}
+
+
+def configured_compaction_for_window(window: int, keep_override: int | None = None,
+                                     buffer_override: int | None = None) -> dict:
+    """Apply optional admin overrides to formula-derived budgets for one context window.
+
+    Keep overrides may lower the formula's retained history. Buffer overrides may raise
+    the formula's safety headroom, bounded to one quarter of the loaded window.
+    """
+    window = max(1, int(window))
+    budgets = compaction_for_window(window)
+    keep = budgets['keep'] if keep_override is None else min(max(0, int(keep_override)), budgets['keep'])
+    buffer = budgets['buffer']
+    if buffer_override is not None:
+        buffer = min(max(buffer, int(buffer_override)), window // 4)
+    return {'keep': keep, 'buffer': buffer}
 
 
 def compaction_settings() -> dict:
@@ -107,9 +104,9 @@ def compaction_settings() -> dict:
     is picked up the next time the Help page regenerates the OpenCode config."""
     raw_keep = settings_store.get("opencode_compaction_keep_tokens")
     try:
-        keep = int(raw_keep) if raw_keep not in (None, "") else DEFAULT_COMPACTION_KEEP_TOKENS
+        keep = int(raw_keep) if raw_keep not in (None, "") else None
     except (TypeError, ValueError):
-        keep = DEFAULT_COMPACTION_KEEP_TOKENS
+        keep = None
     buffer: int | None = None
     raw_buffer = settings_store.get("opencode_compaction_buffer")
     if raw_buffer not in (None, ""):
@@ -120,7 +117,8 @@ def compaction_settings() -> dict:
     # Generated configs compact before the loaded model window fills. Admins can
     # still turn this off explicitly when they prefer a fully preserved transcript.
     auto = (settings_store.get("opencode_compaction_auto") or "true") == "true"
-    return {"auto": auto, "keep_tokens": max(0, keep), "buffer": buffer}
+    return {"auto": auto, "keep_tokens": max(0, keep) if keep is not None else None,
+            "buffer": buffer}
 
 
 def opencode_context_settings() -> dict:
@@ -151,21 +149,12 @@ def opencode_context_settings() -> dict:
 
 
 def _advertised_context(be: str, model_id: str, ctx_by_model: dict, fallback: int | None) -> int:
-    """Context to advertise for one model: the saved/loaded window the caller resolved for
-    this (backend, model) in ctx_by_model, else the admin's global fallback, else this
-    backend's tuned default. fastflowlm is special-cased because its live --ctx-len is the
-    only meaningful value and Hearth cannot change it per model."""
+    """Context to advertise: the resolved loaded/configured window, admin fallback, or
+    backend default. FastFlowLM uses its live --ctx-len because Hearth cannot change it
+    per model."""
     if be == "fastflowlm":
         return flm_context.context_limit(model_id)
     detected = ctx_by_model.get((be, model_id))
-    # Lemonade may report the *current request's* available context after OpenCode
-    # has started compacting (for example 11,264 tokens for a 65K Muse model).
-    # Feeding that transient headroom back as the model's configured window creates
-    # a compaction loop: each retry is planned against the already-reduced value.
-    # Prefer the known native window for Muse, unless the operator has set an
-    # explicit per-model maximum below.
-    if be == "lemonade" and "muse" in model_id.casefold() and detected and detected >= 16384:
-        return max(detected, _CTX[be])
     if isinstance(detected, int) and detected > 0:
         return detected
     if fallback:
@@ -478,13 +467,12 @@ def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_labe
     return "\n".join(lines)
 
 
-def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_override=None, network_label="LAN", ctx_by_model=None, max_ctx_by_model=None) -> str:
+def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_override=None, network_label="LAN", ctx_by_model=None) -> str:
     # network_label: see build_continue_yaml's docstring comment — same reasoning, cosmetic only.
     # ctx_by_model: {(backend, model_id): context_to_advertise} resolved by build() from the
     # admin's saved per-model ctx-size (preferred) or the live loaded context. This keeps a
     # generated client config current even before a running model has been reloaded.
     ctx_by_model = dict(ctx_by_model or {})
-    max_ctx_by_model = dict(max_ctx_by_model or {})
     context_settings = opencode_context_settings()
     if not context_settings["advertise_loaded"]:
         ctx_by_model = {}
@@ -493,11 +481,6 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
         models = {}
         for mid in chat_by_be.get(be, []):
             ctx = _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
-            maximum = max_ctx_by_model.get((be, mid), 0)
-            if maximum >= 65536:
-                ctx = max(ctx, 65536)
-            if be == "lemonade" and "muse" in mid.casefold() and ctx >= 8192:
-                ctx = max(ctx, _CTX[be])
             models[mid] = {
                 "name": f"{mid} ({_LABELS[be]}, {network_label})",
                 "limit": {"context": ctx, "output": _advertised_output(be, ctx, mid)},
@@ -578,9 +561,7 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
     # Bound the administrator's compaction settings to the configured model windows
     # below; OpenCode's default retained history can exceed an entire small window.
     compaction = compaction_settings()
-    compaction_block: dict = {"auto": compaction["auto"], "keep": {"tokens": compaction["keep_tokens"]}}
-    if compaction["buffer"] is not None:
-        compaction_block["buffer"] = compaction["buffer"]
+    compaction_block: dict = {"auto": compaction["auto"]}
     cfg = {
         "$schema": "https://opencode.ai/config.json",
         "model": _pick_default(chat_by_be, loaded_by_be, default_override) or "",
@@ -603,16 +584,16 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
         default_model = _pick_default(chat_by_be, loaded_by_be, default_override) or ""
         be_, model_id = default_model.partition("/")[0], default_model.partition("/")[2]
         default_window = None
-        if default_model in provider.keys() and model_id in provider.get(be_, {}).get('models', {}):
+        if be_ in provider and model_id in provider.get(be_, {}).get('models', {}):
             default_window = provider[be_]['models'][model_id]['limit']['context']
         limit = default_window or min(windows)
         # keep/buffer are derived from the selected model's window: keep + buffer +
         # the compaction prompt must fit, so keep never equals the window.
-        budgets = compaction_for_window(limit)
-        keep_budget = max(1024, budgets['keep'])
-        buffer_budget = budgets['buffer']
-        compaction_block["keep"]["tokens"] = min(compaction_block["keep"]["tokens"], keep_budget)
-        compaction_block["buffer"] = min(max(compaction_block.get("buffer", 0), buffer_budget), limit // 4)
+        budgets = configured_compaction_for_window(
+            limit, keep_override=compaction['keep_tokens'],
+            buffer_override=compaction['buffer'])
+        compaction_block['keep'] = {'tokens': budgets['keep']}
+        compaction_block['buffer'] = budgets['buffer']
     return json.dumps(cfg, indent=2)
 
 
@@ -704,14 +685,10 @@ def _build_uncached(app_port: int = 5443) -> dict:
     # A loaded model's active window is authoritative. A saved larger value only takes
     # effect on the next Load; advertising it early makes OpenCode send oversized turns.
     ctx_by_model = {}
-    max_ctx_by_model = {}
     for m in models:
         context = _configured_or_loaded_context(m)
         if context:
             ctx_by_model[(m.get("backend"), m["id"])] = context
-        maximum = m.get("max_context_length")
-        if type(maximum) is int and maximum > 0:
-            max_ctx_by_model[(m.get("backend"), m["id"])] = maximum
     embed_models = [
         {"id": m["id"], "backend": m.get("backend")}
         for m in models if m.get("type") == "embeddings"
@@ -758,7 +735,6 @@ def _build_uncached(app_port: int = 5443) -> dict:
         ts_opencode_config = build_opencode_config(
             ts_ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
             network_label="Tailscale", ctx_by_model=ctx_by_model,
-            max_ctx_by_model=max_ctx_by_model,
         )
         # A device reachable only over Tailscale can't necessarily reach the LAN IP either —
         # that's the whole point of needing Tailscale — so Step 1's CA-trust command (which
@@ -802,6 +778,5 @@ def _build_uncached(app_port: int = 5443) -> dict:
         "opencode_config": build_opencode_config(
             ip, opencode_token, ports, chat_by_be, loaded_by_be, default_override,
             ctx_by_model=ctx_by_model,
-            max_ctx_by_model=max_ctx_by_model,
         ),
     }

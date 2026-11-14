@@ -1,11 +1,9 @@
-"""Regenerate ~/.config/opencode/opencode.jsonc from Hearth's live backends.
+"""Print ~/.config/opencode/opencode.jsonc content from Hearth's live backends.
 
 Run manually or from deploy/opencode-config-sync.timer so the desktop OpenCode
-config never drifts from reality: model context limits (advertised windows) and
-compaction keep/buffer are re-derived from whatever each backend currently
-reports, using help_data.compaction_for_window(). The write is idempotent — if
-the freshly generated config equals the current file (ignoring comments), nothing
-is touched. Each real change leaves a timestamped .bak next to the file.
+config can be refreshed from current model context limits and formula-derived
+compaction budgets, using help_data.configured_compaction_for_window(). The script
+prints the config for review and never writes the user's local file.
 
 Exit 0 always unless generation itself fails; a backend hiccup must never kill a
 running desktop OpenCode session by rewriting its config mid-flight.
@@ -90,8 +88,10 @@ def main() -> int:
     window = (((config.get('provider') or {}).get(provider) or {})
               .get('models', {}).get(model_id) or {}).get('limit', {}).get('context')
     if isinstance(window, int) and window > 0:
-        budgets = help_data.compaction_for_window(window)
-        config['compaction'] = {'auto': help_data.compaction_settings()['auto'], 'keep': {'tokens': budgets['keep']},
+        settings = help_data.compaction_settings()
+        budgets = help_data.configured_compaction_for_window(
+            window, keep_override=settings['keep_tokens'], buffer_override=settings['buffer'])
+        config['compaction'] = {'auto': settings['auto'], 'keep': {'tokens': budgets['keep']},
                                 'buffer': budgets['buffer']}
 
     # Display only: never overwrite the local OpenCode config.

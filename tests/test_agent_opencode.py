@@ -238,17 +238,21 @@ class ContainerRecoveryTests(unittest.TestCase):
                       'api_key': 'key', 'headers': {}, 'verify_tls': True}
         self.assertTrue(ContainerOpenCode._can_reuse_container(existing, job, config, proxy_info))
 
-    def test_agent_config_bounds_compaction_to_selected_model_context(self):
+    @patch('hearth.core.help_data.compaction_settings',
+           return_value={'auto': True, 'keep_tokens': None, 'buffer': None})
+    def test_agent_config_bounds_compaction_to_selected_model_context(self, _settings):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         provider = {'options': {}, 'models': {'model': {'limit': {'context': 65536, 'output': 8192}}}}
         config = client._agent_config(
             {'compaction': {'auto': True, 'keep': {'tokens': 65536}, 'buffer': 1024}},
             'lemonade', 'model', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384,
+            'auto': True, 'keep': {'tokens': 59051}, 'buffer': 5461,
         })
 
-    def test_agent_config_does_not_narrow_a_large_muse_window_when_smaller_siblings_exist(self):
+    @patch('hearth.core.help_data.compaction_settings',
+           return_value={'auto': True, 'keep_tokens': None, 'buffer': None})
+    def test_agent_config_does_not_narrow_loaded_context_when_smaller_siblings_exist(self, _settings):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         provider = {'options': {}, 'models': {
             'Muse-Glimmer-30B-GGUF': {'limit': {'context': 65536, 'output': 8192}},
@@ -259,17 +263,19 @@ class ContainerRecoveryTests(unittest.TestCase):
             {'compaction': {'auto': True, 'keep': {'tokens': 1024}, 'buffer': 1024}},
             'lemonade', 'Muse-Glimmer-30B-GGUF', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384,
+            'auto': True, 'keep': {'tokens': 59051}, 'buffer': 5461,
         })
 
-    def test_agent_config_scales_compaction_for_a_muse_style_lemonade_window(self):
+    @patch('hearth.core.help_data.compaction_settings',
+           return_value={'auto': True, 'keep_tokens': None, 'buffer': None})
+    def test_agent_config_scales_compaction_for_each_loaded_context_window(self, _settings):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
         for model, context, expected_keep, expected_buffer in (
-            ('Muse-Glimmer-30B-GGUF', 65536, 40960, 16384),
-            ('Muse-Sibri-3.6B-GGUF', 131072, 65536, 32768),
-            ('GLM-4.7-Flash-GGUF', 32768, 4096, 4096),
-            ('qwen3.8-2b-distill', 8192, 1024, 1024),
-            ('Ornith-1.5-9B-GGUF', 16384, 2048, 2048),
+            ('Muse-Glimmer-30B-GGUF', 65536, 59051, 5461),
+            ('Muse-Sibri-3.6B-GGUF', 131072, 118102, 10922),
+            ('GLM-4.7-Flash-GGUF', 32768, 29526, 2730),
+            ('qwen3.8-2b-distill', 8192, 7382, 682),
+            ('Ornith-1.5-9B-GGUF', 16384, 14763, 1365),
         ):
             with self.subTest(model=model):
                 provider = {'options': {}, 'models': {
@@ -286,7 +292,7 @@ class ContainerRecoveryTests(unittest.TestCase):
             {'compaction': {'auto': True, 'keep': {'tokens': 65536}, 'buffer': 32768}},
             'lemonade', 'Muse-Glimmer-30B-GGUF', provider)
         self.assertEqual(config['compaction'], {
-            'auto': True, 'keep': {'tokens': 40960}, 'buffer': 16384,
+            'auto': True, 'keep': {'tokens': 59051}, 'buffer': 5461,
         })
 
     def test_live_model_relay_socket_is_reused_instead_of_unlinked(self):

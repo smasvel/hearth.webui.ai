@@ -25,6 +25,12 @@
           <a class="console-tab" href="{{ url_for('users_page') }}">Users</a>
           <a class="console-tab" href="{{ url_for('settings_page') }}">Settings</a>
         </nav>
+        <div id="system-stats" class="system-stats" title="System CPU / RAM / disk usage">
+          <span id="stat-cpu">CPU –</span>
+          <span id="stat-ram">RAM –</span>
+          <span id="stat-disk">Disk –</span>
+          <span id="stat-temp"></span>
+        </div>
         <div class="chat-header-actions" style="margin-left:auto;">
           <span class="hint">{{ username }}</span>
           <form method="post" action="{{ url_for('logout') }}" class="logout-form">
@@ -53,6 +59,7 @@
       </div>
     </main>
   </div>
+  <script src="{{ asset('system_stats.js') }}"></script>
   <script src="{{ asset('live_logs.js') }}"></script>
 </body>
 </html>

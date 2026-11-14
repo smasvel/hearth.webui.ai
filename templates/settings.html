@@ -389,20 +389,21 @@
               the loaded context fills. A model still has a finite context window; if a turn
               exceeds its loaded limit, use a larger model or increase its loading ctx-size.
               Turn compaction off to keep the full transcript when you prefer.
-              Keep tokens and Buffer apply when compaction is enabled or requested manually.
+              Leave Keep and Buffer blank to size them from the selected model's loaded context.
+              Overrides are bounded by the context-based safety formula.
             </p>
             <div class="download-row">
               <label class="hint"><input id="settings-opencode-compaction-auto" type="checkbox" /> Automatically compact OpenCode conversations</label>
               <label class="hint">
                 Keep tokens
                 <input id="settings-opencode-compaction-keep-tokens" class="panel-input" type="number"
-                       min="0" max="10000000" step="1" value="15000" />
+                       min="0" max="10000000" step="1" placeholder="Automatic from loaded context" />
               </label>
               <label class="hint">
-                Buffer tokens (optional)
+                Buffer tokens (optional override)
                 <input id="settings-opencode-compaction-buffer" class="panel-input" type="number"
                        min="0" max="10000000" step="1"
-                       placeholder="OpenCode default (10% of limit)" />
+                       placeholder="Automatic from loaded context" />
               </label>
             </div>
           </div>
