@@ -34,9 +34,11 @@ image; agent execution is Linux-only. Setup offers optional runtime installation
 model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
 for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
 remote runtime.
-Open **Downloads** to find `Ornith-1.5-9B-GGUF` preselected in the Lemonade search.
-Review its result and choose Download to install the model; setup does not download
-model weights automatically. On Downloads, use **Exclude unknown support** to hide
+Open **Downloads** with backend search fields empty. Catalogs and suggestions that support
+browsing load automatically; search for a model to narrow results or search backends that
+require a query. Choose Download to install a model. During first-time setup, the installer
+can separately offer to download `Ornith-1.5-9B-GGUF` before starting Hearth when Lemonade
+is reachable. On Downloads, use **Exclude unknown support** to hide
 search results whose catalog metadata does not say whether they support tool calling;
 the per-backend tool-calling filters remain available when you want only models that
 explicitly declare support.

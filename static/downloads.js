@@ -631,8 +631,7 @@
     searchVllm(vllmSearchInput.value.trim());
   });
 
-  // Start with the recommended Lemonade chat model so a new installation has a
-  // clear first choice; users can edit the query to browse other catalog entries.
+  // Browse the Lemonade catalog on page load while leaving its search field empty.
   searchCatalog(searchInput.value.trim());
   // vLLM: empty query loads the curated suggestions (models vetted to load on vLLM),
   // shown first the way Lemonade's catalog is.

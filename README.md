@@ -241,9 +241,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    recognizable sizes in model names/descriptions; models without a detectable
    count are hidden while a size filter is active. Clear the size checkboxes to
    show all sizes again.
-5. **Downloads** opens with the recommended Lemonade `Ornith-1.5-9B-GGUF` search
-   selected. During first-time Ubuntu setup, the installer offers to download this
-   model before starting the service when Lemonade is reachable. It shows the catalog
+5. **Downloads** opens with backend search fields empty. Catalogs and suggestions that
+   support browsing load automatically; search for a model to narrow results or search
+   backends that require a query. During first-time Ubuntu setup, the installer offers
+   to download `Ornith-1.5-9B-GGUF` before starting the service when Lemonade is reachable.
+   It shows the catalog
    size, free disk space, available RAM, and an example transfer time, then requires
    your confirmation. You can decline or pass `--skip-model-download` and download it
    here later. Follow progress and logs, inspect active downloads, or

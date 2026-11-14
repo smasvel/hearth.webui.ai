@@ -67,9 +67,10 @@
           <button id="getting-started-dismiss" class="getting-started-dismiss" type="button" title="Dismiss" aria-label="Dismiss">&times;</button>
           <h2 style="margin-top: 0;">New to Hearth? Start here.</h2>
           <p class="hint">
-            <strong>Ornith-1.5-9B-GGUF</strong> is prefilled and searched in the Lemonade
-            catalog as a recommended first chat model. Review its card and choose Download
-            to install it; Hearth does not start model downloads automatically.
+            The Lemonade search starts empty, and its catalog is browsed automatically when
+            the page opens. Search for <strong>Ornith-1.5-9B-GGUF</strong> or another model
+            when you want to narrow the results. Choose Download to install a model; Hearth
+            does not start model downloads automatically.
             <strong>vLLM</strong> and <strong>FastFlowLM (NPU)</strong> also list ready-to-download
             suggestions when available.
           </p>
@@ -150,7 +151,7 @@
             </p>
             <form id="catalog-search-form" class="download-form">
               <div class="download-row">
-                <input id="catalog-search-input" class="panel-input" type="text" value="Ornith-1.5-9B-GGUF" placeholder="e.g. Ornith-1.5-9B-GGUF, llama, embed, whisper" autocomplete="off" />
+                <input id="catalog-search-input" class="panel-input" type="text" placeholder="e.g. Ornith-1.5-9B-GGUF, llama, embed, whisper" autocomplete="off" />
                 <button id="catalog-search-btn" class="panel-btn" type="submit">Search</button>
               </div>
             </form>
@@ -191,7 +192,7 @@
             </p>
             <form id="q38-search-form" class="download-form">
               <div class="download-row">
-                <input id="q38-search-input" class="panel-input" type="text" value="julianmb" placeholder="q38rocm-supported model" autocomplete="off" />
+                <input id="q38-search-input" class="panel-input" type="text" placeholder="q38rocm-supported model" autocomplete="off" />
                 <button class="panel-btn" type="submit">Search</button>
               </div>
             </form>
