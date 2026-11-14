@@ -2,8 +2,8 @@ import copy
 import unittest
 from unittest.mock import patch
 
-import lmstudio_shim as shim
-from wire_lmstudio_proxy import upstream_paths
+from hearth.backends import lmstudio_shim as shim
+from hearth.backends.wire_lmstudio_proxy import upstream_paths
 
 
 class CompatibilityTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import opencode_client as zen
+from hearth.backends import opencode_client as zen
 
 
 class _StreamingResponse:

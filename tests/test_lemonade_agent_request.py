@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-import lemonade_guard_shim as shim
+from hearth.backends import lemonade_guard_shim as shim
 
 
 class AgentRequestTests(unittest.TestCase):

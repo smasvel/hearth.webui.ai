@@ -4,9 +4,9 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import fastflowlm_client as flm
-import flm_tool_shim as shim
-from flm_tool_shim import _split_live_reasoning
+from hearth.backends import fastflowlm_client as flm
+from hearth.backends import flm_tool_shim as shim
+from hearth.backends.flm_tool_shim import _split_live_reasoning
 
 
 class ReasoningStreamingTests(unittest.TestCase):

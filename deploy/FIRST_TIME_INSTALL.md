@@ -124,7 +124,9 @@ configuration from Help and restart OpenCode, or run `python3 tools/sync_opencod
 to refresh the desktop configuration. The generated limit uses the actual served context
 for a loaded model; a saved larger maximum applies only after the model is reloaded. Continue
 for VS Code receives each model's advertised loaded context, while its own settings control
-compaction. Every client remains subject to the model's actual loaded limit.
+compaction. OpenCode requests routed through Hearth's Lemonade relay load an unloaded model
+with its saved Models-page ctx-size, and reapply that size if the model is already loaded
+with a smaller context. Every client remains subject to the model's actual loaded limit.
 Search all backends on Downloads checks the latest public Lemonade catalog and LM
 Studio's model catalog as well as the backend and Hugging Face searches. These public
 matches require internet access; new Lemonade GGUF entries download through Hugging
@@ -213,7 +215,7 @@ CSV attachment extraction is built into Hearth.
 - Setup generates or imports the session-signing key and stores it encrypted in
   PostgreSQL before starting the app; direct app starts do the same on first launch.
 - Starts PostgreSQL 18 with Compose, waiting for its readiness check.
-- Loads the application DDL from `database_schema.sql` into the new PostgreSQL
+- Loads the application DDL from `hearth/storage/database_schema.sql` into the new PostgreSQL
   database, leaving the users table empty on a new install. The DDL includes the
   per-user agent workflow setting, application settings and encrypted-secret tables,
   agent data, model metadata, model-test reports, and private workspace tables. Setup
@@ -305,7 +307,7 @@ existing users and credentials are preserved, and legacy `ADMIN_USERNAME` and
 setup form is not shown.
 
 For manual setup, `.venv/bin/python tools/first_time_setup.py --help` lists setup
-options. The command starts PostgreSQL and applies `database_schema.sql`; the first
+options. The command starts PostgreSQL and applies `hearth/storage/database_schema.sql`; the first
 browser visit creates the administrator.
 
 Agent assignments, activity, sharing, runtime metadata, and per-assignment project
@@ -430,7 +432,8 @@ the model repeat the lookup through many browser tool calls. The tool-call round
 defaults to 100 and is configurable in Settings for specific multi-step browser tasks.
 For local KoboldCPP, Hearth runs a persistent compatibility shim on 127.0.0.1:13308
 via the systemd user service `kobold-shim.service`. The service starts
-`kobold_tool_shim.py` and runs `wire_kobold_proxy.py` on ExecStartPost to patch Caddy's
+`python -m hearth.backends.kobold_tool_shim` and runs
+`python -m hearth.backends.wire_kobold_proxy` on ExecStartPost to patch Caddy's
 8446 gateway block so LAN OpenCode/Continue requests are proxied through the shim
 instead of directly to KoboldCPP's 5001. Each proxied request is reported to Hearth's
 live metrics feed with `backend=kobold`, making KoboldCPP traffic visible in Live logs

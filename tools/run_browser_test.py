@@ -4,7 +4,7 @@ import runpy
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import database
+from hearth.storage import database
 
 
 def main():

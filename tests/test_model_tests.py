@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import app
-import model_tests
-import model_test_profiles as profiles
+from hearth.models import model_tests
+from hearth.models import model_test_profiles as profiles
 from tools.test_flm_model import Cancelled, decode, run_suite
 
 
@@ -316,7 +316,7 @@ class ProfileTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_q38rocm_catalog_uses_real_hugging_face_repository_id(self):
-        import q38rocm_client
+        from hearth.backends import q38rocm_client
         result = q38rocm_client.search_catalog('julianmb')
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]['id'], 'julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF')
@@ -592,7 +592,7 @@ class SuiteTests(unittest.TestCase):
         broken_config = json.dumps({'provider': {'kobold': {'models': {
             'kobold-model': {'capabilities': {'tools': False}},
         }}}})
-        with patch('help_data.build_opencode_config', return_value=broken_config), \
+        with patch('hearth.core.help_data.build_opencode_config', return_value=broken_config), \
              patch('tools.test_flm_model.requests.post') as post:
             results = run_suite('kobold-model', 'http://local', suite='opencode', backend='kobold',
                                 only={('opencode-agent-tool-capability', False)})

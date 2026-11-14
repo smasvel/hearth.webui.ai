@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-import mcp_tools_client
+from hearth.integrations import mcp_tools_client
 
 
 class MCPEventLoopTests(unittest.TestCase):

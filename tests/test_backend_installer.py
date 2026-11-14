@@ -42,22 +42,24 @@ class BackendInstallerTests(unittest.TestCase):
 
     @patch.object(installer.platform, 'system', return_value='Linux')
     @patch.object(installer.platform, 'freedesktop_os_release', return_value={'ID': 'ubuntu'})
-    @patch.object(installer.shutil, 'which', return_value=None)
+    @patch.object(installer.shutil, 'which', side_effect=lambda cmd: '/usr/bin/docker' if cmd == 'docker' else None)
+    @patch.object(installer.socket.socket, 'connect_ex', return_value=1)
     @patch.object(installer.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['sudo', 'apt-get', 'update']))
-    def test_package_failure_stops_installation(self, run, which, release, system):
+    def test_package_failure_stops_installation(self, run, port_busy, which, release, system):
         with self.assertRaises(subprocess.CalledProcessError):
             installer.install_backends(['lemonade'])
-        self.assertEqual(run.call_count, 1)
+        run.assert_called_once_with(['docker', 'pull', 'ghcr.io/lemonade-sdk/lemonade-server:latest'], check=True)
 
     @patch.object(installer.platform, 'system', return_value='Linux')
     @patch.object(installer.platform, 'freedesktop_os_release', return_value={'ID': 'ubuntu'})
-    @patch.object(installer.shutil, 'which', return_value=None)
+    @patch.object(installer.shutil, 'which', side_effect=lambda cmd: '/usr/bin/docker' if cmd == 'docker' else None)
+    @patch.object(installer.socket.socket, 'connect_ex', return_value=1)
     @patch.object(installer.subprocess, 'run')
-    def test_ubuntu_installs_from_official_ppa(self, run, which, release, system):
+    def test_ubuntu_installs_from_official_ppa(self, run, port_busy, which, release, system):
         installer.install_backends(['lemonade'])
         commands = [c.args[0] for c in run.call_args_list]
-        self.assertIn(['sudo', 'add-apt-repository', '-y', 'ppa:lemonade-team/stable'], commands)
-        self.assertEqual(commands[-1], ['sudo', 'apt-get', 'install', '-y', 'lemonade-server'])
+        self.assertEqual(commands[0], ['docker', 'pull', 'ghcr.io/lemonade-sdk/lemonade-server:latest'])
+        self.assertIn('docker', commands[-1])
 
     @patch.object(installer.platform, 'system', return_value='Windows')
     @patch.object(installer.Path, 'is_file', side_effect=[False, True])
@@ -78,11 +80,12 @@ class BackendInstallerTests(unittest.TestCase):
 
     @patch.object(installer.platform, 'system', return_value='Linux')
     @patch.object(installer.platform, 'freedesktop_os_release', return_value={'ID': 'ubuntu'})
-    @patch.object(installer.shutil, 'which', side_effect=lambda cmd: '/usr/bin/lemond' if cmd == 'lemond' else None)
+    @patch.object(installer.shutil, 'which', side_effect=lambda cmd: '/usr/bin/docker' if cmd == 'docker' else None)
+    @patch.object(installer.socket.socket, 'connect_ex', return_value=1)
     @patch.object(installer.subprocess, 'run')
-    def test_current_lemonade_package_is_reused(self, run, which, release, system):
+    def test_current_lemonade_package_is_reused(self, run, port_busy, which, release, system):
         installer.install_backends(['lemonade'])
-        run.assert_not_called()
+        self.assertEqual(run.call_args_list[0].args[0], ['docker', 'pull', 'ghcr.io/lemonade-sdk/lemonade-server:latest'])
 
     @patch.object(installer.platform, 'system', return_value='Linux')
     @patch.object(installer.ctypes.util, 'find_library', return_value=None)

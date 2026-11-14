@@ -127,10 +127,10 @@ def install(args=None):
         compose += ["--project-name", options.project_name]
     _run(compose + ["up", "-d", "--wait", "postgres"])
     setup.initialize_application_storage()
-    from local_tls import ensure_certificate
+    from hearth.core.local_tls import ensure_certificate
     ensure_certificate(ROOT / 'certs')
 
-    import settings_store
+    from hearth.storage import settings_store
     settings_store.set(f"{backend}_base_url", backend_url)
     if not options.no_api_key:
         try:

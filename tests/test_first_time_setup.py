@@ -17,6 +17,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         (self.root / '.env.example').write_text('DATABASE_URL=\n')
         (self.root / 'agent_container').mkdir()
         (self.root / 'agent_container' / 'IMAGE_VERSION').write_text('2.1.2\n')
+        (self.root / 'agent_container' / 'OPENCODE_VERSION').write_text('1.2.3\n')
         patcher = patch.object(setup, 'ROOT', self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -66,18 +67,18 @@ class FirstTimeSetupTests(unittest.TestCase):
         env_path.write_text('DATABASE_URL=postgresql://test/db\nFLASK_SECRET_KEY=legacy-session-secret\n')
         reports = self.root / 'data' / 'model-test-runs'
         with patch.dict('os.environ', {'FLASK_SECRET_KEY': 'legacy-session-secret'}, clear=False), \
-             patch('database.DATA_DIR', self.root / 'data'), \
-             patch('database.init_schema') as init_schema, \
-             patch('users_store.init_db') as init_users, \
-             patch('users_store.count_users', return_value=2), \
-             patch('agent_store.init_db') as init_agents, \
-             patch('model_metadata_store.init_db'), \
-             patch('model_metadata_store.import_test_runs'), \
-             patch('model_metadata_store.migrate_registry_file'), \
-             patch('model_resource_warnings.init_db'), \
-             patch('settings_store.init_db') as init_settings, \
-             patch('settings_store.migrate_legacy_environment') as migrate_settings, \
-             patch('secret_store.get_or_create_flask_key', return_value='stable-key') as save_secret:
+             patch('hearth.storage.database.DATA_DIR', self.root / 'data'), \
+             patch('hearth.storage.database.init_schema') as init_schema, \
+             patch('hearth.storage.users_store.init_db') as init_users, \
+             patch('hearth.storage.users_store.count_users', return_value=2), \
+             patch('hearth.agents.agent_store.init_db') as init_agents, \
+             patch('hearth.storage.model_metadata_store.init_db'), \
+             patch('hearth.storage.model_metadata_store.import_test_runs'), \
+             patch('hearth.storage.model_metadata_store.migrate_registry_file'), \
+             patch('hearth.storage.model_resource_warnings.init_db'), \
+             patch('hearth.storage.settings_store.init_db') as init_settings, \
+             patch('hearth.storage.settings_store.migrate_legacy_environment') as migrate_settings, \
+             patch('hearth.storage.secret_store.get_or_create_flask_key', return_value='stable-key') as save_secret:
             self.assertEqual(setup.initialize_application_storage(), 2)
             self.assertNotIn('FLASK_SECRET_KEY', __import__('os').environ)
         init_schema.assert_called_once_with()
@@ -90,7 +91,7 @@ class FirstTimeSetupTests(unittest.TestCase):
         self.assertFalse(reports.exists())
 
     def test_canonical_ddl_creates_runtime_settings_and_app_secrets(self):
-        schema = (Path(__file__).resolve().parents[1] / 'database_schema.sql').read_text()
+        schema = (Path(__file__).resolve().parents[1] / 'hearth/storage/database_schema.sql').read_text()
         self.assertIn('CREATE TABLE IF NOT EXISTS settings', schema)
         self.assertIn('CREATE TABLE IF NOT EXISTS app_secrets', schema)
         self.assertIn('CREATE TABLE IF NOT EXISTS agent_tasks', schema)
@@ -151,9 +152,9 @@ class FirstTimeSetupTests(unittest.TestCase):
 
     def test_initial_download_requires_confirmation_and_machine_capacity(self):
         catalog = [{'id': 'Ornith-1.5-9B-GGUF', 'size_gb': 5.0, 'downloaded': False}]
-        with patch('lemonade_client.search_catalog', return_value=catalog), \
-             patch('lemonade_client.pull_catalog_model', return_value=iter([{'percent': 50}, {'done': True}])) as pull, \
-             patch('model_metadata_store.mark_model_downloaded') as record, \
+        with patch('hearth.backends.lemonade_client.search_catalog', return_value=catalog), \
+             patch('hearth.backends.lemonade_client.pull_catalog_model', return_value=iter([{'percent': 50}, {'done': True}])) as pull, \
+             patch('hearth.storage.model_metadata_store.mark_model_downloaded') as record, \
              patch.object(setup.shutil, 'disk_usage', return_value=SimpleNamespace(free=12_000_000_000)), \
              patch.object(setup.psutil, 'virtual_memory', return_value=SimpleNamespace(available=12_000_000_000)):
             self.assertFalse(setup.offer_initial_model_download(lambda _: ''))
@@ -164,8 +165,8 @@ class FirstTimeSetupTests(unittest.TestCase):
 
     def test_initial_download_skips_when_disk_is_short(self):
         catalog = [{'id': 'Ornith-1.5-9B-GGUF', 'size_gb': 5.0, 'downloaded': False}]
-        with patch('lemonade_client.search_catalog', return_value=catalog), \
-             patch('lemonade_client.pull_catalog_model') as pull, \
+        with patch('hearth.backends.lemonade_client.search_catalog', return_value=catalog), \
+             patch('hearth.backends.lemonade_client.pull_catalog_model') as pull, \
              patch.object(setup.shutil, 'disk_usage', return_value=SimpleNamespace(free=5_000_000_000)), \
              patch.object(setup.psutil, 'virtual_memory', return_value=SimpleNamespace(available=12_000_000_000)):
             self.assertFalse(setup.offer_initial_model_download(lambda _: 'y'))

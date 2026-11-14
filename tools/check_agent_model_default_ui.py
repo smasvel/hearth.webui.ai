@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
-import agent_tasks
-from agent_tasks import Manager
+from hearth.agents import agent_tasks
+from hearth.agents.agent_tasks import Manager
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 

@@ -10,9 +10,9 @@ sys.path.insert(0, str(ROOT))
 def main():
     from tools.first_time_setup import initialize_application_storage
     initialize_application_storage()
-    from local_tls import ensure_certificate
+    from hearth.core.local_tls import ensure_certificate
     ensure_certificate(ROOT / 'certs')
-    import database
+    from hearth.storage import database
     # A second instance must not eagerly load support models on shared host runtimes.
     # Users can opt in under Settings; preserve their choice on every restart.
     with database.connect() as conn:

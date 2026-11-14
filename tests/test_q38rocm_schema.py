@@ -3,7 +3,7 @@ import copy
 import unittest
 from unittest.mock import Mock, patch
 
-import q38rocm_client as q38
+from hearth.backends import q38rocm_client as q38
 from tools.test_flm_model import WEATHER, function, run_suite
 from tools import test_flm_model as harness
 

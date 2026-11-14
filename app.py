@@ -9,7 +9,7 @@ import subprocess
 import re
 import secrets
 import ssl
-import database
+from hearth.storage import database
 import threading
 import time
 import uuid
@@ -22,58 +22,58 @@ from urllib.parse import unquote, urlsplit
 
 import psutil
 import requests
-import public_model_catalog
+from hearth.integrations import public_model_catalog
 from dotenv import dotenv_values, load_dotenv, unset_key
 from flask import Flask, Response, copy_current_request_context, g, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
 from werkzeug.utils import secure_filename
 
 load_dotenv()
 
-import browse_history_store
-import chat_store
-import chat_jobs
-import agent_tasks
-import agent_store
-import agent_container
-import model_tests
-import model_test_profiles
-import question_tool_compat
-import flm_context
-import dmv_questions
-import help_data
-import metrics_store
-import live_requests
-import caddy_metrics
-import quiz_content
-import session_cookie
-import quiz_store
-import flm_conversion
-import comfyui_client as comfyui
-import lemonade_client as lemonade
-import lmstudio_client as lms
-import vllm_client as vllm
-import opencode_client as zen
+from hearth.storage import browse_history_store
+from hearth.storage import chat_store
+from hearth.core import chat_jobs
+from hearth.agents import agent_tasks
+from hearth.agents import agent_store
+from hearth.agents import agent_container
+from hearth.models import model_tests
+from hearth.models import model_test_profiles
+from hearth.compat import question_tool_compat
+from hearth.backends import flm_context
+from hearth.content import dmv_questions
+from hearth.core import help_data
+from hearth.storage import metrics_store
+from hearth.core import live_requests
+from hearth.core import caddy_metrics
+from hearth.content import quiz_content
+from hearth.core import session_cookie
+from hearth.storage import quiz_store
+from hearth.backends import flm_conversion
+from hearth.backends import comfyui_client as comfyui
+from hearth.backends import lemonade_client as lemonade
+from hearth.backends import lmstudio_client as lms
+from hearth.backends import vllm_client as vllm
+from hearth.backends import opencode_client as zen
 # opencode.ai plan-derived default bases; re-saving one of these as the override
 # must be treated as 'not an override'.
 _OPENCODE_DEFAULT_BASE_URLS = {
     "https://opencode.ai/inference/openai",
     "https://opencode.ai/inference/go/openai",
 }
-import kobold_client as kobold
-import q38rocm_client as q38rocm
-import fastflowlm_client as fastflowlm
-import mcp_tools_client
-import memory_store
-import npu_request_lock
-import resource_guard
-import model_resource_warnings
-import model_metadata_store
-import security_scan
-import settings_store
-import secret_store
-import users_store
-import web_search_client as web_search
-import generation_guard
+from hearth.backends import kobold_client as kobold
+from hearth.backends import q38rocm_client as q38rocm
+from hearth.backends import fastflowlm_client as fastflowlm
+from hearth.integrations import mcp_tools_client
+from hearth.storage import memory_store
+from hearth.core import npu_request_lock
+from hearth.core import resource_guard
+from hearth.storage import model_resource_warnings
+from hearth.storage import model_metadata_store
+from hearth.core import security_scan
+from hearth.storage import settings_store
+from hearth.storage import secret_store
+from hearth.storage import users_store
+from hearth.integrations import web_search_client as web_search
+from hearth.core import generation_guard
 
 psutil.cpu_percent()  # warm-up call: seeds the delta baseline for later non-blocking reads
 
@@ -2328,7 +2328,7 @@ def _lemonade_model_thinking_overrides() -> dict[str, bool]:
 
 
 def _lmstudio_model_thinking_overrides() -> dict[str, bool]:
-    import lmstudio_thinking
+    from hearth.backends import lmstudio_thinking
     return lmstudio_thinking.overrides()
 
 
@@ -2618,7 +2618,7 @@ def _test_connection(target):
     elif backend == 'kobold':
         # Exercise Hearth's Kobold tool-compatibility bridge during live model
         # checks so the report reflects the endpoint Hearth chat actually uses.
-        import kobold_tool_shim
+        from hearth.backends import kobold_tool_shim
         if kobold_tool_shim.should_use_shim(base):
             base = kobold_tool_shim.start_server()
     elif backend == 'opencode':
@@ -6621,12 +6621,12 @@ def api_chat():
 
 
 def _local_ipv4_addresses() -> list[str]:
-    from local_tls import local_ipv4_addresses
+    from hearth.core.local_tls import local_ipv4_addresses
     return local_ipv4_addresses()
 
 
 def ensure_self_signed_cert() -> None:
-    from local_tls import ensure_certificate
+    from hearth.core.local_tls import ensure_certificate
     ensure_certificate(CERT_DIR, addresses=_local_ipv4_addresses())
 
 

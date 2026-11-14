@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-import help_data
+from hearth.core import help_data
 
 BE, MODEL = 'lemonade', 'Muse-Glimmer-30B-GGUF'
 
@@ -42,8 +42,8 @@ class SyncConfigTests(unittest.TestCase):
         import sys as _sys
         tempfile = __import__('tempfile')
         from pathlib import Path
-        _sys.path.insert(0, str(Path(help_data.__file__).parents[0] / 'tools'))
-        import sync_opencode_config as sync
+        _sys.path.insert(0, str(Path(help_data.__file__).parents[1]))
+        from tools import sync_opencode_config as sync
         _sys.path.pop(0)
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / 'opencode.jsonc'

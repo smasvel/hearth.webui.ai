@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
-import model_resource_warnings
-import model_metadata_store
+from hearth.storage import model_resource_warnings
+from hearth.storage import model_metadata_store
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 

@@ -28,6 +28,11 @@ PATTERNS = {
 }
 PLACEHOLDER = re.compile(rb'(?i)(?:example|placeholder|your[-_ ]|changeme|dummy|fake|test[-_ ]|current-key|%s|hostname\.ts\.net|homeassistant\.local|localhost|127\.0\.0\.1|0\.0\.0\.0|\$\{|\{[a-z_]+\}|<[^>]+>)')
 SENSITIVE_NAME = re.compile(r'(?i)(?:^|/)(?:\.env(?:\..+)?|id_(?:rsa|ed25519)|[^/]*\.(?:pem|p12|pfx|key)|[^/]*credentials?)$')
+# Location-bearing datasets and diagnostics should stay out of credential review
+# output and should not be considered push candidates by this scanner.
+EXCLUDED_LOCATION_PATH = re.compile(
+    r'(?i)(?:^|/)[^/]*(?:location|geolocation|gps|coordinates?|weather|addresses?)[^/]*(?:$)'
+)
 # Reviewed synthetic IP literals in certificate and network-help test fixtures.
 # Hashes avoid repeating private-range literals in the scanner itself.
 FIXTURE_IP_HASHES = {
@@ -94,6 +99,8 @@ def scan_objects(objects: dict[str, set[str]]) -> list[str]:
         for path in paths:
             if not path:
                 continue
+            if EXCLUDED_LOCATION_PATH.search(path):
+                continue
             if SENSITIVE_NAME.search(path) and path != '.env.example':
                 findings.append(f'{path} @ {sha[:12]}: sensitive filename')
             findings.extend(f'{item} @ {sha[:12]}' for item in scan_content(data, path))
@@ -109,6 +116,8 @@ def working_files() -> list[str]:
 def scan_working_tree() -> list[str]:
     findings = []
     for path in working_files():
+        if EXCLUDED_LOCATION_PATH.search(path):
+            continue
         file = ROOT / path
         if not file.is_file() or file.is_symlink():
             continue

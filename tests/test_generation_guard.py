@@ -1,7 +1,7 @@
 import json
 import unittest
 
-import generation_guard
+from hearth.core import generation_guard
 
 
 def chunk(text):

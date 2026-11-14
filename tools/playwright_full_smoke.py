@@ -7,19 +7,21 @@ BASE_URL = os.environ.get("HEARTH_URL", "https://localhost:5443")
 
 
 def creds():
-    user = os.environ.get("HEARTH_USER", "robotest")
+    user = os.environ.get("HEARTH_USER")
     pw = os.environ.get("HEARTH_PASSWORD")
     if not pw:
-        p = os.path.join(os.path.dirname(__file__), "..", "robotest-credentials")
+        p = os.path.join(os.path.dirname(__file__), "..", "test-user")
         if os.path.isfile(p):
             lines = [x.strip() for x in open(p) if x.strip()]
             if len(lines) >= 2:
-                return lines[0], lines[1]
+                return user or lines[0], lines[1]
     return user, pw
 
 
 def main():
     user, pw = creds()
+    if not user or not pw:
+        raise SystemExit("Set HEARTH_USER and HEARTH_PASSWORD or provide test-user.")
     errors = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -34,12 +36,15 @@ def main():
         page.wait_for_load_state("networkidle")
 
         paths = [
-            "/", "/chat", "/models", "/downloads", "/metrics", "/agents", "/quizzes",
-            "/settings", "/help", "/browse-history", "/model-tests",
+            "/", "/models", "/downloads", "/metrics", "/live-logs", "/agents",
+            "/agents/new", "/agents/schedules", "/agents/skills", "/quizzes",
+            "/settings", "/users", "/browse-history", "/model-tests", "/flm-converter", "/dmv",
         ]
         for path in paths:
             try:
-                page.goto(BASE_URL + path, wait_until="networkidle", timeout=15000)
+                response = page.goto(BASE_URL + path, wait_until="networkidle", timeout=20000)
+                if not response or response.status >= 400 or page.url.rstrip("/").endswith("/login"):
+                    raise RuntimeError(f"HTTP {response.status if response else 'no response'} at {page.url}")
                 print(f"OK {path} -> {page.url}")
             except Exception as e:
                 print(f"FAIL {path}: {e}")
@@ -51,6 +56,7 @@ def main():
         print("\nConsole/page errors:")
         for e in errors[:20]:
             print(" -", e)
+        raise SystemExit(1)
     else:
         print("\nNo console errors detected.")
 

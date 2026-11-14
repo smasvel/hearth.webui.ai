@@ -423,6 +423,10 @@ of a 131,072-token window) to use the full window. **Set all to max context** sa
 each adjustable chat model's reported maximum in one step; it applies to loaded models on their
 next Load. Generated LAN and Tailscale configurations (OpenCode and Continue) use the
 actual served window for a loaded model and the saved value for an unloaded model.
+When OpenCode invokes a Lemonade model through Hearth's relay, an unloaded model is
+explicitly loaded with its saved **ctx-size** before the request is forwarded. If it is
+already loaded at a different size, the relay applies the saved size first so Lemonade
+cannot silently choose its smaller automatic-load default.
 Loaded models also show a separate **loaded ctx-size** line with the runtime's active
 context; the line is hidden when a model is not loaded.
 Reload a loaded model from Models to activate its saved maximum. Only select a value your hardware can actually hold in memory;
@@ -1046,9 +1050,9 @@ every ordinary chat message browse automatically.
 
 Local KoboldCPP tool requests pass through a Hearth-managed compatibility shim on
 127.0.0.1:13308. The systemd user service `kobold-shim.service` runs `kobold_tool_shim.py`
-persistently and reports each request to Hearth's live metrics feed with `backend=kobold`.
+persistently as `python -m hearth.backends.kobold_tool_shim` and reports each request to Hearth's live metrics feed with `backend=kobold`.
 Caddy's authenticated gateway block for port 8446 is wired on service start by
-`wire_kobold_proxy.py` to proxy to 127.0.0.1:13308 instead of directly to KoboldCPP's
+`python -m hearth.backends.wire_kobold_proxy` to proxy to 127.0.0.1:13308 instead of directly to KoboldCPP's
 5001, so OpenCode and Continue LAN traffic is visible in Live logs and Metrics.
 The shim prevents an explicitly text-only follow-up from receiving tool schemas and
 fills a missing parallel call only when a request names exactly two literal values for
@@ -1786,6 +1790,13 @@ from its use, to the extent permitted by applicable law.
 
 ## Development and troubleshooting
 
+Application code lives under `hearth/`, grouped by domain: `agents/`, `backends/`,
+`compat/`, `content/`, `core/`, `integrations/`, `models/`, and `storage/`. The root
+`app.py` remains the web application entrypoint; `tools/` contains setup, maintenance,
+and regression commands; `deploy/` contains runtime and host configuration; and
+`tests/` contains the regression suite. Database schema and host service templates live
+beside their owning package or under `deploy/`.
+
 Run the application checks through the isolated PostgreSQL test runner:
 
 ```bash
@@ -1808,7 +1819,7 @@ cannot open admin-only pages or APIs.
 For installation details, see [the setup guide](deploy/FIRST_TIME_INSTALL.md).
 For model-specific test evidence, see [saved failure reviews](reports/saved-failure-review-2026-10-19.md).
 Repair history, debugging investigations, and implementation notes are preserved in
-[FIXLOGS.md](FIXLOGS.md). Those notes describe changes over time and may include
+[change log](docs/FIXLOGS.md). Those notes describe changes over time and may include
 behavior superseded by later fixes; use this README for current setup and usage.
 ### Agent task inputs and live execution
 

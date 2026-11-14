@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import requests
-import lemonade_guard_shim as shim
+from hearth.backends import lemonade_guard_shim as shim
 
 
 class Upstream:

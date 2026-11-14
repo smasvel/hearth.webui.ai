@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import lemonade_templates
-import lemonade_guard_shim
+from hearth.backends import lemonade_templates
+from hearth.backends import lemonade_guard_shim
 
 
 class DevstralTemplateTests(unittest.TestCase):
@@ -54,9 +54,10 @@ class DevstralTemplateTests(unittest.TestCase):
         self.assertEqual(current["llamacpp_args"], "--parallel 1")
         self.assertEqual(lemonade_templates.load_options("other-model", current), {})
 
+    @patch.object(lemonade_guard_shim.model_metadata_store, "get_model_configured_context", return_value=None)
     @patch.object(lemonade_guard_shim.requests, "post")
     @patch.object(lemonade_guard_shim.requests, "get")
-    def test_loaded_model_is_repaired_once(self, get, post):
+    def test_loaded_model_is_repaired_once(self, get, post, saved_context):
         model = "Devstral-Small-2507-GGUF"
         options = {"ctx_size": 63569, "llamacpp_args": "--parallel 1"}
         response = Mock()
@@ -74,3 +75,35 @@ class DevstralTemplateTests(unittest.TestCase):
         options.update(lemonade_templates.load_options(model, options))
         lemonade_guard_shim._unload_before_implicit_load(model)
         post.assert_not_called()
+
+    @patch.object(lemonade_guard_shim.model_metadata_store, "get_model_configured_context", return_value=65536)
+    @patch.object(lemonade_guard_shim.requests, "post")
+    @patch.object(lemonade_guard_shim.requests, "get")
+    def test_opencode_implicit_load_uses_saved_context(self, get, post, saved_context):
+        get.return_value.json.return_value = {"all_models_loaded": []}
+
+        lemonade_guard_shim._unload_before_implicit_load("Muse-Glimmer-30B-GGUF")
+
+        post.assert_called_once_with(
+            f"{lemonade_guard_shim.LEMONADE_BASE}/v1/load",
+            json={"model_name": "Muse-Glimmer-30B-GGUF", "ctx_size": 65536},
+            timeout=600,
+        )
+
+    @patch.object(lemonade_guard_shim.model_metadata_store, "get_model_configured_context", return_value=65536)
+    @patch.object(lemonade_guard_shim.requests, "post")
+    @patch.object(lemonade_guard_shim.requests, "get")
+    def test_opencode_reloads_loaded_model_at_saved_context(self, get, post, saved_context):
+        get.return_value.json.return_value = {"all_models_loaded": [{
+            "model_name": "Muse-Glimmer-30B-GGUF",
+            "loaded": True,
+            "recipe_options": {"ctx_size": 6144},
+        }]}
+
+        lemonade_guard_shim._unload_before_implicit_load("Muse-Glimmer-30B-GGUF")
+
+        post.assert_called_once_with(
+            f"{lemonade_guard_shim.LEMONADE_BASE}/v1/load",
+            json={"model_name": "Muse-Glimmer-30B-GGUF", "ctx_size": 65536},
+            timeout=600,
+        )

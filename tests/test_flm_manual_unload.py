@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import fastflowlm_client as flm
-import flm_tool_shim as shim
+from hearth.backends import fastflowlm_client as flm
+from hearth.backends import flm_tool_shim as shim
 
 
 class ManualUnloadTests(unittest.TestCase):

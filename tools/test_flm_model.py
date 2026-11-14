@@ -4,11 +4,14 @@ import json
 import math
 import re
 from pathlib import Path
+import sys
 import time
 
-import live_report
-import kobold_client
-import question_tool_compat
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from hearth.core import live_report
+from hearth.backends import kobold_client
+from hearth.compat import question_tool_compat
 import requests
 
 try:
@@ -175,7 +178,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             on_case({'name': name, 'stream': False, 'started_at': time.time()})
         result = {'name': name, 'stream': False, 'diagnostic': True, 'seconds': 0}
         try:
-            import help_data
+            from hearth.core import help_data
             config = json.loads(help_data.build_opencode_config(
                 '127.0.0.1', 'model-test', help_data._DEFAULT_PORTS,
                 {'kobold': [model]}, {}))
@@ -231,7 +234,7 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
         if backend == 'q38rocm':
             # Direct harness callers must exercise the same adapter as chat,
             # even when they don't supply a saved compatibility profile.
-            import q38rocm_client
+            from hearth.backends import q38rocm_client
             body = q38rocm_client.prepare_request(body)
         started = time.monotonic()
         result = {'name': name, 'stream': stream, **metadata}
@@ -550,8 +553,8 @@ def main():
     parser.add_argument('--backend', choices=('fastflowlm', 'q38rocm'), default='fastflowlm')
     args = parser.parse_args()
     if args.backend == 'q38rocm':
-        import model_test_profiles
-        import q38rocm_client
+        from hearth.models import model_test_profiles
+        from hearth.backends import q38rocm_client
         configured_url = q38rocm_client.base_url() + '/v1/chat/completions'
         url = args.url or configured_url
         results = run_suite(args.model, url, output=args.output, suite=args.suite,

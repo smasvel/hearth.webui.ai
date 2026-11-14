@@ -2,10 +2,10 @@
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-import lemonade_client
-import lmstudio_client
-import kobold_client
-import q38rocm_client
+from hearth.backends import lemonade_client
+from hearth.backends import lmstudio_client
+from hearth.backends import kobold_client
+from hearth.backends import q38rocm_client
 
 
 class ChatStreamChunkingTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class ChatStreamChunkingTests(unittest.TestCase):
                 patch.object(kobold_client, "_auth_headers", return_value={}), \
                 patch.object(kobold_client.model_test_profiles, "apply", side_effect=lambda body, *_: body), \
                 patch.object(kobold_client, "performance_snapshot", return_value=None), \
-                patch("kobold_tool_shim.start_server", return_value="http://127.0.0.1:13308"), \
+                patch("hearth.backends.kobold_tool_shim.start_server", return_value="http://127.0.0.1:13308"), \
                 patch.object(kobold_client.requests, "post", return_value=post_response) as post:
             self.assertEqual(list(kobold_client.chat_stream([], "koboldcpp/test")), ["data: [DONE]"])
         self.assertEqual(post.call_args.kwargs["json"]["stream_options"], {"include_usage": True})

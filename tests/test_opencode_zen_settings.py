@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import database
-import settings_store
+from hearth.storage import database
+from hearth.storage import settings_store
 
 
 class OpenCodeKeyStorageTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class OpenCodeKeyStorageTests(unittest.TestCase):
         return self.client.post('/api/settings', json=payload, headers=self.headers)
 
     def _raw_db_value(self):
-        import database
+        from hearth.storage import database
         with database.connect() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key = 'opencode_api_key'").fetchone()
         return row['value'] if row else None

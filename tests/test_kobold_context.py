@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import kobold_client as kobold
+from hearth.backends import kobold_client as kobold
 
 
 class KoboldContextTests(unittest.TestCase):

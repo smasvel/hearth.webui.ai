@@ -23,8 +23,8 @@ except ModuleNotFoundError:
     flask_stub.stream_with_context = lambda fn: fn
     sys.modules["flask"] = flask_stub
 
-import flm_tool_shim
-import lemonade_guard_shim
+from hearth.backends import flm_tool_shim
+from hearth.backends import lemonade_guard_shim
 
 
 class UnloadBeforeLoadTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 import unittest
-from lemonade_guard_shim import _normalize_tool_choice
+from hearth.backends.lemonade_guard_shim import _normalize_tool_choice
 
 
 class DisabledToolsTests(unittest.TestCase):

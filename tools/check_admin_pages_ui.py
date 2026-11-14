@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
-import browse_history_store
+from hearth.storage import browse_history_store
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 

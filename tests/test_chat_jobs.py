@@ -1,4 +1,4 @@
-import database
+from hearth.storage import database
 import contextlib
 import io
 import json
@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
-import chat_jobs
-import chat_store
-import settings_store
+from hearth.core import chat_jobs
+from hearth.storage import chat_store
+from hearth.storage import settings_store
 
 
 class BackgroundChatTests(unittest.TestCase):

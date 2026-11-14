@@ -1,11 +1,11 @@
-import database
+from hearth.storage import database
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import memory_store
-import chat_store
+from hearth.storage import memory_store
+from hearth.storage import chat_store
 
 
 class MemoryStoreTests(unittest.TestCase):

@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-import lemonade_client
-import lmstudio_client
-import kobold_client
+from hearth.backends import lemonade_client
+from hearth.backends import lmstudio_client
+from hearth.backends import kobold_client
 
 
 class _Response:
@@ -45,7 +45,7 @@ class ChatMCPRoutingTests(unittest.TestCase):
             'http://127.0.0.1:13307/v1/chat/completions')
 
     def test_kobold_tool_chat_forwards_parallel_call_support(self):
-        with patch('kobold_tool_shim.start_server', return_value='http://127.0.0.1:13308') as start:
+        with patch('hearth.backends.kobold_tool_shim.start_server', return_value='http://127.0.0.1:13308') as start:
             self._assert_tool_route(kobold_client,
                 'http://127.0.0.1:13308/v1/chat/completions')
         start.assert_called_once_with()

@@ -15,13 +15,13 @@ from _side_test_helpers import as_admin, csrf, patch_admin, report  # noqa: E402
 
 
 def main() -> None:
-    import kobold_client as kobold
-    import lemonade_client as lemonade
-    import lmstudio_client as lms
-    import vllm_client as vllm
-    import fastflowlm_client as flm
+    from hearth.backends import kobold_client as kobold
+    from hearth.backends import lemonade_client as lemonade
+    from hearth.backends import lmstudio_client as lms
+    from hearth.backends import vllm_client as vllm
+    from hearth.backends import fastflowlm_client as flm
     import app
-    import kobold_client
+    from hearth.backends import kobold_client
 
     print("== backend inventory ==")
     for label, client in (

@@ -1,6 +1,6 @@
 import unittest
 
-import web_search_client as web_search
+from hearth.integrations import web_search_client as web_search
 
 
 class WebSearchRoutingTests(unittest.TestCase):

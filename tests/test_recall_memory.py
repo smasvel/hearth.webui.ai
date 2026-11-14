@@ -6,14 +6,14 @@ chunk, and the soft recall framing let weak models answer "You didn't tell me yo
 name!" even with the fact injected. The name fact must now be recalled even when
 the embedding search itself is unavailable.
 """
-import database
+from hearth.storage import database
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import memory_store
+from hearth.storage import memory_store
 import app
 
 
@@ -138,9 +138,9 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
     """
 
     def setUp(self):
-        import chat_store
-        import settings_store
-        import chat_jobs
+        from hearth.storage import chat_store
+        from hearth.storage import settings_store
+        from hearth.core import chat_jobs
         import contextlib
         import time
         self.stack = contextlib.ExitStack()
@@ -178,7 +178,7 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
                            last_activity=time.time(), login_csrf_token="test-csrf")
 
     def test_note_is_injected_into_latest_user_message_not_system(self):
-        import chat_store
+        from hearth.storage import chat_store
         body = {"model": "test-model", "conversation_id": "conv",
                 "messages": [{"role": "user", "content": "what's my name?"}], "max_tokens": 32}
         response = self.client.post("/api/chat", json=body, headers={"X-CSRF-Token": "test-csrf"})

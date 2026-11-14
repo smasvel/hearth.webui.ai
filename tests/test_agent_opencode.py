@@ -4,9 +4,9 @@ import hashlib
 from unittest.mock import Mock, patch
 import requests
 import socket
-from agent_opencode import OpenCode
-import agent_container
-from agent_container import ContainerOpenCode, _ModelProxy, _system_ca_bundle
+from hearth.agents.agent_opencode import OpenCode
+from hearth.agents import agent_container
+from hearth.agents.agent_container import ContainerOpenCode, _ModelProxy, _system_ca_bundle
 import tempfile
 from pathlib import Path
 
@@ -81,7 +81,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
     def test_small_context_models_are_visible_but_not_assignable(self):
         client=OpenCode()
-        with patch.object(client,'call',return_value={'data':[{'providerID':'fastflowlm','id':'flm/qwen3.8-mtp:27b','name':'Qwen'}]}), patch('agent_opencode.flm_context.context_limit',return_value=8192):
+        with patch.object(client,'call',return_value={'data':[{'providerID':'fastflowlm','id':'flm/qwen3.8-mtp:27b','name':'Qwen'}]}), patch('hearth.agents.agent_opencode.flm_context.context_limit',return_value=8192):
             model=client.models()[0]
         self.assertFalse(model['usable']);self.assertEqual(model['context'],8192)
 
@@ -108,7 +108,7 @@ class ContainerRecoveryTests(unittest.TestCase):
             'current-model': {'limit': {'context': 65536}},
         }}}}
         with patch.object(OpenCode, 'models', return_value=stale), \
-             patch('agent_container._generated_model_config', return_value=config):
+             patch('hearth.agents.agent_container._generated_model_config', return_value=config):
             models = client.models()
         self.assertEqual([(m['providerID'], m['id']) for m in models],
                          [('lmstudio', 'local-model'), ('opencode', 'current-model')])
@@ -122,11 +122,12 @@ class ContainerRecoveryTests(unittest.TestCase):
         current['provider']['opencode']['options'] = {
             'baseURL': 'https://example.com/current/v1', 'apiKey': 'current-key',
         }
-        with patch('agent_container.parse_jsonc', return_value=old), \
-             patch('agent_container._generated_model_config', return_value=current):
+        with patch('hearth.agents.agent_container.parse_jsonc', return_value=old), \
+             patch('hearth.agents.agent_container._generated_model_config', return_value=current):
             _, _, relay = client._host_provider('opencode', 'model', '/tmp/test.sock', 'Test')
         self.assertEqual(relay['base_url'], 'https://example.com/current/v1')
-        self.assertEqual(relay['api_key'], 'current-key')
+        # Hosted credentials are resolved by the host proxy at request time.
+        self.assertIsNone(relay['api_key'])
 
     def test_kobold_agent_relay_enables_tools_for_stale_model_metadata(self):
         client = ContainerOpenCode('/tmp/hearth-agent-test')
@@ -135,8 +136,8 @@ class ContainerRecoveryTests(unittest.TestCase):
                                         'capabilities': {'tools': False}}},
             'options': {'baseURL': 'https://kobold.example/v1', 'apiKey': 'test-key'},
         }}}
-        with patch('agent_container.parse_jsonc', return_value=config), \
-             patch('agent_container._generated_model_config', return_value=None):
+        with patch('hearth.agents.agent_container.parse_jsonc', return_value=config), \
+             patch('hearth.agents.agent_container._generated_model_config', return_value=None):
             _, provider, _ = client._host_provider(
                 'kobold', 'kobold-model', '/tmp/model.sock', 'Test agent')
         self.assertTrue(provider['models']['kobold-model']['capabilities']['tools'])
@@ -312,8 +313,8 @@ class ContainerRecoveryTests(unittest.TestCase):
             task_id = 'a' * 32
             task_dir = client.runtime_directory / task_id
             task_dir.mkdir()
-            with patch('agent_container.agent_store.get_task', return_value={'id': task_id, 'status': 'interrupted'}), \
-                 patch('agent_container.agent_store.get_runtime', return_value={'container': 'hearth-agent-' + task_id[:24]}), \
+            with patch('hearth.agents.agent_container.agent_store.get_task', return_value={'id': task_id, 'status': 'interrupted'}), \
+                 patch('hearth.agents.agent_container.agent_store.get_runtime', return_value={'container': 'hearth-agent-' + task_id[:24]}), \
                  patch.object(client, '_docker') as docker:
                 client.migrate_legacy_runtime()
             self.assertTrue(task_dir.exists())
@@ -325,8 +326,8 @@ class ContainerRecoveryTests(unittest.TestCase):
             task_id = 'b' * 32
             task_dir = client.runtime_directory / task_id
             task_dir.mkdir()
-            with patch('agent_container.agent_store.get_task', return_value=None), \
-                 patch('agent_container.agent_store.get_runtime', return_value=None), \
+            with patch('hearth.agents.agent_container.agent_store.get_task', return_value=None), \
+                 patch('hearth.agents.agent_container.agent_store.get_runtime', return_value=None), \
                  patch.object(client, '_docker') as docker:
                 client.migrate_legacy_runtime()
             self.assertFalse(task_dir.exists())
@@ -337,9 +338,10 @@ class ContainerRecoveryTests(unittest.TestCase):
             client = ContainerOpenCode(directory)
             name = 'hearth-agent-'+'a'*24
             task_id = 'a'*32
-            import agent_store
-            user = __import__('users_store').create_user('runtime-test-' + task_id, 'test-password', 'admin')
-            self.addCleanup(__import__('users_store').delete_user, user['id'])
+            from hearth.agents import agent_store
+            from hearth.storage import users_store
+            user = users_store.create_user('runtime-test-' + task_id, 'test-password', 'admin')
+            self.addCleanup(users_store.delete_user, user['id'])
             agent_store.save_task({'id':task_id,'owner':user['id'],'updated_at':0})
             client._write_runtime(name, {'task_id':task_id,'container':name,'model_proxy':{'verify_tls':True}})
             info = client._read_runtime(name)

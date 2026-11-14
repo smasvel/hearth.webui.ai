@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-import model_resource_warnings as warnings
+from hearth.storage import model_resource_warnings as warnings
 
 
 class ResourceWarningTests(unittest.TestCase):

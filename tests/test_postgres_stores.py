@@ -2,15 +2,15 @@
 import unittest
 import os
 import tempfile
-import database
-import browse_history_store
-import chat_store
-import metrics_store
-import model_metadata_store
-import quiz_store
-import settings_store
-import secret_store
-import users_store
+from hearth.storage import database
+from hearth.storage import browse_history_store
+from hearth.storage import chat_store
+from hearth.storage import metrics_store
+from hearth.storage import model_metadata_store
+from hearth.storage import quiz_store
+from hearth.storage import settings_store
+from hearth.storage import secret_store
+from hearth.storage import users_store
 
 
 class PostgreSQLStoreTests(unittest.TestCase):

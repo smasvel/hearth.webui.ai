@@ -1,6 +1,6 @@
 import unittest
 
-import agent_request_policy
+from hearth.agents import agent_request_policy
 
 
 class ExplicitStopPolicyTests(unittest.TestCase):

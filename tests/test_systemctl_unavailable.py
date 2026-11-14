@@ -1,8 +1,8 @@
 import unittest
 import unittest.mock
 
-import kobold_client
-import vllm_client as vllm
+from hearth.backends import kobold_client
+from hearth.backends import vllm_client as vllm
 
 
 def _raise_missing(*args, **kwargs):

@@ -93,13 +93,13 @@ def has_sqlite_data():
 
 def initialize_application_storage():
     """Apply the canonical PostgreSQL DDL and private application migrations."""
-    import database
-    import agent_store
-    import model_metadata_store
-    import model_resource_warnings
-    import secret_store
-    import settings_store
-    import users_store
+    from hearth.storage import database
+    from hearth.agents import agent_store
+    from hearth.storage import model_metadata_store
+    from hearth.storage import model_resource_warnings
+    from hearth.storage import secret_store
+    from hearth.storage import settings_store
+    from hearth.storage import users_store
 
     database.init_schema()
     users_store.init_db()
@@ -165,7 +165,7 @@ def install_service():
 
 def offer_initial_model_download(input_fn=input):
     """Offer a catalog model before the app service starts, with local resource checks."""
-    import lemonade_client as lemonade
+    from hearth.backends import lemonade_client as lemonade
 
     model_id = 'Ornith-1.5-9B-GGUF'
     try:
@@ -215,7 +215,7 @@ def offer_initial_model_download(input_fn=input):
             print(f"  {progress.get('file') or model_id}: {progress['percent']}%", flush=True)
     else:
         raise RuntimeError(f'Lemonade did not confirm completion of {model_id}.')
-    import model_metadata_store
+    from hearth.storage import model_metadata_store
     model_metadata_store.mark_model_downloaded('lemonade', model_id)
     print(f'Downloaded {model_id}. Load it from Models after signing in.')
     return True
@@ -262,7 +262,7 @@ def main():
         compose += ['--project-name', args.project_name]
     subprocess.run(compose + ['up', '-d', '--wait', 'postgres'], check=True, cwd=ROOT)
     user_count = initialize_application_storage()
-    from local_tls import ensure_certificate
+    from hearth.core.local_tls import ensure_certificate
     ensure_certificate(ROOT / 'certs')
     if not args.skip_model_download:
         try:

@@ -1,11 +1,11 @@
-import database
+from hearth.storage import database
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import metrics_store
+from hearth.storage import metrics_store
 
 
 class ModelReportTests(unittest.TestCase):

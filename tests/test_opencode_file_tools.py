@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-import flm_tool_shim as shim
+from hearth.backends import flm_tool_shim as shim
 
 
 def tool(name, properties):

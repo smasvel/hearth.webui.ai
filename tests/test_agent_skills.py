@@ -8,9 +8,9 @@ import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import agent_store
-import database
-import users_store
+from hearth.agents import agent_store
+from hearth.storage import database
+from hearth.storage import users_store
 
 
 def temporary_schema(test):
@@ -109,10 +109,10 @@ class AssignmentSkillTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.client = Mock()
         self.client.models.return_value = [{'providerID': 'lmstudio', 'id': 'qwen', 'name': 'Qwen'}]
-        import agent_tasks
+        from hearth.agents import agent_tasks
         from contextlib import ExitStack
         self.stack = ExitStack()
-        self.stack.enter_context(patch('agent_tasks.Path.home', return_value=Path(self.tmp.name)))
+        self.stack.enter_context(patch('hearth.agents.agent_tasks.Path.home', return_value=Path(self.tmp.name)))
         self.manager = agent_tasks.Manager(Path(self.tmp.name) / 'tasks', self.client)
         self.addCleanup(self.stack.close)
         self.values = {'title': 'Build it', 'goal': 'Build the feature',
@@ -163,7 +163,7 @@ class ContainerSkillTests(unittest.TestCase):
         self.owner = make_owner()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        import agent_container
+        from hearth.agents import agent_container
         self.agent_container = agent_container
         self.container = agent_container.ContainerOpenCode(Path(self.tmp.name) / 'runtime')
         self.container._docker = Mock()

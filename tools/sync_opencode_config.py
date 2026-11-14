@@ -20,8 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import help_data  # noqa: E402
-import q38rocm_client  # noqa: E402
+from hearth.core import help_data
+from hearth.backends import q38rocm_client
 
 CONFIG_PATH = Path.home() / '.config/opencode/opencode.jsonc'
 

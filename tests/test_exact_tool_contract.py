@@ -3,8 +3,8 @@ import json
 import unittest
 from unittest.mock import Mock
 
-import exact_tool_contract as contract
-import flm_tool_shim as flm
+from hearth.compat import exact_tool_contract as contract
+from hearth.backends import flm_tool_shim as flm
 from tools.opencode_scenarios import TOOLS
 from tools.test_flm_model import decode
 

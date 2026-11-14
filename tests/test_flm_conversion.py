@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import flm_conversion
+from hearth.backends import flm_conversion
 
 
 class ConversionValidationTests(unittest.TestCase):

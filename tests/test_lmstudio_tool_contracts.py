@@ -4,10 +4,10 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-import lmstudio_shim as shim
-import lmstudio_tool_shim
-from model_stream_cancel import Registry
-import lmstudio_thinking
+from hearth.backends import lmstudio_shim as shim
+from hearth.backends import lmstudio_tool_shim
+from hearth.core.model_stream_cancel import Registry
+from hearth.backends import lmstudio_thinking
 from tools.opencode_scenarios import QUESTION
 from tools.test_flm_model import decode
 from tests.test_exact_file_content import request_body, payload, stream_lines, WANTED
@@ -53,7 +53,7 @@ class LMStudioContractTests(unittest.TestCase):
     def test_both_lmstudio_gateways_accept_local_cancel(self):
         stream_id = 'a' * 48
         for gateway in (shim.app, lmstudio_tool_shim.app):
-            with patch('model_stream_cancel.streams.cancel') as cancel:
+            with patch('hearth.core.model_stream_cancel.streams.cancel') as cancel:
                 response = gateway.test_client().post('/_hearth/cancel/' + stream_id)
                 self.assertEqual(response.status_code, 204)
                 cancel.assert_called_once_with(stream_id)

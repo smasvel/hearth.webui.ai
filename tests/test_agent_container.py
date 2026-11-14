@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from agent_container import ContainerOpenCode, _ModelProxy
+from hearth.agents.agent_container import ContainerOpenCode, _ModelProxy
 
 
 class AgentContainerTests(unittest.TestCase):
@@ -37,12 +37,12 @@ class AgentContainerTests(unittest.TestCase):
         proxy = Mock(info={'socket_path': '/fixture/model.sock'})
         with patch.object(self.client, '_ensure_image'), \
              patch.object(self.client, '_host_provider', return_value=({'enable_thinking': True}, provider, {'token': 'test-token'})), \
-             patch('agent_container.agent_store.get_runtime', return_value=None), \
+             patch('hearth.agents.agent_container.agent_store.get_runtime', return_value=None), \
              patch.object(self.client, '_make_proxy', return_value=proxy), \
              patch.object(self.client, '_write_runtime'), \
              patch.object(self.client, '_start_container',
                           side_effect=lambda name, info, *args: info.update(port=4096)) as start, \
-             patch('agent_container._EndpointOpenCode') as endpoint, \
+             patch('hearth.agents.agent_container._EndpointOpenCode') as endpoint, \
              patch.object(self.client, '_sync_to_container'):
             endpoint.return_value.call.return_value = {'data': {'id': 'new-session'}}
             self.client.create(job)
@@ -57,7 +57,7 @@ class AgentContainerTests(unittest.TestCase):
         info = {'task_id': 'a' * 32, 'password': 'test-password',
                 'opencode_config': {}}
         self.client._docker = Mock(side_effect=['', '127.0.0.1:43123'])
-        with patch('agent_container.requests.get', return_value=Mock(ok=True)), \
+        with patch('hearth.agents.agent_container.requests.get', return_value=Mock(ok=True)), \
              patch.object(self.client, '_write_runtime'):
             self.client._start_container('hearth-agent-fixture', info, task_dir)
         run_args = self.client._docker.call_args_list[0].args
@@ -119,9 +119,9 @@ class AgentContainerTests(unittest.TestCase):
                              'base_url': f'http://127.0.0.1:{upstream.server_port}/v1'})
         connection = http.client.HTTPConnection('localhost', timeout=2)
         try:
-            with patch('agent_container.live_requests.start', return_value=1) as start, \
-                 patch('agent_container.live_requests.update', side_effect=lambda *args, **kwargs: progressed.set()), \
-                 patch('agent_container.live_requests.finish'):
+            with patch('hearth.agents.agent_container.live_requests.start', return_value=1) as start, \
+                 patch('hearth.agents.agent_container.live_requests.update', side_effect=lambda *args, **kwargs: progressed.set()), \
+                 patch('hearth.agents.agent_container.live_requests.finish'):
                 relay.start()
                 connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 connection.sock.settimeout(2)
@@ -162,9 +162,9 @@ class AgentContainerTests(unittest.TestCase):
                              'base_url': 'http://127.0.0.1:1234/v1'})
         connection = http.client.HTTPConnection('localhost', timeout=2)
         try:
-            with patch('agent_container.requests.request', return_value=response), \
-                 patch('agent_container.live_requests.start', return_value=1), \
-                 patch('agent_container.live_requests.finish'), \
+            with patch('hearth.agents.agent_container.requests.request', return_value=response), \
+                 patch('hearth.agents.agent_container.live_requests.start', return_value=1), \
+                 patch('hearth.agents.agent_container.live_requests.finish'), \
                  patch.object(self.client, '_split', return_value=(name, 'session', {})), \
                  patch.object(self.client, '_endpoint') as endpoint:
                 relay.start()

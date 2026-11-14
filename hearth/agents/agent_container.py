@@ -1,0 +1,1404 @@
+"""Docker-backed OpenCode sessions for persistent project assignments.
+
+Only a private per-task OpenCode config and a filtered project snapshot are shared
+with the host. Project files are copied as safe regular files; the task container
+never receives a host project bind mount, Docker socket, or app credentials.
+"""
+import copy
+from concurrent.futures import ThreadPoolExecutor
+import errno
+import hashlib
+import io
+import json
+import logging
+import os
+from pathlib import Path, PurePosixPath
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import tarfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn, UnixStreamServer
+from urllib.parse import unquote, urlsplit
+
+import requests
+from hearth.core import live_requests
+
+from hearth.agents.agent_opencode import AGENT, OpenCode, SYSTEM
+from hearth.agents import agent_store
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+IMAGE_VERSION = (PROJECT_ROOT/'agent_container'/'IMAGE_VERSION').read_text().strip()
+OPENCODE_VERSION = (PROJECT_ROOT/'agent_container'/'OPENCODE_VERSION').read_text().strip()
+IMAGE = 'hearth-agent-opencode:'+IMAGE_VERSION
+SESSION_SEPARATOR = '::'
+SKIP_PARTS = {'.git', 'node_modules', '.venv', 'venv', '__pycache__'}
+MAX_PROJECT_BYTES = 2 * 1024 * 1024 * 1024
+SYSTEM_CA_BUNDLES = ('/etc/ssl/certs/ca-certificates.crt',
+                    '/etc/pki/tls/certs/ca-bundle.crt')
+_MODEL_CONFIG_CACHE_SECONDS = 15
+_model_config_lock = threading.Lock()
+_model_config_cache = {'loaded_at': 0.0, 'config': None}
+_opencode_auth_lock = threading.Lock()
+_opencode_auth_cache = {'plan': None, 'loaded_at': 0.0, 'key': None}
+_OPENCODE_AUTH_CACHE_SECONDS = 60
+TOOL_POLICY_VERSION = 'native-tools-v2'
+AGENT_PROMPT_VERSION = 'research-use-directly-v3'
+
+
+def _system_ca_bundle():
+    """Use the host's installed CA roots, which may include its private model CA."""
+    return next((path for path in SYSTEM_CA_BUNDLES if Path(path).is_file()), True)
+
+
+def parse_jsonc(path):
+    import re
+    raw = Path(path).read_text()
+    raw = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/',
+                 lambda match: match.group(1) or '', raw, flags=re.S)
+    raw = re.sub(r'("(?:\\.|[^"\\])*")|,([\s]*[}\]])',
+                 lambda match: match.group(1) or match.group(2), raw)
+    return json.loads(raw)
+
+
+def _generated_model_config():
+    """Current OpenCode provider config from Hearth's live downloadable model inventory."""
+    now = time.monotonic()
+    with _model_config_lock:
+        cached = _model_config_cache['config']
+        if cached and now - _model_config_cache['loaded_at'] < _MODEL_CONFIG_CACHE_SECONDS:
+            return copy.deepcopy(cached)
+        try:
+            from hearth.core import help_data
+            config = json.loads(help_data.build()['opencode_config'])
+        except Exception:
+            logging.exception('Could not generate the current OpenCode model inventory.')
+            return copy.deepcopy(cached) if cached else None
+        _model_config_cache.update(loaded_at=now, config=config)
+        return copy.deepcopy(config)
+
+
+def _saved_opencode_auth_key(plan='payg'):
+    """Use the active OpenCode CLI credential for hosted agent model requests.
+
+    The desktop OpenCode server stores connected provider credentials in its own
+    auth database. Hearth's Settings API key can be stale or belong to a different
+    OpenCode account, so prefer the credential OpenCode itself is currently using.
+    Cache the selected plan's credential in process memory; never log CLI output or
+    write this credential into the agent container's persisted runtime metadata.
+    """
+    try:
+        plan = 'go' if str(plan).strip().lower() == 'go' else 'payg'
+        now = time.monotonic()
+        with _opencode_auth_lock:
+            if (_opencode_auth_cache['plan'] == plan
+                    and now - _opencode_auth_cache['loaded_at'] < _OPENCODE_AUTH_CACHE_SECONDS):
+                return _opencode_auth_cache['key']
+        integration = 'opencode-go' if plan == 'go' else 'opencode'
+        binary = Path.home()/'.opencode/bin/opencode'
+        if not binary.is_file():
+            key = None
+        else:
+            result = subprocess.run([str(binary), 'auth', 'export', integration],
+                                    check=True, capture_output=True, text=True, timeout=30)
+            exported = json.loads(result.stdout)
+            if isinstance(exported, dict):
+                exported = [exported]
+            key = None
+            if isinstance(exported, list):
+                for entry in exported:
+                    if (not isinstance(entry, dict) or entry.get('integrationID') != integration
+                            or entry.get('active') is False):
+                        continue
+                    value = entry.get('value')
+                    if isinstance(value, dict) and value.get('type') == 'key':
+                        candidate = value.get('key')
+                        if isinstance(candidate, str) and candidate.strip():
+                            key = candidate.strip()
+                            break
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # Settings' encrypted API key remains a compatibility fallback below.
+        key = None
+    with _opencode_auth_lock:
+        _opencode_auth_cache.update(plan=plan, loaded_at=time.monotonic(), key=key)
+    return key
+
+
+class _ModelProxyHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def do_GET(self): self._proxy()
+    def do_POST(self): self._proxy()
+    def do_OPTIONS(self): self._proxy()
+
+    def log_message(self, *_args):
+        return
+
+    def _proxy(self):
+        proxy = self.server.proxy_config
+        # This handler is reachable only through a per-task Unix socket mounted into
+        # that task's isolated container, then a loopback-only port inside the same
+        # container. OpenCode may select provider auth from its model config instead
+        # of this provider option, so a bearer-token check here rejects valid requests
+        # despite the socket already enforcing the task boundary.
+        request_path = unquote(urlsplit(self.path).path)
+        if (not request_path.startswith('/v1/') or request_path.startswith('//')
+                or '\\' in request_path or any(part in ('.', '..') for part in request_path.split('/'))):
+            self.send_error(404)
+            return
+        suffix = self.path[len('/v1'):]
+        headers = {}
+        for key in ('accept', 'content-type', 'openai-organization', 'openai-project'):
+            if self.headers.get(key): headers[key] = self.headers[key]
+        headers.update(proxy.get('headers') or {})
+        session_header = self.headers.get('x-opencode-session')
+        fallback = (proxy.get('headers') or {}).get('X-Hearth-Agent-Session')
+        routed = session_header or fallback
+        if routed:
+            headers['x-opencode-session'] = routed[:120]
+        cancel_id = None
+        if self.command == 'POST' and request_path == '/v1/chat/completions' and proxy.get('provider_id') == 'lmstudio':
+            cancel_id = secrets.token_hex(24)
+            headers['X-Hearth-Stream-ID'] = cancel_id
+        headers['Accept-Encoding'] = 'identity'
+        key = proxy.get('api_key')
+        if proxy.get('provider_id') == 'opencode':
+            plan = proxy.get('auth_plan')
+            if plan not in ('go', 'payg'):
+                plan = 'go' if '/go/' in str(proxy.get('base_url') or '') else 'payg'
+            try:
+                from hearth.storage import settings_store
+                key = (_saved_opencode_auth_key(plan)
+                       or settings_store.get('opencode_api_key') or key or '').strip()
+            except Exception:
+                key = _saved_opencode_auth_key(plan) or key
+            # OpenCode Go rejects generic HTTP-library identities. The standalone
+            # hosted client identifies Hearth explicitly; keep the agent relay on
+            # that same supported path instead of requests' default User-Agent.
+            headers['User-Agent'] = 'Hearth-local-webui/1.0 (OpenCode project-agent relay)'
+        if key: headers['Authorization'] = 'Bearer '+key
+        response_started = False
+        response = None
+        live_id = None
+        active = self.server.active_responses
+        if cancel_id:
+            with self.server.active_lock:
+                active[cancel_id] = None
+        request_body = None
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if length > 128 * 1024 * 1024:
+                self.send_error(413)
+                return
+            body = self.rfile.read(length) if length else None
+            try:
+                request_body = json.loads(body or b'{}')
+            except (TypeError, ValueError):
+                request_body = {}
+            if not isinstance(request_body, dict):
+                request_body = {}
+            messages = request_body.get('messages') or []
+            request_text = '\n'.join(
+                f"{item.get('role') or 'unknown'}: {item.get('content') or ''}"
+                for item in messages if isinstance(item, dict)
+            )[-4000:]
+            source = (proxy.get('headers') or {}).get('X-Hearth-Agent-Name') or 'agent'
+            if self.command == 'POST' and request_path.endswith('/chat/completions'):
+                live_id = live_requests.start(
+                    source=source, backend=proxy.get('provider_id') or 'agent',
+                    task_id=proxy.get('task_id'),
+                    model=proxy.get('model_id') or request_body.get('model') or 'unknown',
+                    max_tokens=request_body.get('max_tokens') or request_body.get('max_completion_tokens'),
+                    is_npu=proxy.get('provider_id') == 'fastflowlm',
+                    request_content=request_text,
+                )
+            base_url = proxy['base_url']
+            if proxy.get('provider_id') == 'opencode':
+                try:
+                    from hearth.backends import opencode_client as zen
+                    base_url = zen.base_url().rstrip('/') + '/v1'
+                except Exception:
+                    pass
+            response = requests.request(self.command, base_url+suffix,
+                params=None, headers=headers, data=body, stream=True,
+                timeout=(15, 600), verify=proxy.get('verify_tls', True))
+            if live_id is not None:
+                def cancel_upstream():
+                    response.close()
+                    if cancel_id:
+                        try:
+                            requests.post(f'http://127.0.0.1:13307/_hearth/cancel/{cancel_id}', timeout=2)
+                        except requests.RequestException:
+                            logging.warning('Could not signal LM Studio to stop agent stream %s.', live_id)
+                live_requests.set_cancel_callback(live_id, cancel_upstream)
+            if cancel_id:
+                with self.server.active_lock:
+                    if cancel_id in active:
+                        active[cancel_id] = response
+            if response.status_code >= 500:
+                logging.warning('Agent model upstream returned HTTP %s for %s (%s bytes).',
+                                response.status_code, request_path, length)
+            if proxy.get('provider_id') == 'opencode' and (200 <= response.status_code < 400 or response.status_code in (402, 429)):
+                live_requests.record_provider_availability(
+                    provider='opencode', model=proxy.get('model_id'), status=response.status_code,
+                    retry_after=response.headers.get('Retry-After'),
+                )
+            self.send_response(response.status_code)
+            for name in ('Content-Type', 'Content-Length', 'Cache-Control', 'Retry-After'):
+                if response.headers.get(name): self.send_header(name, response.headers[name])
+            self.send_header('Connection', 'close')
+            self.close_connection = True
+            self.end_headers()
+            response_started = True
+            event_stream = 'text/event-stream' in response.headers.get('Content-Type', '').lower()
+            pending = b''
+            captured = bytearray()
+            payload = None
+
+            def record_event(line):
+                if not line.startswith(b'data:'):
+                    return
+                raw = line[5:].strip()
+                if not raw or raw == b'[DONE]':
+                    return
+                try:
+                    event = json.loads(raw)
+                    delta = ((event.get('choices') or [{}])[0].get('delta') or {})
+                    pieces = []
+                    for field in ('reasoning', 'reasoning_content', 'content'):
+                        value = delta.get(field)
+                        if isinstance(value, str):
+                            pieces.append(value)
+                        elif isinstance(value, list):
+                            pieces.extend(str(part.get('text') or '') for part in value if isinstance(part, dict))
+                    for call in delta.get('tool_calls') or []:
+                        function = call.get('function') or {}
+                        pieces.extend(value for value in (function.get('name'), function.get('arguments'))
+                                      if isinstance(value, str))
+                    text = ''.join(pieces)
+                    if text:
+                        live_requests.update(live_id, delta_chars=len(text), delta_content=text)
+                except (ValueError, TypeError, AttributeError, IndexError):
+                    pass
+
+            # Close-delimited SSE must reach OpenCode before a large buffer fills.
+            # Flush complete lines instead of issuing a socket write per byte.
+            def chunks():
+                if not event_stream:
+                    yield from response.iter_content(64 * 1024)
+                    return
+                line = bytearray()
+                for byte in response.iter_content(1):
+                    line.extend(byte)
+                    if line.endswith(b'\n'):
+                        yield bytes(line)
+                        line.clear()
+                if line:
+                    yield bytes(line)
+
+            for chunk in chunks():
+                if chunk:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    if event_stream:
+                        pending += chunk
+                        while b'\n' in pending:
+                            line, pending = pending.split(b'\n', 1)
+                            record_event(line.rstrip(b'\r'))
+                    elif len(captured) < 8 * 1024 * 1024:
+                        captured.extend(chunk[:8 * 1024 * 1024 - len(captured)])
+            if event_stream:
+                if pending:
+                    record_event(pending.rstrip(b'\r'))
+            elif captured:
+                try:
+                    payload = json.loads(captured)
+                    choice = (payload.get('choices') or [{}])[0]
+                    message = choice.get('message') or choice.get('delta') or {}
+                    result_text = message.get('reasoning_content') or message.get('reasoning') or message.get('content')
+                    if isinstance(result_text, str) and result_text:
+                        live_requests.update(live_id, delta_chars=len(result_text), delta_content=result_text)
+                except (ValueError, TypeError, AttributeError, IndexError):
+                    pass
+            usage = payload.get('usage') if 'payload' in locals() and isinstance(payload, dict) else None
+            completion_tokens = usage.get('completion_tokens') if isinstance(usage, dict) else None
+            live_requests.finish(live_id, status='done' if response.ok else 'error',
+                                 total_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+                                 status_code=response.status_code)
+        except (requests.RequestException, OSError, ValueError) as exc:
+            client_closed = isinstance(exc, OSError) and exc.errno in (errno.EPIPE, errno.ECONNRESET)
+            if client_closed:
+                logging.info('Agent model relay client closed %s after %s request bytes.',
+                             request_path, length if 'length' in locals() else 0)
+            else:
+                logging.warning('Agent model relay failed for %s (%s bytes): %s: %s',
+                                request_path, length if 'length' in locals() else 0,
+                                type(exc).__name__, str(exc)[:500])
+            # Once streaming headers or body bytes have been sent, a second HTTP
+            # error response corrupts the stream and can surface as ECONNRESET in
+            # OpenCode. Only send a 502 before the response has started; otherwise
+            # close this response cleanly and let the task retry the transport error.
+            if not response_started:
+                try: self.send_error(502)
+                except OSError: pass
+            if live_id is not None:
+                live_requests.finish(live_id, status='cancelled' if client_closed else 'error',
+                                     status_code=getattr(response, 'status_code', None),
+                                     error_detail=('The OpenCode client closed the model stream before it finished.'
+                                                   if client_closed else str(exc)))
+        finally:
+            if cancel_id:
+                with self.server.active_lock:
+                    active.pop(cancel_id, None)
+            if response is not None:
+                response.close()
+
+
+class _ModelProxy:
+    def __init__(self, info):
+        self.info = info
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        path = Path(self.info['socket_path'])
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.server:
+            # The socket path can disappear while this process remains alive
+            # (for example, another worker may have cleaned up the same runtime).
+            # A server object alone does not prove that the container can reach it.
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(1)
+                probe.connect(str(path))
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED, errno.ENOTSOCK):
+                    raise RuntimeError('Could not safely check the existing agent model relay socket.') from exc
+                self.server.shutdown()
+                self.server.server_close()
+                self.server = None
+                self.thread = None
+            else:
+                return str(path)
+            finally:
+                probe.close()
+        if path.exists():
+            # A running Hearth process may already own this relay socket. Never unlink
+            # its filesystem entry: doing so leaves its listener alive but unreachable,
+            # which makes container requests fail with ECONNRESET. Reuse a live socket;
+            # remove only stale socket paths left after a process shutdown.
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(1)
+                probe.connect(str(path))
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED, errno.ENOTSOCK):
+                    raise RuntimeError('Could not safely check the existing agent model relay socket.') from exc
+                path.unlink(missing_ok=True)
+            else:
+                return str(path)
+            finally:
+                probe.close()
+        server_type = type('ThreadedUnixHTTPServer', (ThreadingMixIn, UnixStreamServer),
+                           {'daemon_threads': True, 'allow_reuse_address': True})
+        self.server = server_type(str(path), _ModelProxyHandler)
+        path.chmod(0o666)
+        self.server.proxy_config = self.info
+        self.server.active_lock = threading.Lock()
+        self.server.active_responses = {}
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True,
+                                       name='agent-model-proxy')
+        self.thread.start()
+        return str(path)
+
+    def close(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+            Path(self.info['socket_path']).unlink(missing_ok=True)
+
+    def cancel_requests(self):
+        if not self.server:
+            return
+        with self.server.active_lock:
+            responses = list(self.server.active_responses.items())
+        for cancel_id, response in responses:
+            if cancel_id:
+                for port in (1235, 13307):
+                    try:
+                        requests.post(f'http://127.0.0.1:{port}/_hearth/cancel/{cancel_id}', timeout=2)
+                    except requests.RequestException:
+                        logging.warning('Could not cancel LM Studio stream on proxy port %s.', port)
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    logging.exception('Could not close interrupted agent model response.')
+
+
+class _EndpointOpenCode(OpenCode):
+    def __init__(self, url, password):
+        self.endpoint = url.rstrip('/')
+        self.password = password
+
+    def call(self, method, path, data=None, params=None, read_timeout=30):
+        response = requests.request(method, self.endpoint+path, json=data, params=params,
+            auth=('opencode', self.password), timeout=(5, read_timeout))
+        if not response.ok:
+            raise RuntimeError(f'OpenCode {response.status_code}: {response.text[:400]}')
+        return response.json() if response.content else {}
+
+    def snapshot(self, session):
+        """Fetch independent session state concurrently over the container API."""
+        path = '/api/session/'+session
+        requests_to_make = {
+            'active': lambda: session in self.call('GET', '/api/session/active')['data'],
+            'forms': lambda: self.call('GET', path+'/form')['data'],
+            'permissions': lambda: self.call('GET', path+'/permission')['data'],
+            'inbox': lambda: self.call('GET', path+'/inbox')['data'],
+            'messages': lambda: self.call('GET', path+'/message', params={'limit': '50', 'order': 'desc'})['data'],
+        }
+        with ThreadPoolExecutor(max_workers=len(requests_to_make)) as pool:
+            futures = {name: pool.submit(fetch) for name, fetch in requests_to_make.items()}
+            return {name: future.result() for name, future in futures.items()}
+
+
+class ContainerOpenCode(OpenCode):
+    """OpenCode API adapter whose coding sessions execute in locked-down Docker tasks."""
+    @staticmethod
+    def _agent_provider_id(provider_id):
+        # `opencode` is a native OpenCode integration with its own auth lookup.
+        # Agent requests must use Hearth's explicit host relay instead, so give
+        # the compatible provider a private ID inside the isolated config.
+        return 'hearth-opencode' if provider_id == 'opencode' else provider_id
+
+    def __init__(self, runtime_directory):
+        super().__init__()
+        self.runtime_directory = Path(runtime_directory)
+        self.runtime_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.runtime_directory.chmod(0o700)
+        self._lock = threading.RLock()
+        self._proxies = {}
+
+    def migrate_legacy_runtime(self):
+        """Move old host JSON metadata into PostgreSQL and discard its container copy."""
+        for path in self.runtime_directory.glob('hearth-agent-*.json'):
+            try:
+                info = json.loads(path.read_text())
+                task_id = info['task_id']
+                if agent_store.get_task(task_id):
+                    agent_store.save_runtime(task_id, info)
+                try: self._docker('rm', '--force', info['container'], timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        logging.warning('Could not remove legacy agent container %s: %s', info.get('container'), exc)
+                path.unlink(missing_ok=True)
+                shutil.rmtree(self.runtime_directory/task_id, ignore_errors=True)
+            except (ValueError, KeyError, OSError):
+                logging.exception('Could not migrate legacy agent runtime metadata from %s', path)
+        for path in self.runtime_directory.iterdir():
+            if path.is_dir() and re.fullmatch(r'[0-9a-f]{32}', path.name):
+                # A task directory contains the model relay socket and identifies a
+                # live/recoverable container. Preserve it when PostgreSQL still has
+                # both the assignment and its runtime metadata; this is normal after
+                # a Hearth restart, when active tasks have just become interrupted.
+                # Only remove directories whose durable records are gone.
+                try:
+                    task = agent_store.get_task(path.name)
+                    runtime = agent_store.get_runtime(path.name)
+                except Exception:
+                    logging.exception('Could not verify agent runtime %s; leaving it untouched.', path.name)
+                    continue
+                if task and runtime:
+                    continue
+                name = self._container_name(path.name)
+                try: self._docker('rm', '--force', name, timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        logging.warning('Could not remove orphaned agent container %s: %s', name, exc)
+                shutil.rmtree(path, ignore_errors=True)
+
+    def ensure_agent(self):
+        # The isolated runtime receives a private agent definition in its generated config.
+        # Image construction happens in the durable worker so the UI keeps showing progress.
+        return None
+
+    def _docker(self, *args, timeout=120, input_data=None):
+        result = subprocess.run(['docker', *map(str, args)], input=input_data,
+            capture_output=True, timeout=timeout)
+        if result.returncode:
+            message = (result.stderr or result.stdout).decode('utf-8', 'replace')[-2000:]
+            raise RuntimeError('Docker agent runtime failed: '+message)
+        return result.stdout.decode('utf-8', 'replace').strip()
+
+    def _ensure_image(self, job=None):
+        try:
+            if self._docker('image', 'inspect', IMAGE, timeout=20): return
+        except (RuntimeError, FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        context = PROJECT_ROOT/'agent_container'
+        self._report(job, 'Building the isolated OpenCode image with Python, Java, Node.js, and build tools.')
+        self._docker('build', '--pull', '--tag', IMAGE, '--build-arg', 'OPENCODE_VERSION='+OPENCODE_VERSION,
+                     context, timeout=1800)
+        self._report(job, 'Agent runtime image built successfully.')
+
+    def _report(self, job, text):
+        callback = getattr(self, 'progress', None)
+        if callback and job:
+            callback(job, text)
+
+    def models(self):
+        try:
+            models = super().models()
+        except Exception:
+            logging.warning('Could not read the running OpenCode model list; using Hearth model inventory.',
+                            exc_info=True)
+            models = []
+        config = _generated_model_config()
+        if config is not None:
+            # The running desktop process can retain a previous hosted plan's catalog.
+            models = [model for model in models if model['providerID'] != 'opencode']
+        known = {(model['providerID'], model['id']) for model in models}
+        for provider_id, provider in (config or {}).get('provider', {}).items():
+            for model_id, entry in (provider.get('models') or {}).items():
+                if (provider_id, model_id) in known:
+                    continue
+                context = (entry.get('limit') or {}).get('context')
+                usable = not isinstance(context, int) or context >= 16384
+                models.append({
+                    'providerID': provider_id, 'id': model_id,
+                    'name': entry.get('name') or model_id, 'context': context,
+                    'usable': usable,
+                    'reason': '' if usable else
+                        'This OpenCode worker needs at least 16K context; this model has '+str(context)+'.',
+                })
+        return models
+
+    def _container_name(self, task_id):
+        if not re.fullmatch(r'[0-9a-f]{32}', task_id):
+            raise ValueError('Invalid agent assignment ID.')
+        return 'hearth-agent-'+task_id[:24]
+
+    def _runtime_path(self, name):
+        return self.runtime_directory/(name+'.json')
+
+    def _write_runtime(self, name, info):
+        agent_store.save_runtime(info['task_id'], info)
+
+    def _read_runtime(self, name):
+        info = agent_store.get_runtime_by_container(name)
+        if not info:
+            # One-time import for installations upgrading from file-backed metadata.
+            path = self._runtime_path(name)
+            if not path.is_file():
+                raise RuntimeError('Agent container metadata is missing from PostgreSQL.')
+            info = json.loads(path.read_text())
+            if agent_store.get_task(info.get('task_id')):
+                agent_store.save_runtime(info['task_id'], info)
+            path.unlink(missing_ok=True)
+        if not isinstance(info, dict) or info.get('container') != name:
+            raise RuntimeError('Agent container metadata is invalid.')
+        proxy = info.get('model_proxy')
+        if isinstance(proxy, dict):
+            # Older assignments stored boolean True, which makes requests use
+            # certifi instead of the host trust store containing private model CAs.
+            # Migrate persisted metadata while keeping certificate checks enabled.
+            ca_bundle = _system_ca_bundle()
+            if proxy.get('verify_tls') != ca_bundle:
+                proxy['verify_tls'] = ca_bundle
+                self._write_runtime(name, info)
+        return info
+
+    def _host_provider(self, provider_id, model_id, socket_path, agent_name):
+        config_path = Path.home()/'.config/opencode/opencode.jsonc'
+        try:
+            config = parse_jsonc(config_path)
+        except (OSError, ValueError):
+            config = {}
+        if provider_id == 'opencode':
+            # Use the current account plan/key even when the desktop config is stale.
+            generated = _generated_model_config()
+            if generated is not None:
+                config = generated
+        source = (config.get('provider') or {}).get(provider_id)
+        models = (source or {}).get('models') or {}
+        model = models.get(model_id)
+        if not isinstance(model, dict):
+            generated = _generated_model_config()
+            generated_source = (generated or {}).get('provider', {}).get(provider_id)
+            generated_model = (generated_source or {}).get('models', {}).get(model_id)
+            if isinstance(generated_source, dict) and isinstance(generated_model, dict):
+                config, source, model = generated, generated_source, generated_model
+        if not isinstance(model, dict):
+            if not isinstance(source, dict):
+                raise ValueError('The selected model provider is not configured in OpenCode.')
+            # Some providers expose aliases in their model inventory; do not broaden the
+            # container config to unrelated models if the exact model is missing.
+            raise ValueError('The selected model is missing from the OpenCode provider configuration.')
+        if provider_id == 'kobold':
+            # The selected provider/model may come from an older desktop config or
+            # an OpenCode catalog entry that marks tool support unavailable. Agent
+            # sessions require native OpenCode tools, and KoboldCPP's compatible
+            # endpoint supports them; make that capability explicit per assignment.
+            model = copy.deepcopy(model)
+            capabilities = model.get('capabilities')
+            if not isinstance(capabilities, dict):
+                capabilities = {}
+                model['capabilities'] = capabilities
+            capabilities['tools'] = True
+        options = source.get('options') or {}
+        base_url = str(options.get('baseURL') or '').rstrip('/')
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc or not parsed.path.endswith('/v1'):
+            raise ValueError('The selected model provider has an unsupported API endpoint.')
+        headers = dict(options.get('headers') or {})
+
+        agent_name = str(agent_name or '').strip()
+        if not agent_name or len(agent_name) > 120 or any(ord(char) < 32 for char in agent_name):
+            agent_name = 'Project agent'
+        headers['X-Hearth-Agent-Name'] = agent_name
+        # opencode.ai's Go routes requests efficiently by a stable session id.
+        # Forward the client's own header when present (added per-request by the
+        # relay); fall back to a task-scoped stable id derived from the socket path
+        # and agent name, so a rebuilt container keeps the same identifier.
+        headers['X-Hearth-Agent-Session'] = hashlib.sha256(
+            f'{socket_path}:{agent_name}'.encode()).hexdigest()[:40]
+        if provider_id in ('lemonade', 'fastflowlm', 'lmstudio'):
+            headers['X-Hearth-Agent-Relay'] = '1'
+        api_key = options.get('apiKey')
+        auth_plan = None
+        if provider_id == 'opencode':
+            from hearth.storage import settings_store
+            auth_plan = (settings_store.get('opencode_api_plan') or 'payg').strip().lower()
+            if auth_plan not in ('go', 'payg'):
+                auth_plan = 'payg'
+            # Warm the host OpenCode auth cache before the agent's first model call.
+            # The credential stays in process memory and is resolved per request.
+            _saved_opencode_auth_key(auth_plan)
+            api_key = None
+        proxy_info = {'base_url': base_url, 'api_key': api_key,
+                      'headers': headers, 'verify_tls': _system_ca_bundle(),
+                      'socket_path': str(socket_path), 'token': secrets.token_urlsafe(32),
+                      'provider_id': provider_id, 'model_id': model_id}
+        if auth_plan:
+            proxy_info['auth_plan'] = auth_plan
+        provider = copy.deepcopy(source)
+        provider['models'] = {model_id: copy.deepcopy(model)}
+        provider_options = dict(provider.get('options') or {})
+        provider_options.update({'baseURL': '', 'apiKey': proxy_info['token']})
+        provider_options.pop('headers', None)
+        provider['options'] = provider_options
+        return config, provider, proxy_info
+
+    def _agent_config(self, original, provider_id, model_id, provider, opencode_steps=40, skills=None,
+                      research_providers=None, research_credentials=None, large_project_assets=False):
+        system = SYSTEM
+        if large_project_assets:
+            system += ('\nThis project includes large uploaded source-data files backed by the saved ZIP archive. '
+                       'Use them as input assets and do not edit, rename, or delete them; changes to files '
+                       'larger than 512 MiB are not included in workspace checkpoints. Write generated '
+                       'results to separate project files instead.')
+        if skills:
+            # Include each exact path-derived ID so models do not confuse Hearth's
+            # private database ID with the name OpenCode's skill tool expects.
+            selected = ', '.join(
+                f'{name} (skill ID: {agent_store.skill_folder(name)})' for name in skills)
+            system += ('\nThis assignment has these skills installed in OpenCode: '+selected+'. '
+                       'When one is relevant, load it with the skill tool using its exact skill ID, '
+                       'then follow its instructions.')
+        if research_providers:
+            providers = ', '.join(research_providers)
+            system += ('\nOnline research providers saved and enabled for this assignment: '+providers+'. '
+                       'When the goal needs current or external information, immediately search with '
+                       'the available tools from these providers. Infer search queries from the task '
+                       'and project context; do not ask the user for search terms, provider choice, '
+                       'or permission to use these already-configured tools. Ask only when an '
+                       'essential scope or decision cannot be inferred and blocks the assignment. '
+                       'Call selected providers in parallel when practical, '
+                       'compare their findings, and include source URLs with factual conclusions. '
+                       'Every web-search call must include the search text in its required `query` field; '
+                       'never call a search tool with empty arguments. If a tool reports a missing query, '
+                       'retry it with a non-empty query. Use only the exact search tool names shown in '
+                       'the current available-tools list. OpenCode names MCP tools using the configured '
+                       'server prefix and tool name (normalized as `<server>_<tool>`); do not call '
+                       'generic aliases such as `web_search`, `websearch`, or `web_fetch`. If a tool is '
+                       'missing, try the other configured providers; if all '
+                       'are unavailable, report that limitation after trying them. Before opening pages '
+                       'or fetching full content, '
+                       'review the search snippets and titles against the assignment goal and the exact '
+                       'entities, place, and time period requested. Discard unrelated, duplicate, or '
+                       'weakly matched results. If the results do not directly address the goal, refine '
+                       'the query and search again instead of deep-diving into irrelevant pages. Only '
+                       'fetch and analyze pages from results that pass this relevance check; then verify '
+                       'their evidence and cite the source URLs in the findings.')
+
+        # This provider option is understood by compatible chat-template providers
+        # such as Lemonade. Preserve other provider options and custom extraBody keys.
+        extra_body = provider['options'].get('extraBody')
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        else:
+            extra_body = dict(extra_body)
+        template_kwargs = extra_body.get('chat_template_kwargs')
+        if not isinstance(template_kwargs, dict):
+            template_kwargs = {}
+        else:
+            template_kwargs = dict(template_kwargs)
+        enable_thinking = original.get('enable_thinking', True)
+        # Lemonade's current llama.cpp path uses the top-level request control to
+        # reach native reasoning settings; retain the template option for providers
+        # that consume Qwen-style chat-template kwargs.
+        if provider_id in ('lemonade', 'lmstudio'):
+            extra_body['enable_thinking'] = enable_thinking
+        if provider_id == 'opencode':
+            # OpenCode Go's OpenAI-compatible endpoint rejects this
+            # llama.cpp-specific extension with unsupported_parameter.
+            extra_body.pop('chat_template_kwargs', None)
+        else:
+            extra_body['chat_template_kwargs'] = {**template_kwargs,
+                'enable_thinking': enable_thinking}
+        provider['options']['extraBody'] = extra_body
+        provider['options']['baseURL'] = 'http://127.0.0.1:4097/v1'
+        # The isolated project worker has its own generated OpenCode config, separate
+        # from desktop/Help config. Compact automatically unless explicitly disabled.
+        comp = copy.deepcopy(original.get('compaction') or {'auto': True})
+        model_config = (provider.get('models') or {}).get(model_id) or {}
+        model_limit = model_config.get('limit') or {}
+        context_limit = model_limit.get('context')
+        if isinstance(context_limit, int) and not isinstance(context_limit, bool) and context_limit >= 8192:
+            # Do not let a generated desktop config's large keep budget consume the
+            # entire agent context. Larger Lemonade/Muse-style models still need their
+            # full recent-context and output budgets: a 65K-token window should not be
+            # truncated by a smaller sibling's 1K budget; buffer is the output reserve.
+            keep = comp.get('keep')
+            if not isinstance(keep, dict):
+                keep = {}
+                comp['keep'] = keep
+            current_keep = keep.get('tokens', 0)
+            if not isinstance(current_keep, int) or isinstance(current_keep, bool) or current_keep < 0:
+                current_keep = 0
+            current_buffer = comp.get('buffer')
+            if not isinstance(current_buffer, int) or isinstance(current_buffer, bool) or current_buffer < 0:
+                current_buffer = 0
+            from hearth.core import help_data
+            budgets = help_data.compaction_for_window(context_limit, model_limit.get('output'))
+            keep_budget, buffer_budget = budgets['keep'], budgets['buffer']
+            keep['tokens'] = min(max(current_keep, keep_budget),
+                                 max(keep_budget, context_limit - buffer_budget - max(4096, context_limit // 8)))
+            comp['buffer'] = min(max(current_buffer, buffer_budget), context_limit // 4)
+        mcp_servers = {}
+        endpoints = {
+            'exa': ('https://mcp.exa.ai/mcp', 'x-api-key'),
+            'firecrawl': ('https://mcp.firecrawl.dev/v2/mcp', 'Authorization'),
+            'parallel': ('https://mcp.parallel.ai/mcp', 'Authorization'),
+            'tavily': ('https://mcp.tavily.com/mcp', 'Authorization'),
+            'tinyfish': ('https://agent.tinyfish.ai/mcp', 'X-API-Key'),
+        }
+        credentials = research_credentials or {}
+        for research_provider in research_providers or []:
+            if research_provider == 'duckduckgo':
+                mcp_servers['duckduckgo'] = {
+                    'type': 'local',
+                    'command': ['/opt/duckduckgo/bin/duckduckgo-mcp-server'],
+                    'enabled': True,
+                    'codemode': False,
+                    'timeout': 60000,
+                }
+                continue
+            url, header = endpoints[research_provider]
+            server = {'type': 'remote', 'url': url, 'enabled': True, 'codemode': False}
+            credential = credentials.get(research_provider)
+            if credential:
+                env_name = 'HEARTH_RESEARCH_'+research_provider.upper()+'_KEY'
+                server['headers'] = {header: ('Bearer ' if header == 'Authorization' else '')+
+                                     '{env:'+env_name+'}'}
+                server['oauth'] = False
+            elif research_provider != 'tinyfish':
+                server['oauth'] = False
+            mcp_servers[research_provider] = server
+        agent_provider_id = self._agent_provider_id(provider_id)
+        if agent_provider_id != provider_id:
+            provider = copy.deepcopy(provider)
+            provider['name'] = 'Hearth hosted-model relay'
+        config = {'$schema': 'https://opencode.ai/config.json', 'model': f'{agent_provider_id}/{model_id}',
+                'provider': {agent_provider_id: provider},
+                'agents': {AGENT: {'description': 'Isolated persistent Hearth project worker',
+                    'mode': 'primary', 'system': system,
+                    'steps': opencode_steps}},
+                'compaction': comp}
+        if mcp_servers:
+            config['mcp'] = {'servers': mcp_servers}
+        return config
+
+    def _make_proxy(self, name, info):
+        info = {**info, 'task_id': name.removeprefix('hearth-agent-')}
+        with self._lock:
+            proxy = self._proxies.get(name)
+            if proxy:
+                proxy.start()
+                return proxy
+            proxy = _ModelProxy(info)
+            proxy.start()
+            self._proxies[name] = proxy
+            return proxy
+
+    def restore_model_relays(self, jobs):
+        """Recreate host relay listeners for persistent agent containers on startup."""
+        for job in jobs:
+            session_id = job.get('session_id')
+            if not session_id or SESSION_SEPARATOR not in str(session_id):
+                continue
+            try:
+                name, _raw_session, info = self._split(session_id)
+                proxy_info = info.get('model_proxy')
+                if not isinstance(proxy_info, dict) or not proxy_info.get('socket_path'):
+                    logging.warning('Agent %s has no usable saved model relay configuration.', job.get('id'))
+                    continue
+                self._make_proxy(name, proxy_info)
+            except Exception:
+                logging.exception('Could not restore the model relay for agent %s.', job.get('id'))
+
+    def _start_container(self, name, info, task_dir, job=None):
+        self._report(job, 'Starting the isolated Docker container and OpenCode service.')
+        password = info['password']
+        memory = (os.environ.get('HEARTH_AGENT_MEMORY_LIMIT') or '8g').strip()
+        cpus = (os.environ.get('HEARTH_AGENT_CPU_LIMIT') or '4').strip()
+        pids = (os.environ.get('HEARTH_AGENT_PID_LIMIT') or '512').strip()
+        memory_match = re.fullmatch(r'([1-9][0-9]{0,8})([kKmMgG]?)', memory)
+        if not memory_match:
+            raise ValueError('HEARTH_AGENT_MEMORY_LIMIT must be a Docker memory value such as 8g.')
+        memory_bytes = int(memory_match.group(1))
+        memory_unit = memory_match.group(2).lower()
+        memory_bytes *= {'': 1, 'k': 1024, 'm': 1024**2, 'g': 1024**3}[memory_unit]
+        if not 512 * 1024**2 <= memory_bytes <= 256 * 1024**3:
+            raise ValueError('HEARTH_AGENT_MEMORY_LIMIT must be between 512m and 256g.')
+        try:
+            cpu_value = float(cpus)
+        except ValueError as exc:
+            raise ValueError('HEARTH_AGENT_CPU_LIMIT must be between 0.5 and 64.') from exc
+        if not 0.5 <= cpu_value <= 64:
+            raise ValueError('HEARTH_AGENT_CPU_LIMIT must be between 0.5 and 64.')
+        if not re.fullmatch(r'[1-9][0-9]{1,4}', pids) or not 64 <= int(pids) <= 4096:
+            raise ValueError('HEARTH_AGENT_PID_LIMIT must be between 64 and 4096.')
+        startup = ('umask 0002; mkdir -p "$HOME/agents/project"; '
+                   'printf "%s" "$HEARTH_OPENCODE_CONFIG" > "$OPENCODE_CONFIG"; '
+                   'socat TCP-LISTEN:4097,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/relay/model.sock & '
+                   'exec opencode serve --hostname 0.0.0.0 --port 4096')
+        environment = ['--env', 'HOME=/home/node', '--env', 'OPENCODE_CONFIG=/home/node/agents/opencode.json',
+            '--env', 'HEARTH_OPENCODE_CONFIG='+json.dumps(info['opencode_config'], separators=(',', ':')),
+            '--env', 'OPENCODE_SERVER_USERNAME=opencode', '--env', 'OPENCODE_SERVER_PASSWORD='+password]
+        for provider, credential in ((job or {}).get('research_credentials') or {}).items():
+            if provider in {'exa', 'firecrawl', 'parallel', 'tavily', 'tinyfish'} and credential:
+                environment += ['--env', 'HEARTH_RESEARCH_'+provider.upper()+'_KEY='+credential]
+        self._docker('run', '--detach', '--name', name, '--label', 'hearth.agent-task='+info['task_id'],
+            '--restart', 'unless-stopped', '--network', 'bridge',
+            '--publish', '127.0.0.1::4096', '--memory', memory, '--cpus', str(cpu_value), '--pids-limit', pids,
+            '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'FOWNER',
+            '--cap-add', 'FSETID', '--cap-add', 'SETGID', '--cap-add', 'SETUID', '--cap-add', 'SYS_CHROOT',
+            '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp:rw,nosuid,nodev,size=2g',
+            *environment,
+            '--mount', f'type=bind,src={task_dir},dst=/home/node/agents',
+            '--mount', f'type=bind,src={task_dir / "opencode-skills"},dst=/home/node/.config/opencode/skills,readonly',
+            '--mount', f'type=bind,src={task_dir},dst=/relay,readonly',
+            '--entrypoint', '/bin/sh', IMAGE, '-lc', startup, timeout=180)
+        port = ''
+        deadline = time.time()+45
+        while time.time() < deadline:
+            port = self._docker('port', name, '4096/tcp', timeout=10).split(':')[-1]
+            try:
+                response = requests.get(f'http://127.0.0.1:{port}/api/agent',
+                    auth=('opencode', password), timeout=2)
+                if response.ok: break
+            except requests.RequestException: pass
+            time.sleep(.5)
+        else:
+            raise RuntimeError('The OpenCode service did not start inside the agent container.')
+        info.update(port=int(port))
+        self._write_runtime(name, info)
+        self._report(job, 'OpenCode is ready inside the container; syncing the project workspace.')
+
+    def create(self, job):
+        try:
+            return self._create_container_session(job)
+        except Exception:
+            try: self.cleanup(job)
+            except Exception: logging.exception('Could not clean up failed agent container startup')
+            raise
+
+    def _create_container_session(self, job):
+        self._ensure_image(job)
+        task_id = job['id']
+        name = self._container_name(task_id)
+        task_dir = self.runtime_directory/task_id
+        task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        task_dir.chmod(0o700)
+        (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
+        proxy_path = task_dir/'model.sock'
+        original, provider, proxy_info = self._host_provider(
+            job['model']['providerID'], job['model']['id'], proxy_path,
+            job.get('assignee') or 'Project agent')
+        skill_bundle = self._skill_bundle(job)
+        proxy_info['skill_bundle_hash'] = hashlib.sha256(json.dumps(
+            skill_bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        research_credentials = job.get('research_credentials') or {}
+        research_providers = job.get('research_providers') or []
+        project_archive = agent_store.get_project_archive(task_id)
+        proxy_info['project_archive_oid'] = project_archive['archive_oid'] if project_archive else None
+        proxy_info['research_providers_hash'] = hashlib.sha256(json.dumps(
+            sorted(set(research_providers)), separators=(',', ':')).encode()).hexdigest()
+        proxy_info['research_credentials_hash'] = hashlib.sha256(json.dumps(
+            research_credentials, sort_keys=True).encode()).hexdigest()
+        proxy_info['agent_prompt_version'] = AGENT_PROMPT_VERSION
+        config = self._agent_config({**original, 'enable_thinking': job.get('enable_thinking', True)},
+                                    job['model']['providerID'], job['model']['id'], provider,
+                                    job.get('opencode_steps', 40), skills=job.get('skills') or [],
+                                    research_providers=research_providers,
+                                    research_credentials=research_credentials,
+                                    large_project_assets=bool(agent_store.get_project_archive_large_paths(task_id)))
+        # Keep OpenCode's bearer token and the host relay's expected token in lockstep.
+        # Normalize this after composing the full config so provider/model inheritance
+        # cannot leave a stale upstream key in the agent's local relay config.
+        agent_provider_id = self._agent_provider_id(job['model']['providerID'])
+        selected_provider = config['provider'][agent_provider_id]
+        selected_options = selected_provider.setdefault('options', {})
+        selected_options['baseURL'] = 'http://127.0.0.1:4097/v1'
+        selected_options['apiKey'] = proxy_info['token']
+        existing = agent_store.get_runtime(task_id)
+        if existing:
+            can_reuse = self._can_reuse_container(existing, job, config, proxy_info)
+            if can_reuse:
+                try:
+                    image = self._docker('inspect', '-f', '{{.Config.Image}}', name, timeout=15)
+                    can_reuse = image == IMAGE
+                except RuntimeError as exc:
+                    if 'No such object' not in str(exc) and 'No such container' not in str(exc):
+                        raise
+                    can_reuse = False
+            if can_reuse:
+                self._report(job, 'Reusing the saved Docker container and OpenCode installation.')
+                session = self._endpoint(name, existing)
+                agent_model = {**job['model'], 'providerID': agent_provider_id}
+                data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
+                        'model': agent_model, 'location': {'directory': '/home/node/agents/project'},
+                        'permissions': self._permissions(job)}
+                result = session.call('POST', '/api/session', data)['data']['id']
+                # Keep the host-created workspace root. Recreating it as the
+                # container's root user leaves Hearth unable to clean it up.
+                self._docker('exec', name, 'sh', '-lc',
+                             'mkdir -p /home/node/agents/project && '
+                             'find /home/node/agents/project -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && '
+                             f'chown {os.getuid()}:{os.getgid()} /home/node/agents/project && '
+                             'chmod 700 /home/node/agents/project')
+                has_checkpoint = agent_store.has_workspace_checkpoint(job['owner'], task_id)
+                archive_checkpointed = bool(
+                    project_archive and project_archive['checkpointed_at'] is not None)
+                self._extract_project_archive(
+                    name, task_id, job, large_only=has_checkpoint and archive_checkpointed)
+                self._sync_to_container(name, job['owner'], workspace_id=task_id)
+                existing.update(last_sync=0, tool_policy_version=TOOL_POLICY_VERSION)
+                self._write_runtime(name, existing)
+                self._report(job, 'Saved project workspace synced into the reused container.')
+                return name+SESSION_SEPARATOR+result
+            reason = ('Container settings changed' if existing.get('model') != job.get('model') or
+                      not self._can_reuse_container(existing, job, config, proxy_info)
+                      else 'The previous container or image is unavailable')
+            self._report(job, reason+'; replacing it before starting this run.')
+            self.cleanup(job)
+        task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        task_dir.chmod(0o700)
+        (task_dir/'project').mkdir(mode=0o700, exist_ok=True)
+        self._write_skill_bundle(task_dir, skill_bundle)
+        proxy = self._make_proxy(name, proxy_info)
+        info = {'container': name, 'task_id': task_id, 'password': secrets.token_urlsafe(32),
+                'owner': job['owner'], 'model': job['model'], 'model_proxy': proxy.info,
+                'opencode_config': config,
+                'tool_policy_version': TOOL_POLICY_VERSION,
+                'last_sync': 0, 'manifest': [], 'project_directory': '/home/node/agents/project'}
+        self._write_runtime(name, info)
+        self._start_container(name, info, task_dir, job)
+        has_checkpoint = agent_store.has_workspace_checkpoint(job['owner'], task_id)
+        archive_pending = bool(project_archive and project_archive['checkpointed_at'] is None)
+        merge_archive_after_workspace = archive_pending and has_checkpoint
+        if not merge_archive_after_workspace:
+            self._extract_project_archive(
+                name, task_id, job,
+                large_only=has_checkpoint and bool(project_archive and not archive_pending))
+        session = _EndpointOpenCode(f"http://127.0.0.1:{info['port']}", info['password'])
+        agent_model = {**job['model'], 'providerID': agent_provider_id}
+        data = {'title': 'Hearth: '+job['title'], 'agent': AGENT,
+                'model': agent_model, 'location': {'directory': '/home/node/agents/project'},
+                'permissions': self._permissions(job)}
+        result = session.call('POST', '/api/session', data)['data']['id']
+        self._sync_to_container(name, job['owner'], workspace_id=job['id'])
+        if merge_archive_after_workspace:
+            self._extract_project_archive(name, task_id, job, replace=True)
+        self._report(job, 'Project synced. The agent is ready to start its first work cycle.')
+        return name+SESSION_SEPARATOR+result
+
+    @staticmethod
+    def _can_reuse_container(existing, job, config, proxy_info):
+        """Reuse only when the stopped service has the same model and provider settings."""
+        if existing.get('tool_policy_version') != TOOL_POLICY_VERSION:
+            return False
+        if existing.get('model') != job.get('model'):
+            return False
+        old_proxy = existing.get('model_proxy') or {}
+        proxy_fields = ('base_url', 'api_key', 'headers', 'verify_tls', 'skill_bundle_hash',
+                        'research_providers_hash', 'research_credentials_hash', 'agent_prompt_version',
+                        'project_archive_oid')
+        if any(old_proxy.get(key) != proxy_info.get(key) for key in proxy_fields):
+            return False
+        old_config = copy.deepcopy(existing.get('opencode_config') or {})
+        new_config = copy.deepcopy(config)
+        provider_id = ContainerOpenCode._agent_provider_id(job['model']['providerID'])
+        try:
+            old_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
+            new_config['provider'][provider_id]['options']['apiKey'] = 'relay-token'
+        except (KeyError, TypeError):
+            return False
+        return old_config == new_config
+
+    def park(self, job):
+        """Stop a completed task container but retain it and its runtime for its next run."""
+        task_id = job.get('id')
+        if not task_id:
+            return
+        name = self._container_name(task_id)
+        with self._lock:
+            proxy = self._proxies.pop(name, None)
+        try:
+            if proxy:
+                proxy.close()
+            try:
+                self._docker('stop', '--time', '5', name, timeout=60)
+            except RuntimeError as exc:
+                if 'No such container' not in str(exc):
+                    raise
+        except Exception:
+            logging.exception('Could not park agent container %s', name)
+            raise
+
+    def resume(self, job):
+        """Reattach to the persistent session or recreate it from the synced project."""
+        session_id = job.get('session_id')
+        if not session_id or SESSION_SEPARATOR not in str(session_id):
+            return self.create(job)
+        _name, _raw, info = self._split(session_id)
+        current_archive = agent_store.get_project_archive(job['id'])
+        current_archive_oid = current_archive['archive_oid'] if current_archive else None
+        saved_archive_oid = (info.get('model_proxy') or {}).get('project_archive_oid')
+        if saved_archive_oid != current_archive_oid:
+            try:
+                self.snapshot(session_id)
+                self.sync(job, force=True)
+            except Exception:
+                logging.exception('Could not checkpoint agent %s before applying its updated project ZIP.', job.get('id'))
+            self._report(job, 'Applying the updated project ZIP to the saved assignment workspace.')
+            return self.create(job)
+        if info.get('tool_policy_version') != TOOL_POLICY_VERSION:
+            self._report(job, 'Starting a fresh session with the current native tool policy from the saved workspace.')
+            return self.create(job)
+        if (info.get('model_proxy') or {}).get('agent_prompt_version') != AGENT_PROMPT_VERSION:
+            try:
+                self.snapshot(session_id)
+            except Exception:
+                logging.exception('Could not snapshot agent %s before refreshing its prompt.', job.get('id'))
+            self._report(job, 'Starting a fresh session with the corrected online-search argument guidance.')
+            return self.create(job)
+        current_bundle = self._skill_bundle(job)
+        current_skill_hash = hashlib.sha256(json.dumps(
+            current_bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if (info.get('model_proxy') or {}).get('skill_bundle_hash') != current_skill_hash:
+            self._report(job, 'Starting a fresh session with the current selected skills from the saved workspace.')
+            return self.create(job)
+        current_research_providers_hash = hashlib.sha256(json.dumps(
+            sorted(set(job.get('research_providers') or [])), separators=(',', ':')).encode()).hexdigest()
+        if (info.get('model_proxy') or {}).get('research_providers_hash') != current_research_providers_hash:
+            self._report(job, 'Starting a fresh session with the current online research providers.')
+            return self.create(job)
+        current_research_credentials_hash = hashlib.sha256(json.dumps(
+            agent_store.get_research_credentials(job['id']), sort_keys=True).encode()).hexdigest()
+        if (info.get('model_proxy') or {}).get('research_credentials_hash') != current_research_credentials_hash:
+            self._report(job, 'Starting a fresh session with the current online research credentials.')
+            return self.create(job)
+        provider_id = (job.get('model') or {}).get('providerID')
+        saved_provider = (info.get('opencode_config') or {}).get('provider', {}).get(provider_id, {})
+        saved_extra = (saved_provider.get('options') or {}).get('extraBody') or {}
+        saved_thinking = (saved_extra.get('chat_template_kwargs') or {}).get('enable_thinking', True)
+        if (saved_thinking != job.get('enable_thinking', True)
+                or (provider_id == 'lmstudio' and saved_extra.get('enable_thinking') != job.get('enable_thinking', True))):
+            self._report(job, 'Starting a fresh session with the assignment’s current thinking setting from the saved workspace.')
+            return self.create(job)
+        try:
+            self.snapshot(session_id)
+            # PostgreSQL is the durable workspace checkpoint. Reapply it when a
+            # blocked or interrupted assignment reconnects so edits made while
+            # the container was parked are visible to the resumed agent.
+            self._sync_to_container(_name, job['owner'], workspace_id=job['id'])
+            return session_id
+        except Exception as exc:
+            if 'container is missing' not in str(exc):
+                raise
+        # A removed Docker container also removed its private OpenCode session DB.
+        # PostgreSQL workspace files are the durable checkpoint for a fresh session.
+        self.cleanup(job)
+        recreated = self.create(job)
+        self._report(job, 'Previous container was unavailable; resumed from the latest synchronized project files.')
+        return recreated
+
+    def _permissions(self, job):
+        # OpenCode 2.1.2 applies last matching rule and evaluates multi-file
+        # operations across all resources. Keep explicit denials last.
+        permissions = [
+            {'action': 'external_directory', 'resource': '/home/node/agents/project/*', 'effect': 'allow'},
+            {'action': '*', 'resource': '*', 'effect': 'allow'}]
+        permissions.append({'action': 'shell', 'resource': '*',
+                            'effect': 'allow' if job.get('auto_commands') else 'ask'})
+        permissions += [
+            {'action': 'read', 'resource': '.env', 'effect': 'deny'},
+            {'action': 'read', 'resource': '.env.*', 'effect': 'deny'},
+            {'action': 'edit', 'resource': '.env', 'effect': 'deny'},
+            {'action': 'edit', 'resource': '.env.*', 'effect': 'deny'},
+            {'action': 'external_directory', 'resource': '*', 'effect': 'deny'},
+            {'action': 'subagent', 'resource': '*', 'effect': 'deny'},
+            # Code Mode exposes only MCP catalog tools; project agents need OpenCode's
+            # direct file and shell tools instead of nesting calls through execute.
+            {'action': 'execute', 'resource': '*', 'effect': 'deny'}]
+        return permissions
+
+    def _split(self, session_id):
+        name, separator, raw_session = str(session_id).partition(SESSION_SEPARATOR)
+        if not separator or not re.fullmatch(r'hearth-agent-[0-9a-f]{24}', name) or not raw_session:
+            raise RuntimeError('Agent container session reference is invalid.')
+        return name, raw_session, self._read_runtime(name)
+
+    def _endpoint(self, name, info):
+        self._make_proxy(name, info['model_proxy'])
+        try:
+            running = self._docker('inspect', '-f', '{{.State.Running}}', name, timeout=15)
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            if 'no such container' in message or 'no such object' in message:
+                raise RuntimeError('The isolated agent container is missing.') from exc
+            raise
+        started = running != 'true'
+        if started:
+            self._docker('start', name, timeout=60)
+        mapping = self._docker('port', name, '4096/tcp', timeout=15).strip()
+        host_port = mapping.splitlines()[0].rsplit(':', 1)[-1] if mapping else ''
+        if not host_port.isdigit():
+            raise RuntimeError('The isolated agent container did not publish its OpenCode service port.')
+        port = int(host_port)
+        if info.get('port') != port:
+            info['port'] = port
+            self._write_runtime(name, info)
+        endpoint = _EndpointOpenCode(f'http://127.0.0.1:{port}', info['password'])
+        if started:
+            deadline = time.monotonic()+45
+            while time.monotonic() < deadline:
+                try:
+                    endpoint.call('GET', '/api/agent', read_timeout=3)
+                    break
+                except requests.RequestException:
+                    time.sleep(.5)
+                except RuntimeError as exc:
+                    if not any(f'OpenCode {status}:' in str(exc)
+                               for status in (502, 503)):
+                        raise
+                    time.sleep(.5)
+            else:
+                raise RuntimeError('The OpenCode service did not restart inside the agent container.')
+        return endpoint
+
+    @staticmethod
+    def workspace_directory(_client, _job):
+        return '/home/node/agents/project'
+
+    def prompt(self, session, text, message_id):
+        if SESSION_SEPARATOR not in str(session): return super().prompt(session, text, message_id)
+        name, raw, info = self._split(session); return self._endpoint(name, info).prompt(raw, text, message_id)
+    def snapshot(self, session):
+        if SESSION_SEPARATOR not in str(session): return super().snapshot(session)
+        name, raw, info = self._split(session); return self._endpoint(name, info).snapshot(raw)
+    def live_messages(self, session):
+        if SESSION_SEPARATOR not in str(session): return super().live_messages(session)
+        name, raw, info = self._split(session); return self._endpoint(name, info).live_messages(raw)
+    def interrupt(self, session):
+        if SESSION_SEPARATOR not in str(session): return super().interrupt(session)
+        name, raw, info = self._split(session)
+        try:
+            return self._endpoint(name, info).interrupt(raw)
+        finally:
+            with self._lock:
+                proxy = self._proxies.get(name)
+            if proxy:
+                proxy.cancel_requests()
+    def reply(self, session, kind, item, value):
+        if SESSION_SEPARATOR not in str(session): return super().reply(session, kind, item, value)
+        name, raw, info = self._split(session); return self._endpoint(name, info).reply(raw, kind, item, value)
+
+    def message(self, session, message):
+        if SESSION_SEPARATOR not in str(session): return super().message(session, message)
+        name, raw, info = self._split(session)
+        result = self._endpoint(name, info).message(raw, message)
+        return result
+
+    def verify(self, session, command, message_id):
+        if SESSION_SEPARATOR not in str(session): return super().verify(session, command, message_id)
+        name, raw, info = self._split(session); return self._endpoint(name, info).verify(raw, command, message_id)
+    def stop_verification(self, session, message_id):
+        if SESSION_SEPARATOR not in str(session): return super().stop_verification(session, message_id)
+        name, raw, info = self._split(session); return self._endpoint(name, info).stop_verification(raw, message_id)
+
+    def _sync_to_container(self, name, owner, workspace_id=''):
+        process = subprocess.Popen(['docker', 'exec', '-i', name, 'tar', '-C', '/home/node/agents/project', '-xf', '-'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        total = 0
+        try:
+            with tarfile.open(fileobj=process.stdin, mode='w|') as tar:
+                for item in agent_store.list_workspace_files(owner, workspace_id=workspace_id):
+                    rel = PurePosixPath(item['path'])
+                    if any(part in SKIP_PARTS for part in rel.parts): continue
+                    info = tarfile.TarInfo(rel.as_posix())
+                    if item['is_dir']:
+                        info.type = tarfile.DIRTYPE
+                        info.mode = 0o755
+                        tar.addfile(info)
+                    else:
+                        content = bytes(item['content'])
+                        total += len(content)
+                        if total > MAX_PROJECT_BYTES: raise RuntimeError('Project import exceeded the 2 GiB PostgreSQL workspace limit.')
+                        info.size = len(content)
+                        info.mode = 0o755 if item.get('executable') else 0o644
+                        tar.addfile(info, io.BytesIO(content))
+            process.stdin.close()
+            code = process.wait(timeout=300)
+            error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
+            if code: raise RuntimeError('Could not copy the project into the isolated container: '+error)
+        except Exception:
+            process.kill(); process.wait(timeout=5)
+            raise
+
+    def _extract_project_archive(self, name, task_id, job=None, large_only=False, replace=False):
+        archive = agent_store.get_project_archive(task_id)
+        if not archive:
+            return False
+        self._report(job, f"Streaming saved project ZIP {archive['filename']} from PostgreSQL into the isolated container.")
+        command = ['docker', 'exec', '-i', name, 'python3', '/opt/hearth/extract_project_zip.py',
+                   '/home/node/agents/project']
+        if large_only:
+            command.append('--large-only')
+        if replace:
+            command.append('--replace')
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            agent_store.stream_project_archive(task_id, process.stdin)
+            process.stdin.close()
+            code = process.wait(timeout=3600)
+            error = process.stderr.read().decode('utf-8', 'replace')[-1500:]
+            if code:
+                raise RuntimeError('Could not unpack the saved project ZIP in the isolated container: '+error)
+            self._report(job, 'Initial project ZIP safely unpacked in the isolated container.')
+            return True
+        except Exception:
+            process.kill()
+            process.wait(timeout=5)
+            raise
+
+    @staticmethod
+    def _skill_bundle(job):
+        """Return selected skill Markdown keyed by the skill IDs OpenCode discovers."""
+        skills = agent_store.get_skills_by_names(job.get('owner'), job.get('skills') or [])
+        bundle = {}
+        for skill in skills:
+            folder = agent_store.skill_folder(skill['name'])
+            if folder in bundle:
+                raise ValueError(f'Multiple selected skills map to the same OpenCode skill ID: {folder}.')
+            bundle[folder] = agent_store.compose_skill_markdown(skill)
+        return bundle
+
+    @staticmethod
+    def _write_skill_bundle(task_dir, bundle):
+        """Stage skills before OpenCode starts so its location discovery sees them."""
+        root = Path(task_dir) / 'opencode-skills'
+        root.mkdir(mode=0o755, parents=True, exist_ok=True)
+        root.chmod(0o755)
+        desired = set(bundle)
+        for child in root.iterdir():
+            if child.is_dir() and child.name not in desired:
+                shutil.rmtree(child)
+            elif child.is_file():
+                child.unlink()
+        for folder, markdown in bundle.items():
+            skill_dir = root / folder
+            skill_dir.mkdir(mode=0o755, exist_ok=True)
+            skill_dir.chmod(0o755)
+            path = skill_dir / 'SKILL.md'
+            path.write_text(markdown, encoding='utf-8')
+            path.chmod(0o644)
+
+    def checkpoint(self, job):
+        self.sync(job, force=True)
+
+    def sync(self, job, force=False):
+        if not job.get('session_id') or SESSION_SEPARATOR not in str(job['session_id']): return
+        name, _raw, info = self._split(job['session_id'])
+        now = time.time()
+        if not force and now-info.get('last_sync', 0) < 10 and job.get('status') not in ('completed', 'stopped'):
+            return
+        tar_args = ['docker', 'exec', name, 'tar', '-C', '/home/node/agents/project']
+        for part in sorted(SKIP_PARTS):
+            tar_args.append('--exclude='+part)
+        large_paths = agent_store.get_project_archive_large_paths(job['id'])
+        exclude_file = self.runtime_directory/job['id']/'project-archive-large-paths.txt'
+        if large_paths:
+            exclude_file.write_text('\n'.join('./'+path for path in large_paths)+'\n', encoding='utf-8')
+            exclude_file.chmod(0o600)
+            tar_args.extend(['--no-wildcards', '--anchored',
+                             '--exclude-from=/home/node/agents/project-archive-large-paths.txt'])
+        tar_args.extend(['-cf', '-', '.'])
+        process = subprocess.Popen(tar_args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        def finish_export():
+            code = process.wait(timeout=300)
+            error = process.stderr.read().decode('utf-8', 'replace')[-1000:]
+            if code:
+                raise RuntimeError('Could not synchronize the isolated project: '+error)
+        try:
+            agent_store.replace_workspace_from_tar(job['owner'], process.stdout, finish_export,
+                                                   workspace_id=job['id'])
+        except Exception:
+            process.kill(); process.wait(timeout=5)
+            raise
+        finally:
+            if large_paths:
+                exclude_file.unlink(missing_ok=True)
+        info['last_sync'] = now
+        self._write_runtime(name, info)
+
+    def cleanup(self, job):
+        task_id = job.get('id')
+        if not task_id: return
+        name = self._container_name(task_id)
+        with self._lock:
+            proxy = self._proxies.pop(name, None)
+        try:
+            if proxy: proxy.close()
+            # Stop explicitly before removal so a stop/delete action cannot leave
+            # a task container running, including if OpenCode failed to interrupt.
+            for command in (('stop', '--time', '5', name), ('rm', '--force', name)):
+                try:
+                    self._docker(*command, timeout=60)
+                except RuntimeError as exc:
+                    if 'No such container' not in str(exc):
+                        raise
+        finally:
+            shutil.rmtree(self.runtime_directory/task_id, ignore_errors=True)
+            agent_store.delete_runtime(task_id)

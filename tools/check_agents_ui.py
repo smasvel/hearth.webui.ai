@@ -10,7 +10,7 @@ import uuid
 from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import app
-from agent_tasks import Manager, MARKER
+from hearth.agents.agent_tasks import Manager, MARKER
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 
@@ -44,7 +44,7 @@ with contextlib.ExitStack() as stack:
   page.locator('[name=title]').fill('Build <img src=x onerror=alert(1)> project')
   page.locator('[name=assignee]').fill('UI fixture agent')
   page.locator('[name=goal]').fill('Build the feature and verify the result.')
-  page.locator('details.agent-more-options summary').click()
+  page.locator('details.agent-more-options').filter(has=page.locator('summary', has_text='More options')).locator('summary').click()
   page.locator('[name=verification_command]').fill('pytest -q')
   page.locator('#agent-assign').click()
   expect(page.locator('#agent-status')).to_contain_text('queued',timeout=7000)

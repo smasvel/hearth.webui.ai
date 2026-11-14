@@ -2,8 +2,8 @@ import json
 import unittest
 from unittest.mock import Mock
 
-import flm_tool_shim as shim
-import tool_argument_json
+from hearth.backends import flm_tool_shim as shim
+from hearth.compat import tool_argument_json
 from tools.test_flm_model import decode
 from tools.opencode_scenarios import TOOLS
 

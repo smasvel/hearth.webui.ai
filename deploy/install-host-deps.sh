@@ -56,9 +56,9 @@ if command -v caddy >/dev/null; then
 fi
 apt-get install -y "${target_home}/.local/share/hearth/downloads/fastflowlm.deb"
 usermod -aG render,video,docker "$target_user"
-render_template "${project_dir}/flm.service" /etc/systemd/system/flm.service
+render_template "${project_dir}/deploy/systemd/flm.service" /etc/systemd/system/flm.service
 chmod 0644 /etc/systemd/system/flm.service
-render_template "${project_dir}/50-flm.rules" /etc/polkit-1/rules.d/50-flm.rules
+render_template "${project_dir}/deploy/polkit/50-flm.rules" /etc/polkit-1/rules.d/50-flm.rules
 chmod 0644 /etc/polkit-1/rules.d/50-flm.rules
 systemctl daemon-reload
 # Ubuntu 26.04 includes Lemonade in its own package repository.

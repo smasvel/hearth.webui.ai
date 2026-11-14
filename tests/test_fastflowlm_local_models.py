@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import fastflowlm_client as flm
-import flm_backend_profile as profile
+from hearth.backends import fastflowlm_client as flm
+from hearth.backends import flm_backend_profile as profile
 from test_flm_backend_profile import write_ready_fixture
 
 

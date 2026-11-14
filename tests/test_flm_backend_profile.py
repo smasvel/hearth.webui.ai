@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import flm_backend_profile as profile
+from hearth.backends import flm_backend_profile as profile
 
 
 def tensor(dtype, shape):

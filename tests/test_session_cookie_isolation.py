@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from session_cookie import session_cookie_name
+from hearth.core.session_cookie import session_cookie_name
 
 
 class SessionCookieIsolationTests(unittest.TestCase):

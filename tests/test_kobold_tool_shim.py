@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import kobold_tool_shim as shim
+from hearth.backends import kobold_tool_shim as shim
 
 
 class KoboldToolCompatibilityTests(unittest.TestCase):
@@ -86,11 +86,13 @@ class KoboldToolCompatibilityTests(unittest.TestCase):
         self.assertEqual(response.get_json()["choices"][0]["message"]["content"], "4 tests passed")
 
     def test_stream_passthrough_keeps_sse_event_boundaries(self):
-        upstream = Mock(status_code=200, headers={"content-type": "text/event-stream"})
+        upstream = Mock(status_code=200, ok=True, headers={"content-type": "text/event-stream"})
         upstream.iter_lines.return_value = [b'data: {"choices":[{"delta":{"content":"ok"}}]}',
                                             b'data: [DONE]']
         body = {"stream": True, "messages": [{"role": "user", "content": "Reply ok."}]}
-        with patch.object(shim, "_upstream_url", return_value="http://kobold"), \
+        with patch('hearth.backends.kobold_tool_shim.live_report.start', return_value=7), \
+                patch('hearth.backends.kobold_tool_shim.live_report.finish'), \
+                patch.object(shim, "_upstream_url", return_value="http://kobold"), \
                 patch.object(shim, "_headers", return_value={}), \
                 patch.object(shim.requests, "post", return_value=upstream):
             response = shim.app.test_client().post("/v1/chat/completions", json=body)

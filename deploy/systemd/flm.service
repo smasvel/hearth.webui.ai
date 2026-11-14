@@ -1,0 +1,22 @@
+# Template: install with deploy/install-host-deps.sh to fill host-specific values.
+[Unit]
+Description=FastFlowLM NPU server (standalone, OpenAI-compatible)
+Documentation=https://github.com/FastFlowLM/FastFlowLM
+After=network-online.target
+
+[Service]
+Type=simple
+User=HEARTH_USER
+SupplementaryGroups=render
+WorkingDirectory=HEARTH_PROJECT_DIR
+Environment=LD_LIBRARY_PATH=/opt/fastflowlm/lib
+Environment=HOME=HEARTH_HOME
+LimitMEMLOCK=infinity
+# MiniCPM uses its 256K maximum; models with a verified kernel limit retain 8K.
+ExecStart=HEARTH_PROJECT_DIR/.venv/bin/python -m hearth.backends.flm_serve
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

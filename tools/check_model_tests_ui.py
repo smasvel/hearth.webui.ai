@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from werkzeug.serving import make_server
 from playwright.sync_api import sync_playwright, expect
 import app
-import model_tests
-import model_test_profiles as profiles
+from hearth.models import model_tests
+from hearth.models import model_test_profiles as profiles
 
 TARGET = {'backend':'fastflowlm','id':'flm/test-fixture','state':'not-loaded','type':'llm'}
 with contextlib.ExitStack() as stack:
@@ -68,7 +68,7 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#model-tests')).to_have_count(0)
   expect(page.locator('#model-groups')).to_be_visible()
   page.goto(f'http://127.0.0.1:{server.server_port}/model-tests')
-  expect(page.locator('#tests-model')).not_to_contain_text('Hosted fixture model')
+  expect(page.locator('body')).not_to_contain_text('Hosted fixture model')
   expect(page.locator('#tests-auto-repair')).not_to_be_checked()
   page.locator('#tests-auto-repair').check()
   page.locator('#tests-model').select_option(label='fastflowlm · flm/test-fixture')

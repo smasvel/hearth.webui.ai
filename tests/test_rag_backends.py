@@ -1,11 +1,11 @@
 """Backend-aware cross-chat RAG must keep embedding spaces separate."""
 import unittest
-import database
+from hearth.storage import database
 from unittest.mock import Mock, patch
 
 import app
-import kobold_client
-import memory_store
+from hearth.backends import kobold_client
+from hearth.storage import memory_store
 
 
 class RagBackendRoutingTests(unittest.TestCase):

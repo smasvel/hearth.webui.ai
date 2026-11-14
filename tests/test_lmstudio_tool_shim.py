@@ -1,6 +1,6 @@
 import unittest
 
-import lmstudio_tool_shim
+from hearth.backends import lmstudio_tool_shim
 
 
 class ExplicitToolRequestTests(unittest.TestCase):

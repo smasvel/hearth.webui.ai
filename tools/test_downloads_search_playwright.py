@@ -8,14 +8,14 @@ import os
 from playwright.sync_api import sync_playwright
 
 BASE_URL = os.environ.get("HEARTH_URL", "https://localhost:5443")
-USERNAME = os.environ.get("HEARTH_USER", "robotest")
+USERNAME = os.environ.get("HEARTH_USER")
 PASSWORD = os.environ.get("HEARTH_PASSWORD")
 if not PASSWORD:
-    creds_path = os.path.join(os.path.dirname(__file__), "..", "robotest-credentials")
+    creds_path = os.path.join(os.path.dirname(__file__), "..", "test-user")
     if os.path.isfile(creds_path):
         lines = [line.strip() for line in open(creds_path) if line.strip()]
         if len(lines) >= 2:
-            USERNAME = lines[0]
+            USERNAME = USERNAME or lines[0]
             PASSWORD = lines[1]
 if not USERNAME or not PASSWORD:
     raise SystemExit("Set HEARTH_USER and HEARTH_PASSWORD (or create robotest-credentials).")

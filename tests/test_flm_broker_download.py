@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-import fastflowlm_client as flm
+from hearth.backends import fastflowlm_client as flm
 
 
 def _state_dir(tmp: str) -> "flm.Path":
@@ -48,7 +48,7 @@ class BrokerFlmPullTests(unittest.TestCase):
         returncode/stdout wrapper). `_broker_flm` must turn it back into JSON text so
         `_flm_pull_progress()` sees the same data the CLI path produces."""
         progress = {"running": True, "tag": "qwen3:0.6b", "percent": 40, "bytes_downloaded": 40, "bytes_total": 100}
-        src = importlib.import_module("backend_broker_client")
+        src = importlib.import_module("hearth.backends.backend_broker_client")
 
         class FakeResponse:
             status_code = 200

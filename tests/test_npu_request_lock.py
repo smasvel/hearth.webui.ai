@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import npu_request_lock
+from hearth.core import npu_request_lock
 
 
 class NPURequestLockTests(unittest.TestCase):

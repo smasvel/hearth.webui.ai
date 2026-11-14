@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-import flm_tool_shim as shim
+from hearth.backends import flm_tool_shim as shim
 
 
 BODY = {'tools': [{'type': 'function', 'function': {'name': name}}

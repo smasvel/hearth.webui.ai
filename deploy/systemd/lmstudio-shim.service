@@ -1,0 +1,17 @@
+# User service template: adjust the checkout path before installing.
+[Unit]
+Description=Hearth LM Studio API compatibility and metrics proxy
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ai-webui
+Environment=PYTHONPATH=%h/ai-webui
+ExecStart=%h/ai-webui/.venv/bin/python -m hearth.backends.lmstudio_shim
+ExecStartPost=%h/ai-webui/.venv/bin/python -m hearth.backends.wire_lmstudio_proxy
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

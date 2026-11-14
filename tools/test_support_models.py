@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import requests
 import urllib3
 import app
-import comfyui_client
-import lemonade_client
+from hearth.backends import comfyui_client
+from hearth.backends import lemonade_client
 
 urllib3.disable_warnings()
 ROOT = Path(__file__).resolve().parents[1]

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
-import database
+from hearth.storage import database
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 

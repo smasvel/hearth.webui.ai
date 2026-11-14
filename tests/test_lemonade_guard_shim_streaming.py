@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import lemonade_guard_shim as shim
+from hearth.backends import lemonade_guard_shim as shim
 
 
 def sse(delta: dict, finish=None) -> bytes:

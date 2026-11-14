@@ -4,9 +4,9 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import exact_file_content as repair
-import lemonade_guard_shim as shim
-import flm_tool_shim
+from hearth.compat import exact_file_content as repair
+from hearth.backends import lemonade_guard_shim as shim
+from hearth.backends import flm_tool_shim
 from tools.opencode_scenarios import TOOLS
 from tools.test_flm_model import decode
 

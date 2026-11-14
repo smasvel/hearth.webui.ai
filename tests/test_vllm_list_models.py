@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-import vllm_client as vllm
+from hearth.backends import vllm_client as vllm
 
 
 class VLLMListModelsTests(unittest.TestCase):

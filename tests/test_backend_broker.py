@@ -90,7 +90,7 @@ class BackendBrokerTests(unittest.TestCase):
 class BackendBrokerClientTests(unittest.TestCase):
     def setUp(self):
         import importlib
-        self.client = importlib.import_module("backend_broker_client")
+        self.client = importlib.import_module("hearth.backends.backend_broker_client")
 
     def test_no_broker_configured_returns_none(self):
         with patch.dict(os.environ, {}, clear=True):

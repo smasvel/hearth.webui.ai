@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import help_data
+from hearth.core import help_data
 
 
 class TailscaleHelpTests(unittest.TestCase):
