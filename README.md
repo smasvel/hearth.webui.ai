@@ -247,7 +247,12 @@ administrator to find models, then use **Models** to load and evaluate them.
    your confirmation. You can decline or pass `--skip-model-download` and download it
    here later. Follow progress and logs, inspect active downloads, or
    cancel a download.
-6. To use a model file already on your device, choose **Upload a local GGUF model**
+6. In **Downloads**, search Lemonade’s catalog and Hugging Face GGUF repositories together;
+   a typed query includes newly published GGUF repos, even before Lemonade adds them to
+   its own catalog. Duplicate results for the same checkpoint are combined while distinct
+   quantizations remain listed, and the downloaded badge reflects Lemonade’s file status
+   and files already present in its shared cache.
+   To use a model file already on your device, choose **Upload a local GGUF model**
    on Models, browse to a `.gguf` file, and upload it. Hearth validates the GGUF
    header, stores the file under `data/local-models`, and registers it with the
    configured Lemonade server. That server must run on the Hearth host or be able to
@@ -266,7 +271,9 @@ administrator to find models, then use **Models** to load and evaluate them.
    Lemonade models already present in its shared Hugging Face cache appear here even
    when Lemonade's catalog incorrectly reports them as not downloaded. Deleting a
    Lemonade model removes that entry from Hearth even when a sibling variant still
-   needs shared cache files; downloading the model again restores its entry.
+   needs shared cache files; downloading the model again restores its entry. Split GGUF
+   models with missing shards stay visible as incomplete, show the missing shard count,
+   and cannot be loaded until the download is finished from **Downloads**.
 8. Check the maximum context-token label shown on a **Downloads** result when
    metadata reports it. In **Models**, check the context limit shown on each label when choosing
    how much chat history to send. The displayed limit is the model/backend
@@ -1842,7 +1849,9 @@ migrated models appear without copying hundreds of gigabytes. Otherwise, it uses
 the `lemonade-cache` named volume. The installer does not install a
 Snap or host package and does not download model weights. Configure the local URL
 in Hearth Settings (the release installer saves its selected endpoint), then
-download models through Hearth's Downloads page.
+download models through Hearth's Downloads page. On Linux the container uses host
+networking so Hugging Face downloads use the host's working DNS and internet route;
+its API remains available at `localhost:13305`.
 On Linux hosts with AMD Ryzen AI NPU support, the installer passes
 `/dev/accel/accel0` and its owning group into the container when that device exists.
 The host NPU driver must be installed, and only Lemonade models using the FLM/NPU
@@ -1850,7 +1859,10 @@ recipe run on the NPU; GGUF models continue to use their configured CPU or GPU r
 On Linux hosts with `/dev/kfd` or `/dev/dri` devices, it also passes through the
 available GPU nodes and their owning groups so Vulkan/ROCm GGUF recipes can access
 the host GPU. Re-running `bash deploy/install-first-time.sh --install-backends lemonade`
-applies device mappings by recreating the container while retaining its model cache.
+applies network and device settings by recreating the container while retaining its
+model cache. If an older Lemonade Snap service still owns port 13305, stop that service
+before rerunning the installer; the installer reports the port conflict without
+replacing the existing container.
 An explicitly configured remote URL is preserved even when local runtimes are installed.
 
 

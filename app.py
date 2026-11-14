@@ -4510,6 +4510,29 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
                 results += lemonade.search_huggingface(query)
             except lemonade.LemonadeError:
                 pass
+        # The same downloadable checkpoint can be returned by Lemonade's registry,
+        # Hearth's curated catalog, and live HF search. Keep distinct checkpoints from
+        # the same repo (they may be different quantizations), while suppressing the
+        # generic auto-pick HF result if a concrete Lemonade catalog entry is present.
+        unique_results = []
+        seen_targets = set()
+        catalog_repos = set()
+        for item in results:
+            repo = _hf_repo_from_result(item)
+            checkpoint = str(item.get("checkpoint") or "").casefold()
+            is_generic_hf = item.get("source") == "huggingface" and not checkpoint.partition(":")[2]
+            if is_generic_hf and repo and repo.casefold() in catalog_repos:
+                continue
+            identity = (checkpoint or str(item.get("id") or "").casefold())
+            if not identity or identity in seen_targets:
+                continue
+            seen_targets.add(identity)
+            if repo and item.get("source") != "huggingface":
+                catalog_repos.add(repo.casefold())
+            if item.get("checkpoint") and lemonade._checkpoint_is_cached(item["checkpoint"]):
+                item["downloaded"] = True
+            unique_results.append(item)
+        results = unique_results
         lemonade.fill_result_sizes(results)
         return _normalize_model_results(results, backend)
     raise ValueError(f"Unknown backend: {backend}")

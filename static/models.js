@@ -193,9 +193,10 @@
     c.className = "model-card2" + (loaded ? " loaded" : "") + (isBusy ? " busy" : "");
     c.dataset.name = (m.id || "").toLowerCase();
     const unavailable = m.loadable === false;
+    const downloadIncomplete = m.download_incomplete === true;
     const badge = isBusy
       ? `<span class="badge loading">${esc(busyLabel)}…</span>`
-      : `<span class="badge ${loaded ? "loaded" : "not-loaded"}">${managedAutomatically ? (loaded ? "loaded · ready" : "service unavailable") : (loaded ? "loaded" : (unavailable ? "converted · kernels pending" : "not loaded"))}</span>`;
+      : `<span class="badge ${loaded ? "loaded" : "not-loaded"}">${managedAutomatically ? (loaded ? "loaded · ready" : "service unavailable") : (loaded ? "loaded" : (downloadIncomplete ? "download incomplete" : (unavailable ? "converted · kernels pending" : "not loaded")))}</span>`;
     c.innerHTML =
       `<div class="model-card2-main">
         <div class="model-card2-name" title="${esc(m.id)}">${esc(m.id)}</div>
@@ -331,6 +332,13 @@
       actions.appendChild(note);
     } else if (loaded) {
       actions.appendChild(btn("Unload", "", () => unloadModel(m.id), isBusy));
+    } else if (downloadIncomplete) {
+      const note = document.createElement("span");
+      note.className = "hint";
+      note.textContent = m.load_error || "Finish downloading this model before loading it.";
+      note.title = note.textContent;
+      actions.appendChild(note);
+      actions.appendChild(btn("Open Downloads", "", () => window.location.assign("/downloads"), isBusy));
     } else if (unavailable) {
       const note = document.createElement("span");
       note.className = "hint";

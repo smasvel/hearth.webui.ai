@@ -244,10 +244,40 @@ def _huggingface_cache_roots() -> list[Path]:
     return roots
 
 
+def _sharded_checkpoint_progress(checkpoint: str | None) -> dict | None:
+    """Return local shard counts for a split GGUF checkpoint, if any shard exists."""
+    if not isinstance(checkpoint, str) or ":" not in checkpoint:
+        return None
+    repo, filename = checkpoint.split(":", 1)
+    match = re.match(r"^(.*)-(\d+)-of-(\d+)(\.gguf)$", filename, re.IGNORECASE)
+    if not match or "/" not in repo:
+        return None
+    prefix, shard_digits, total_digits, suffix = match.groups()
+    total = int(total_digits)
+    if total < 2 or total > 10000:
+        return None
+    cache_dirname = "models--" + repo.replace("/", "--")
+    expected = [f"{prefix}-{index:0{len(shard_digits)}d}-of-{total_digits}{suffix}"
+                for index in range(1, total + 1)]
+    for root in _huggingface_cache_roots():
+        snapshots = root / cache_dirname / "snapshots"
+        try:
+            for snapshot in snapshots.iterdir():
+                present = sum((snapshot / name).is_file() for name in expected)
+                if present:
+                    return {"present": present, "total": total, "missing": total - present}
+        except OSError:
+            continue
+    return None
+
+
 def _checkpoint_is_cached(checkpoint: str | None) -> bool:
     """Check whether an HF repo checkpoint file exists in a shared local cache."""
     if not isinstance(checkpoint, str) or ":" not in checkpoint:
         return False
+    shard_progress = _sharded_checkpoint_progress(checkpoint)
+    if shard_progress:
+        return shard_progress["present"] == shard_progress["total"]
     repo, filename = checkpoint.split(":", 1)
     if "/" not in repo or not filename or filename.startswith("/"):
         return False
@@ -277,16 +307,42 @@ def _checkpoint_is_cached(checkpoint: str | None) -> bool:
     return False
 
 
+def _catalog_entry_incomplete_download(entry: dict) -> str | None:
+    """Explain an interrupted sharded model pull instead of treating its first shard as complete."""
+    checkpoints = entry.get("checkpoints") or {}
+    statuses = entry.get("checkpoint_status") or []
+    required = [status for status in statuses if status.get("required", True)]
+    values = [checkpoints.get(status.get("type")) or entry.get("checkpoint") for status in required]
+    if not values:
+        values = [entry.get("checkpoint")]
+    for checkpoint in values:
+        progress = _sharded_checkpoint_progress(checkpoint)
+        if progress and progress["missing"]:
+            return (f"Download incomplete: {progress['present']} of {progress['total']} GGUF shards are present; "
+                    f"{progress['missing']} are missing. Finish downloading this model before loading it.")
+    return None
+
+
 def _catalog_entry_is_cached(entry: dict) -> bool:
-    """True when every required catalog component is already in the HF cache."""
+    """True when Lemonade or the shared HF cache confirms every required file exists.
+
+    The Docker-backed Lemonade API's checkpoint_status is authoritative for its mounted
+    cache; checking the host cache as well preserves support for migrated files and older
+    servers. Split GGUF completeness is checked separately because Lemonade may report
+    the first shard present while later shards are still missing.
+    """
+    if _catalog_entry_incomplete_download(entry):
+        return False
     statuses = entry.get("checkpoint_status") or []
     required = [status for status in statuses if status.get("required", True)]
     checkpoints = entry.get("checkpoints") or {}
     if required:
-        return all(
-            _checkpoint_is_cached(checkpoints.get(status.get("type")) or entry.get("checkpoint"))
-            for status in required
-        )
+        server_confirms = all(status.get("present") is True for status in required)
+        if server_confirms:
+            return True
+        return all(_checkpoint_is_cached(
+            checkpoints.get(status.get("type")) or entry.get("checkpoint")
+        ) for status in required)
     return _checkpoint_is_cached(entry.get("checkpoint"))
 
 
@@ -367,8 +423,10 @@ def list_models() -> list[dict]:
             continue
         if m.get("id") in deleted_model_ids:
             continue
+        incomplete_download = _catalog_entry_incomplete_download(m)
+        cached = _catalog_entry_is_cached(m)
         if (m.get("recipe") != "flm" and not m.get("downloaded")
-                and not _catalog_entry_is_cached(m)):
+                and not cached and not incomplete_download):
             continue
         model_id = m.get("id")
         seen_ids.add(model_id)
@@ -416,6 +474,9 @@ def list_models() -> list[dict]:
                 # than Lemonade is actually serving.
                 "loaded_context_length": loaded_context,
                 "size_gb": raw_size if isinstance(raw_size, (int, float)) and raw_size > 0 else None,
+                "download_incomplete": bool(incomplete_download),
+                "loadable": not bool(incomplete_download),
+                "load_error": incomplete_download,
                 "_checkpoint": checkpoint,  # internal: used only to recover a missing size below
             }
         )
@@ -620,6 +681,10 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
             "be loaded alone. Load a compatible GLM-5.3 target model instead; DFlash2 "
             "requires that target and a backend configured for paired speculative decoding."
         )
+    inventory_entry = next((model for model in list_models() if model.get("id") == model_key), None)
+    if inventory_entry and inventory_entry.get("download_incomplete"):
+        raise LemonadeError(inventory_entry.get("load_error") or
+                            f"'{model_key}' has an incomplete download and cannot be loaded yet.")
     payload: dict = {"model_name": model_key}
     payload.update(lemonade_templates.load_options(model_key))
     # Default to a 4096-token context window when none is specified; Lemonade's own
@@ -846,7 +911,7 @@ def search_catalog(query: str, limit: int = 40) -> list[dict]:
                 "recipe": m.get("recipe"),
                 "size_gb": m.get("size"),
                 "labels": m.get("labels") or [],
-                "downloaded": bool(m.get("downloaded")),
+                "downloaded": bool(m.get("downloaded") or _catalog_entry_is_cached(m)),
                 "suggested": bool(m.get("suggested")),
             }
         )

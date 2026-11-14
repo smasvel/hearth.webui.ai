@@ -3,6 +3,7 @@ import platform
 import ctypes.util
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -87,11 +88,20 @@ def install_backends(backends):
             use_migrated_cache = migrated_cache.is_dir()
             docker_args = [
                 'docker', 'run', '-d', '--name', 'lemonade-server',
-                '--restart', 'unless-stopped', '-p', '13305:13305',
+                '--restart', 'unless-stopped',
                 '-v', 'lemonade-llama:/opt/lemonade/llama',
                 '-v', 'lemonade-data:/opt/lemonade/.cache/lemonade',
                 '-v', 'lemonade-config:/opt/lemonade/.config/lemonade',
             ]
+            if system == 'Linux':
+                # The bridge network in this environment inherits unreachable
+                # systemd-resolved/Tailscale DNS servers. Lemonade itself performs
+                # Hugging Face downloads, so let it use the host's working resolver
+                # and egress path. Host networking also binds port 13305 directly,
+                # matching the existing public port mapping on Linux.
+                docker_args += ['--network', 'host']
+            else:
+                docker_args += ['-p', '13305:13305']
             cache_mount = (f'{migrated_cache}:/opt/lemonade/.cache/huggingface'
                            if use_migrated_cache else
                            'lemonade-cache:/opt/lemonade/.cache/huggingface')
@@ -116,15 +126,30 @@ def install_backends(backends):
                 print('Passing host GPU devices and owning groups into Lemonade Docker for Vulkan/ROCm models.')
 
             inspect = subprocess.run(
-                ['docker', 'inspect', '-f', '{{json .HostConfig.Devices}} {{json .HostConfig.GroupAdd}} {{json .Mounts}}', 'lemonade-server'],
+                ['docker', 'inspect', '-f', '{{.State.Running}}|{{.HostConfig.NetworkMode}}|{{json .HostConfig.Devices}} {{json .HostConfig.GroupAdd}} {{json .Mounts}}', 'lemonade-server'],
                 capture_output=True, text=True,
             )
+            expected_network = 'host' if system == 'Linux' else 'bridge'
+            inspect_parts = inspect.stdout.split('|', 2)
             already_configured = inspect.returncode == 0 and (
+                len(inspect_parts) == 3
+                and inspect_parts[0].strip() == 'true'
+                and inspect_parts[1].strip() == expected_network
+            ) and (
                 not npu_device.exists() or str(npu_device) in inspect.stdout
             ) and all(str(device) in inspect.stdout for device in gpu_devices) and all(
                 str(os.stat(device).st_gid) in inspect.stdout for device in gpu_devices
             ) and (not use_migrated_cache or str(migrated_cache) in inspect.stdout)
             if not already_configured:
+                if system == 'Linux':
+                    with socket.socket() as port_probe:
+                        port_in_use = port_probe.connect_ex(('127.0.0.1', 13305)) == 0
+                    if port_in_use:
+                        raise RuntimeError(
+                            'Cannot switch Lemonade Docker to host networking because port 13305 is already in use. '
+                            'Stop the older Lemonade service that owns the port, then rerun '
+                            '`bash deploy/install-first-time.sh --install-backends lemonade`.'
+                        )
                 if inspect.returncode == 0:
                     subprocess.run(['docker', 'rm', '-f', 'lemonade-server'], check=True)
                 subprocess.run(docker_args + ['ghcr.io/lemonade-sdk/lemonade-server:latest'], check=True)

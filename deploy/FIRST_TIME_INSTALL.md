@@ -129,6 +129,11 @@ Search all backends on Downloads checks the latest public Lemonade catalog and L
 Studio's model catalog as well as the backend and Hugging Face searches. These public
 matches require internet access; new Lemonade GGUF entries download through Hugging
 Face when the installed Lemonade catalog does not contain them.
+For Lemonade downloads, a typed search also queries Hugging Face for current GGUF
+repositories, including recent releases not yet listed in Lemonade's catalog. Duplicate
+catalog/search hits for the same checkpoint are combined without hiding distinct
+quantizations. Cached checkpoints show as downloaded using Lemonade's required-file
+status and shared cache, even when its catalog download flag is stale.
 The Help page's generated OpenCode config uses a 65,536-token context limit for models
 supporting at least that maximum, and 8,192 tokens otherwise. The Models page's model
 loading ctx-size is a separate load setting.
@@ -1094,9 +1099,13 @@ migrated models appear without copying hundreds of gigabytes. Otherwise, it uses
 the `lemonade-cache` named volume. The installer does not install a
 Snap or host package and does not download model weights. Configure the local URL
 in Hearth Settings (the release installer saves its selected endpoint), then
-download models through Hearth's Downloads page.
+download models through Hearth's Downloads page. On Linux the container uses host
+networking so Hugging Face downloads use the host's working DNS and internet route;
+its API remains available at `localhost:13305`.
 The Models page also checks required model files in the shared Hugging Face cache;
 this keeps migrated downloads visible when Lemonade's catalog download flag is stale.
+Split GGUF models with missing shards appear as incomplete and cannot be loaded until
+the full model download is completed from **Downloads**.
 Deleting a Lemonade model removes its Hearth inventory entry even if another variant
 still uses shared cache files. Download it again to restore the entry.
 On Linux hosts with AMD Ryzen AI NPU support, the installer passes
@@ -1105,9 +1114,12 @@ The host NPU driver must be installed. Only Lemonade models that use the FLM/NPU
 recipe run on the NPU; GGUF models continue to use their configured CPU or GPU
 recipe. On Linux hosts exposing `/dev/kfd` or `/dev/dri`, Hearth also passes available
 GPU device nodes and their owning groups into Docker for Vulkan/ROCm GGUF recipes.
-To apply NPU or GPU passthrough to an existing Lemonade container, run
+To apply network, NPU, or GPU settings to an existing Lemonade container, run
 `bash deploy/install-first-time.sh --install-backends lemonade`; Hearth recreates
 the container with its existing model cache, preserving downloaded models.
+If an older Lemonade Snap service still owns port 13305, stop that service before
+rerunning the installer. The installer reports the port conflict without replacing
+the existing container.
 For OpenCode, Hearth advertises Lemonade's loaded context and checks it before reusing
 a loaded model. If the live context is below the saved Models-page setting, Hearth
 reloads the model at that size; otherwise the default Lemonade context is 65,536 tokens.
