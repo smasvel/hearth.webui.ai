@@ -1064,6 +1064,25 @@ services and Hearth. Lemonade runs in Docker and can be updated with
 `docker restart lemonade-server`. Re-run the
 administrator host security scan after the upgrade.
 
+The following runtime versions were checked for this guide on 2026-11-14. This is a
+version snapshot, not a set of pins in the Hearth installer. The optional automatic
+backend installer installs LM Studio headless and Lemonade; it does not update existing
+installations or install the other runtimes.
+
+| Runtime | Checked version | Update source |
+| --- | --- | --- |
+| LM Studio headless (`llmster`) | 0.0.27+1; selected Vulkan llama.cpp engine 2.73.0 | [LM Studio installer and runtime manager](https://lmstudio.ai/docs/developer/core/headless); run `lms daemon update` and `lms runtime update --all` |
+| Lemonade | 2026.46.2 | [Lemonade releases](https://github.com/lemonade-sdk/lemonade/releases); pull the Docker `latest` image and restart the container |
+| vLLM | 0.33.0 CPU build | [vLLM releases](https://github.com/vllm-project/vllm/releases); keep the Hearth vLLM environment on the CPU wheel for CPU hosts |
+| KoboldCPP | 1.124.2 | [KoboldCPP releases](https://github.com/LostRuins/koboldcpp/releases); AMD hosts should use the Linux `nocuda` build with Vulkan support |
+| FastFlowLM | 1.0.13 | [FastFlowLM releases](https://github.com/ROCm/FastFlowLM/releases); install the package for the host Ubuntu release, then restart `flm.service` |
+| ComfyUI | 0.45.0; frontend 1.58.5 | [ComfyUI releases](https://github.com/Comfy-Org/ComfyUI/releases); update its separate Python environment from the matching release requirements |
+| q38rocm | No numbered release; current upstream source plus Hearth's local Vulkan build adjustments | [q38rocm source](https://github.com/julianmb/q38rocm); update the checkout, then rebuild with `deploy/build-q38rocm-vulkan.sh` |
+
+LM Studio, Lemonade, ComfyUI, and model-serving services can be running without a model
+loaded. vLLM, KoboldCPP, and q38rocm are normally started on demand when a model is
+selected. Updating a runtime does not download model weights.
+
 The agent image is built by the installer as the regular Hearth user, using the
 existing Docker permission. Its apt and language package managers run inside
 each isolated task container; host packages are not installed for agent tasks.
