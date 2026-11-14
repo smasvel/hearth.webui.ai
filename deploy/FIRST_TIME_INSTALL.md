@@ -158,6 +158,16 @@ tailscale serve --bg --https=8443 https+insecure://127.0.0.1:5443
 
 Keep Tailscale connected on the Mac as well. The Serve URL is private to devices allowed
 on your tailnet. `localhost` only identifies the computer where the browser is running.
+The authenticated Caddy model gateways also listen on the detected Tailscale IP. If
+Tailscale was connected after Caddy was configured, refresh the gateway site addresses
+without changing client tokens:
+
+```bash
+sudo "$(pwd)/.venv/bin/python" tools/caddy_gateway_setup.py \
+  --state-file "$HOME/.local/share/hearth/Caddyfile" \
+  --owner "$USER" --system-file /etc/caddy/Caddyfile
+```
+
 These launchers run Hearth in
 the foreground; close the terminal to stop the app. Docker keeps PostgreSQL
 running in the background. In Chat, **Copy chat** copies all user messages and assistant

@@ -750,7 +750,11 @@ client devices first. Configure the host's
 [Tailscale Serve route](https://tailscale.com/docs/features/tailscale-serve) for
 private browser HTTPS and Caddy gateways for model API access. Hearth's Settings
 controls expose the integration; host networking and tailnet access policy are
-configured separately. The first-time Hearth installer does not perform that setup.
+configured separately. Caddy's authenticated model gateways include detected Tailscale
+addresses in their TLS site names. If Tailscale was connected after the gateway was
+installed, rerun the Caddy gateway setup command in the installation guide to add the new
+address without rotating client tokens. The first-time Hearth installer does not configure
+Tailscale Serve or tailnet access policy.
 
 ## Current feature directory
 

@@ -468,6 +468,14 @@
               these backend API connections.
             </p>
             <p class="hint">
+              If Tailscale was connected after Caddy was installed, refresh the gateway's
+              address list so its HTTPS certificates cover this Tailscale IP. Existing client
+              tokens are preserved and Caddy reloads automatically:
+            </p>
+            <pre class="download-log">sudo "$(pwd)/.venv/bin/python" tools/caddy_gateway_setup.py \
+  --state-file "$HOME/.local/share/hearth/Caddyfile" \
+  --owner "$USER" --system-file /etc/caddy/Caddyfile</pre>
+            <p class="hint">
               The LAN and Tailscale client configs are both available below. Choose the
               Tailscale config for a device connecting through your tailnet.
             </p>

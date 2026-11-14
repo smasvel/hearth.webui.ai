@@ -141,9 +141,42 @@ def install_section(existing: str, section: str) -> str:
         )
         return pattern.sub(lambda _m: managed_section(section), existing, count=1)
     if LEGACY_MARKER in existing:
-        return existing
+        # Older installs have no safe generated-section boundary. Preserve all
+        # existing routes and tokens, but add newly detected host addresses to
+        # the authenticated model gateway site blocks.
+        return add_gateway_addresses(existing, detect_addresses())
     prefix = existing if existing.endswith("\n") or not existing else existing + "\n"
     return prefix + "\n" + managed_section(section)
+
+
+def add_gateway_addresses(text: str, addresses: list[str]) -> str:
+    """Add newly detected IPs to legacy Caddy gateway blocks without rotating tokens."""
+    lines = text.splitlines()
+    candidates = [address for address in addresses
+                  if address == "localhost" or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", address)]
+    for index, line in enumerate(lines):
+        before, brace, after = line.partition("{")
+        if not brace:
+            continue
+        entries = [part.strip() for part in before.split(",") if part.strip()]
+        ports = {match.group(1) for entry in entries
+                 if (match := re.search(r":(\d+)$", entry))}
+        if not ports:
+            continue
+        depth = line.count("{") - line.count("}")
+        end = index + 1
+        while end < len(lines) and depth > 0:
+            depth += lines[end].count("{") - lines[end].count("}")
+            end += 1
+        body = "\n".join(lines[index + 1:end])
+        if "tls internal" not in body or "reverse_proxy" not in body or "client_auth" not in body:
+            continue
+        additions = [f"{address}:{port}" for address in candidates for port in sorted(ports)
+                     if f"{address}:{port}" not in entries]
+        if additions:
+            indent = before[:len(before) - len(before.lstrip())]
+            lines[index] = indent + ", ".join(entries + additions) + " {" + after
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def _write(path: Path, text: str, mode: int = 0o644) -> None:
@@ -211,14 +244,16 @@ def _ensure_log_dir() -> None:
 
 
 def _prime_certificates() -> None:
-    """Make Caddy issue each leaf certificate now, instead of on the first client request."""
+    """Issue gateway certificates for loopback and detected LAN/Tailscale addresses."""
     context = ssl._create_unverified_context()  # noqa: S323 - local priming request only
-    for _name, port, _upstream in BACKENDS:
-        request = urllib.request.Request(f"https://127.0.0.1:{port}/")
-        try:
-            urllib.request.urlopen(request, timeout=5, context=context)  # noqa: S310
-        except (urllib.error.URLError, OSError, ValueError):
-            pass  # 401/502 still completes the TLS handshake, which is what issues the cert.
+    addresses = list(dict.fromkeys(["127.0.0.1", *detect_addresses()]))
+    for address in addresses:
+        for _name, port, _upstream in BACKENDS:
+            request = urllib.request.Request(f"https://{address}:{port}/")
+            try:
+                urllib.request.urlopen(request, timeout=5, context=context)  # noqa: S310
+            except (urllib.error.URLError, OSError, ValueError):
+                pass  # 401/502 still completes TLS and primes the address's certificate.
 
 
 def export_ca(destination: Path) -> bool:
@@ -255,8 +290,14 @@ def main(argv: list[str] | None = None) -> int:
     state_file = args.state_file or Path.home() / ".local/share/hearth/Caddyfile"
     existing = state_file.read_text() if state_file.exists() else ""
     if existing:
-        # Never silently rotate keys that are already in a client configuration.
-        text = existing
+        # Preserve gateway tokens and custom routes while making the current host
+        # addresses available to Caddy's TLS site matcher.
+        text = add_gateway_addresses(existing, detect_addresses())
+        if text != existing:
+            mode = state_file.stat().st_mode & 0o777
+            _write(state_file, text, mode=mode)
+            _chown(state_file, args.owner)
+            print(f"Added detected host addresses to gateway configuration: {state_file}")
     else:
         text = render_caddyfile(detect_addresses(), generate_tokens(parse_tokens(existing)))
         _write(state_file, text)
