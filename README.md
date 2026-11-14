@@ -29,7 +29,7 @@ remote access to your home setup.
 ## Architecture at a glance
 
 <p><img src="docs/architecture.svg" alt="Animated Hearth architecture overview: client nodes,
-the Flask core with chat, model lifecycle, tests, memory, research and voice, five local inference
+the Flask core with chat, model lifecycle, tests, memory, research and voice, six local inference
 backends, the Caddy gateway, persistence stores, the agentic workflow layer, and the opencode.ai
 hosted-models column with encrypted key storage, session routing, and usage allowances. Dashed
 flow lines and traveling packets animate the chat, inference, hosted-model, and model-storage
@@ -66,12 +66,13 @@ flowchart LR
         CADDY["🎟️ Per-tool bearer tokens<br/>per-backend ports · TLS"]
     end
 
-    subgraph BACKENDS["🧮 Inference Backends (host services)"]
+    subgraph BACKENDS["🧮 Model & Media Backends (host services)"]
         LM["🟢 LM Studio"]
         LEM["🟠 Lemonade<br/>Ryzen AI NPU"]
         VLLM["🔵 vLLM"]
         KO["🟣 KoboldCPP"]
         FLM["🔴 FastFlowLM"]
+        Q38["🟡 q38rocm<br/>Radeon Vulkan"]
         COMFY["🎨 ComfyUI"]
     end
 
@@ -126,7 +127,7 @@ flowchart LR
     class UI,AGENTS_UI,LAN users;
     class CHAT,MODELS,TESTS,MEMORY,RESEARCH,VOICE core;
     class CADDY gateway;
-    class LM,LEM,VLLM,KO,FLM,COMFY backends;
+    class LM,LEM,VLLM,KO,FLM,Q38,COMFY backends;
     class OC cloud;
     class TASKS,CONTAINER,BROKER,CHECK agents;
     class PG,STATE,MODELS_DIR data;
@@ -289,19 +290,24 @@ administrator to find models, then use **Models** to load and evaluate them.
    applies to new requests; CPU inference and large conversation histories can still be slow.
 10. Run **Model tests** before using a model for coding or tool-driven workflows.
 
-| Backend | Model discovery and download sources | Execution |
-|---|---|---|
-| LM Studio | Hugging Face GGUF search; direct model name or repository URL | CPU/GPU as supported by LM Studio |
-| Lemonade | Curated catalog and Hugging Face search, including GGUF models | CPU/GPU/NPU according to model recipe and hardware |
+Hearth integrates six local language-model backends, a media-generation backend, and
+the hosted OpenCode model provider:
 
-Search all backends also checks Lemonade's latest public catalog and LM Studio's
-published model catalog. When the installed Lemonade server has an older catalog,
-new public GGUF entries appear as Hugging Face downloads; LM Studio catalog matches
-link to their verified GGUF artifacts. Public catalog searches need internet access.
-| vLLM | Catalog and Hugging Face causal language model repositories | Depends on the installed vLLM runtime; the documented host uses CPU |
-| KoboldCPP | Hugging Face GGUF search and downloads | CPU/GPU according to the installed build |
-| q38rocm | `julianmb/Qwen-3.8-27B-ROCmFP4-FAST-GGUF`, shown under its actual Hugging Face repository ID | One locally installed Qwen 3.8 GGUF in `data/q38rocm/models`; q38rocm fork built with RADV Vulkan on this desktop; one model served at a time |
-| FastFlowLM | FastFlowLM NPU catalog and exact model tags | Supported AMD Ryzen AI NPU hardware |
+| Backend | Role and model sources | Runtime and management |
+|---|---|---|
+| LM Studio | Local chat models; Hugging Face GGUF search and direct model/repository references | CPU or GPU as supported by LM Studio; models load and unload through Hearth |
+| Lemonade | Local chat models; Lemonade catalog and Hugging Face GGUF search | CPU, GPU, or Ryzen AI NPU according to recipe and hardware; Hearth manages loading, context, and downloads |
+| vLLM | Local chat models; Hugging Face causal language-model repositories | Uses the configured vLLM server; the documented host setup runs it on CPU |
+| KoboldCPP | Local chat models; Hugging Face GGUF search and downloads | CPU or GPU according to the installed build; Hearth uses its compatibility shim for tool calls |
+| FastFlowLM | Local NPU chat models; FastFlowLM catalog and exact model tags | AMD Ryzen AI NPU; runs as a separate host service |
+| q38rocm | Local Qwen 3.8 model; the Qwen GGUF download is listed under its Hugging Face repository ID | One model served at a time by the local RADV/Vulkan service; see the [q38rocm setup](deploy/FIRST_TIME_INSTALL.md#open-the-application-and-configure-a-model-backend) |
+| ComfyUI | Image and video generation workflows | Separate media-generation service; configured for Hearth's creative tools rather than the chat-model lifecycle |
+| OpenCode (`opencode.ai`) | Hosted chat and coding models discovered from the connected account | Pay-as-you-go or OpenCode Go; credentials are stored encrypted, and models remain remotely managed |
+
+**Search all backends** searches the six local language-model backends. It also checks
+Lemonade's latest public catalog and LM Studio's published catalog. When the installed
+Lemonade catalog is older, new GGUF entries appear from Hugging Face; LM Studio matches
+link to verified GGUF artifacts. These public catalog searches require internet access.
 
 For a one-command Hearth plus q38rocm setup on Ubuntu or Debian, run the combined
 installer from this checkout:
