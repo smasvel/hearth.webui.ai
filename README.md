@@ -1,4 +1,4 @@
-# Hearth: A Home for Your Local AI
+# Hearth: A Home for Your Local Tailscale AI
 
 *Chat with local models, test how they work, and follow coding agents from one self-hosted workspace.*
 
