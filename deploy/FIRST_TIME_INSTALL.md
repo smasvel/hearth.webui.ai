@@ -652,6 +652,10 @@ also marks the assignment **Needs review** even if the session still reports act
 selected model. If OpenCode does not acknowledge a requested pause or stop, Hearth marks
 the assignment **Interrupted** (or **Needs review** after a worker failure) and enables
 **Continue** so the saved work remains recoverable.
+During active assignments, the agent workspace refreshes OpenCode message snapshots to
+show partial assistant text and tool progress as they arrive. This uses short HTTP
+requests, so updates continue when a reverse proxy buffers long-lived event streams; no
+additional setup is required.
 Provider transport resets such as `ECONNRESET` retry up to three times in the same
 assignment session with backoff. Repeated response failures trigger bounded fresh-session
 recovery; repeated polling or prompt-admission failures move the task to **Needs review**. A failed assistant response retries the same work

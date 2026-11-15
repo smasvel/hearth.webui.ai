@@ -9,7 +9,7 @@
   let editingScheduleId = null;
   let cloneDraft = null;
   let cloneSkills = null;
-  let agentEventSource=null, agentEventTaskId=null;
+  let agentLiveTimer=null, agentLiveTaskId=null, agentLivePendingTaskId=null;
   const selectedShareUsers = new Map();
   let shareTaskId = null, shareSearchTimer;
   const active = new Set(['queued', 'running', 'waiting_input', 'verifying', 'pausing', 'stopping']);
@@ -103,9 +103,9 @@
       el('agent-rerun-status').textContent=task.status==='verifying'?'Rerun is checking its result.':'Rerun started. The agent is working.';
     }
     if(page==='execution') {
-      if(active.has(task.status) && agentEventTaskId!==task.id) connectAgentEvents(task.id);
-      else if(!active.has(task.status) && agentEventTaskId===task.id) {
-        agentEventSource?.close();agentEventSource=null;agentEventTaskId=null;
+      if(active.has(task.status) && agentLiveTaskId!==task.id) connectAgentLivePolling(task.id);
+      else if(!active.has(task.status) && agentLiveTaskId===task.id) {
+        clearTimeout(agentLiveTimer);agentLiveTimer=null;agentLiveTaskId=null;
       }
     }
     if (el('agent-sharing')) el('agent-sharing').hidden = false;
@@ -242,14 +242,17 @@
     messages.scrollTop=0;
     renderPrompts();
   }
-  function connectAgentEvents(taskId) {
-    agentEventSource?.close();
-    agentEventTaskId=taskId;
-    agentEventSource=new EventSource(`/api/agent-tasks/${taskId}/events`);
-    agentEventSource.onmessage=event=>{
-      try {
-        const payload=JSON.parse(event.data);
-        if(!task || task.id!==payload.id)return;
+  function connectAgentLivePolling(taskId) {
+    clearTimeout(agentLiveTimer);
+    agentLiveTaskId=taskId;
+    pollAgentLiveMessages(taskId);
+  }
+  async function pollAgentLiveMessages(taskId) {
+    if(agentLivePendingTaskId===taskId || agentLiveTaskId!==taskId)return;
+    agentLivePendingTaskId=taskId;
+    try {
+      const payload=await api(`/api/agent-tasks/${encodeURIComponent(taskId)}/live-messages`);
+      if(task?.id===taskId && active.has(task.status)) {
         if(Array.isArray(task.messages) && task.messages.length &&
            (!Array.isArray(payload.messages) || !payload.messages.length)) {
           payload.messages=task.messages;
@@ -259,12 +262,17 @@
           payload.activity=task.activity;
         }
         show({...task,...payload,event_streamed:true});
-      } catch(error) { console.warn('Could not read the agent activity event.',error); }
-    };
-    agentEventSource.addEventListener('access-revoked',()=>{
-      agentEventSource?.close();agentEventSource=null;agentEventTaskId=null;
-      if(el('agent-network'))el('agent-network').textContent='You no longer have access to this task.';
-    });
+      }
+    } catch(error) {
+      if(el('agent-network') && task?.id===taskId) {
+        el('agent-network').textContent=`Live agent updates reconnecting: ${error.message}`;
+      }
+    } finally {
+      if(agentLivePendingTaskId===taskId)agentLivePendingTaskId=null;
+      if(agentLiveTaskId===taskId && task?.id===taskId && active.has(task.status)) {
+        agentLiveTimer=setTimeout(()=>pollAgentLiveMessages(taskId),750);
+      }
+    }
   }
   async function reply(kind,id,value) {
     if(replyInFlight || !task?.id)return;
