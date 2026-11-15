@@ -51,7 +51,10 @@ from hearth.core import npu_request_lock
 from hearth.core import generation_guard
 from hearth.backends import lemonade_templates
 from hearth.backends import lemonade_thinking
-from hearth.backends.flm_tool_shim import _repair_streamed_textual_tool_calls, _repair_textual_tool_calls
+from hearth.backends.flm_tool_shim import (
+    _live_content_event, _remove_streamed_content_prefix, _repair_streamed_textual_tool_calls,
+    _repair_textual_tool_calls, _streamable_text_prefix,
+)
 
 LEMONADE_BASE = "http://127.0.0.1:13305"
 LISTEN_PORT = 13306
@@ -134,15 +137,16 @@ def _request_trace(body: dict) -> str:
 
 
 def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
-    """Stream reasoning now while keeping content/tool calls buffered for validation.
+    """Split live reasoning from the buffered copy to prevent duplicate display.
 
     Mirrors flm_tool_shim._split_live_reasoning. Reasoning models (GLM-4.7-Flash,
     Qwen3-thinking) can spend minutes in the think phase before emitting any answer, so a
     client that only sees chunks after the whole response is buffered (OpenCode, whose
     @ai-sdk/openai-compatible provider renders ``delta.reasoning_content`` as a first-class
     reasoning stream part) looks completely hung for that whole stretch. Reasoning is never
-    part of a tool call, so it can be forwarded the moment it arrives; only the content /
-    tool-call deltas actually need the whole-response repair + degeneracy guard below.
+    part of a tool call, so it can be forwarded the moment it arrives. Ordinary answer
+    text is also streamed live; possible textual markup and tool-call deltas remain
+    buffered for whole-response repair and validation.
     Returning a stripped ``obj`` keeps replay from displaying the reasoning twice.
     """
     choices = obj.get("choices") or []
@@ -677,17 +681,20 @@ def chat_completions():
         # own tee(). Buffering every Lemonade response used to make OpenCode show nothing at
         # all until the model finished - catastrophic for a thinking model like GLM-4.7-Flash
         # that can reason for minutes before its first answer token (2026-10-18 fix). Even in
-        # the buffered tool case, reasoning_content is forwarded live (see
-        # _split_live_reasoning) so the client can show the think phase progressing.
+        # the buffered tool case, reasoning and ordinary answer text are forwarded live;
+        # tool-call fragments remain buffered for repair and contract validation.
         buffer_tool_output = any(
             (tool.get("function") or {}).get("name") for tool in body.get("tools") or []
         )
+        stream_buffered_text = buffer_tool_output
 
         def tee():
             usage = {}
             outgoing = []
             pending_chars = 0
             pending_content = []
+            live_text = ""
+            held_text = ""
             reported_finish = False
             metric_recorded = False
             failure_status = 502
@@ -757,6 +764,12 @@ def chat_completions():
                             raw_line = b"data: " + json.dumps(obj, separators=(",", ":")).encode()
                     if _repair_tool_arguments(obj, body):
                         raw_line = b"data: " + json.dumps(obj, separators=(",", ":")).encode()
+                    content_piece = delta.get("content") or ""
+                    if stream_buffered_text and isinstance(content_piece, str) and content_piece:
+                        visible, held_text = _streamable_text_prefix(held_text + content_piece)
+                        if visible:
+                            yield _live_content_event(obj, visible)
+                            live_text += visible
                     out_line = raw_line + b"\n"
                     if buffer_tool_output:
                         outgoing.append(out_line)
@@ -805,6 +818,8 @@ def chat_completions():
                     if textual_calls is not None:
                         repaired = textual_calls.splitlines(keepends=True)
                     repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body)
+                    if stream_buffered_text and live_text:
+                        repaired = _remove_streamed_content_prefix(repaired, live_text)
                     yield from generation_guard.guard_sse_bytes(repaired)
                 reported_finish = True
             except GeneratorExit:

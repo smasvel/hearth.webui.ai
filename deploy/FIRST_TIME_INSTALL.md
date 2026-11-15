@@ -679,6 +679,11 @@ the work-cycle counter. Its first prompt is kept short and does not repeat proje
 verification instructions. A repeated overflow remains saved for review. When compaction fails,
 Hearth also retries in a fresh session from the saved project checkpoint without advancing
 the work-cycle counter.
+Streamed requests through the Lemonade, FastFlowLM, and LM Studio gateways send ordinary
+answer text during generation, even when tool schemas are present. The gateways still
+buffer tool calls for validation and repair; possible textual tool-call markup is held
+until validation. Other local backends stream directly unless a compatibility repair is
+needed. No additional setup is required.
 For project agents, keep and buffer are derived from the selected model's loaded
 context using integer division:
 

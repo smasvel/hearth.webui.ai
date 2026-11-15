@@ -1032,7 +1032,7 @@ def _abort_chunk(reason: str, model: str | None) -> bytes:
 
 
 def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
-    """Stream reasoning now while keeping content/tool calls for validation.
+    """Split live reasoning from the buffered copy to prevent duplicate display.
 
     Remove reasoning from the buffered event so replay cannot display it twice.
     Keep finish reasons and usage on the buffered event.
@@ -1049,6 +1049,82 @@ def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
     buffered_delta = {k: v for k, v in delta.items() if k != "reasoning_content"}
     buffered = {**obj, "choices": [{**choice, "delta": buffered_delta}, *choices[1:]]}
     return live, buffered
+
+
+_TEXT_TOOL_MARKERS = ("<tool_call", "<|tool_call", "```json")
+
+
+def _streamable_text_prefix(pending: str) -> tuple[str, str]:
+    """Release ordinary text while holding possible textual tool-call markup."""
+    lowered = pending.casefold()
+    positions = [lowered.find(marker) for marker in _TEXT_TOOL_MARKERS
+                 if lowered.find(marker) >= 0]
+    if positions:
+        boundary = min(positions)
+        return pending[:boundary], pending[boundary:]
+    hold = 0
+    for marker in _TEXT_TOOL_MARKERS:
+        for size in range(1, min(len(marker), len(pending) + 1)):
+            if lowered.endswith(marker[:size]):
+                hold = max(hold, size)
+    return (pending[:-hold], pending[-hold:]) if hold else (pending, "")
+
+
+def _live_content_event(obj: dict, content: str) -> bytes:
+    """Build an OpenAI-compatible content-only delta for a live client."""
+    choice = (obj.get("choices") or [{}])[0]
+    event = {key: value for key, value in obj.items() if key not in {"choices", "usage"}}
+    event["choices"] = [{**choice, "delta": {"content": content}, "finish_reason": None}]
+    return b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
+
+
+def _remove_streamed_content_prefix(raw_lines, prefix: str):
+    """Remove text already sent live from a repaired/buffered SSE replay."""
+    if not prefix:
+        return raw_lines
+    raw = raw_lines if isinstance(raw_lines, bytes) else b"".join(raw_lines)
+    remaining = prefix
+    result = []
+    for block in re.split(br"\r?\n\r?\n", raw):
+        if not block:
+            continue
+        data_index = next((i for i, line in enumerate(block.splitlines())
+                           if line.startswith(b"data:")), None)
+        lines = block.splitlines()
+        if data_index is None:
+            result.append(block + b"\n\n")
+            continue
+        data_line = lines[data_index]
+        payload = data_line[5:].strip()
+        try:
+            event = json.loads(payload)
+        except (ValueError, TypeError):
+            result.append(block + b"\n\n")
+            continue
+        for choice in event.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if not isinstance(content, str) or not remaining:
+                continue
+            common = 0
+            while common < min(len(content), len(remaining)) and content[common] == remaining[common]:
+                common += 1
+            if common:
+                content = content[common:]
+                remaining = remaining[common:]
+                if content:
+                    delta["content"] = content
+                else:
+                    delta.pop("content", None)
+                if not delta and choice.get("finish_reason") is None:
+                    choice["delta"] = {}
+        choices = event.get("choices") or []
+        if choices and all(not (choice.get("delta") or choice.get("finish_reason"))
+                           for choice in choices) and not event.get("usage"):
+            continue
+        lines[data_index] = b"data: " + json.dumps(event, separators=(",", ":")).encode()
+        result.append(b"\n".join(lines) + b"\n\n")
+    return result
 
 
 def _ensure_no_thinking(body: dict) -> dict:
@@ -1240,6 +1316,7 @@ def chat_completions():
         watch_degeneracy = bool(body.get("tools"))
         buffer_tool_output = any((tool.get("function") or {}).get("name")
                                  for tool in body.get("tools") or [])
+        stream_buffered_text = buffer_tool_output
 
         def tee():
             chunks = []
@@ -1248,6 +1325,8 @@ def chat_completions():
             usage = {}
             pending_chars = 0
             pending_content = []
+            live_text = ""
+            held_text = ""
             reported_finish = False
             try:
                 for raw_line in upstream.iter_lines(chunk_size=1):
@@ -1291,6 +1370,12 @@ def chat_completions():
                         if live_reasoning is not None:
                             yield b"data: " + json.dumps(live_reasoning).encode() + b"\n\n"
                             raw_line = b"data: " + json.dumps(obj).encode()
+                        content_piece = delta.get("content") or ""
+                        if stream_buffered_text and isinstance(content_piece, str) and content_piece:
+                            visible, held_text = _streamable_text_prefix(held_text + content_piece)
+                            if visible:
+                                yield _live_content_event(obj, visible)
+                                live_text += visible
                     out_line = raw_line + b"\n"
                     chunks.append(out_line)
                     if not buffer_tool_output:
@@ -1352,10 +1437,15 @@ def chat_completions():
                     if repaired_stream is None:
                         repaired_stream = _repair_streamed_textual_tool_calls(chunks, body)
                     if repaired_stream is not None:
-                        yield repaired_stream
+                        replay = repaired_stream
                     else:
-                        for buffered_line in chunks:
-                            yield buffered_line
+                        replay = chunks
+                    if stream_buffered_text and live_text:
+                        replay = _remove_streamed_content_prefix(replay, live_text)
+                    if isinstance(replay, bytes):
+                        yield replay
+                    else:
+                        yield from replay
                 live_report.finish(
                     live_id, status="error" if aborted_reason else "done",
                     total_tokens=usage.get("completion_tokens"), status_code=upstream.status_code,

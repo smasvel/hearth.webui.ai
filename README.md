@@ -652,6 +652,13 @@ bearer token. Administrators can retrieve or regenerate per-user gateway tokens
 from **Users** and apply the supplied Caddy configuration. Token changes require
 updating and reloading Caddy to take effect at the gateway.
 
+For streamed local model requests with tools enabled, the Lemonade, FastFlowLM, and
+LM Studio gateways send ordinary answer text as it arrives while buffering tool-call
+fragments for validation and repair. Possible textual tool-call markup is held until it
+can be validated, so thinking models can display their answer during generation without
+exposing malformed tool instructions to the client. Other local backends pass their
+stream through directly unless a compatibility repair is needed.
+
 The gateway's three standard keys (`opencode`, `vscode`, `lan`) live in
 `~/.local/share/hearth/Caddyfile`, which is the source the installer publishes to
 `/etc/caddy/Caddyfile`. The local CA root is exported to

@@ -11,8 +11,8 @@ This shim adds the missing real-time half for LM Studio specifically, by actuall
 inline for every request instead of tailing a log after the fact.
 
 Tool requests also normalize textual tool calls and repair supported argument encoding
-errors. Their streams are buffered so leaked tool markup can be replaced before clients
-receive it. Requests without tools continue streaming immediately. No NPU eviction occurs.
+errors. Ordinary text streams live; possible textual tool-call markup and structured
+tool-call fragments stay buffered until validation completes. No NPU eviction occurs.
 
 Runs as its own systemd --user unit (lmstudio-shim.service) on 127.0.0.1:13307. Caddy's :8443
 block points its `reverse_proxy` here instead of LM Studio's raw 1234 so LAN clients get live
@@ -34,7 +34,10 @@ from hearth.compat import question_tool_compat
 from hearth.compat import exact_file_content
 from hearth.compat import tool_argument_json
 from hearth.compat import exact_tool_contract
-from hearth.backends.flm_tool_shim import _repair_textual_tool_calls, _repair_streamed_textual_tool_calls
+from hearth.backends.flm_tool_shim import (
+    _live_content_event, _remove_streamed_content_prefix, _repair_textual_tool_calls,
+    _repair_streamed_textual_tool_calls, _streamable_text_prefix,
+)
 from flask import Flask, Response, request
 
 from hearth.core import live_report
@@ -193,6 +196,8 @@ def chat_completions():
             usage = {}
             pending_chars = 0
             pending_content = []
+            live_text = ""
+            held_text = ""
             reported_finish = False
             pending_tools = [] if body.get('tools') and body.get('tool_choice') != 'none' else None
             try:
@@ -231,6 +236,12 @@ def chat_completions():
                         yield wire_line
                     else:
                         pending_tools.append(wire_line)
+                        content_piece = ((event.get('choices') or [{}])[0].get('delta') or {}).get('content') or ''
+                        if isinstance(content_piece, str) and content_piece:
+                            visible, held_text = _streamable_text_prefix(held_text + content_piece)
+                            if visible:
+                                yield _live_content_event(event, visible)
+                                live_text += visible
                     if not raw_line.startswith(b"data: "):
                         continue
                     payload = raw_line[len(b"data: "):].strip()
@@ -277,7 +288,10 @@ def chat_completions():
                     # Named-choice contracts live in the client's original tool_choice,
                     # which normalize_tool_choice has already flattened to "required".
                     repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body, relaxed=True)
-                    yield from exact_file_content.repair_sse(repaired, body)
+                    repaired = exact_file_content.repair_sse(repaired, body)
+                    if live_text:
+                        repaired = _remove_streamed_content_prefix(repaired, live_text)
+                    yield from repaired
                 live_report.finish(
                     live_id, status="done" if upstream.ok else "error",
                     total_tokens=usage.get("completion_tokens"), status_code=upstream.status_code,
