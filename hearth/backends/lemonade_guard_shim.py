@@ -46,14 +46,14 @@ from flask import Flask, Response, request
 
 from hearth.backends import fastflowlm_client as fastflowlm
 from hearth.core import live_report
+from hearth.core import advice_disclaimer
 from hearth.storage import model_metadata_store
 from hearth.core import npu_request_lock
 from hearth.core import generation_guard
 from hearth.backends import lemonade_templates
 from hearth.backends import lemonade_thinking
 from hearth.backends.flm_tool_shim import (
-    _live_content_event, _remove_streamed_content_prefix, _repair_streamed_textual_tool_calls,
-    _repair_textual_tool_calls, _streamable_text_prefix,
+    _repair_streamed_textual_tool_calls, _repair_textual_tool_calls,
 )
 
 LEMONADE_BASE = "http://127.0.0.1:13305"
@@ -144,22 +144,59 @@ def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
     client that only sees chunks after the whole response is buffered (OpenCode, whose
     @ai-sdk/openai-compatible provider renders ``delta.reasoning_content`` as a first-class
     reasoning stream part) looks completely hung for that whole stretch. Reasoning is never
-    part of a tool call, so it can be forwarded the moment it arrives. Ordinary answer
-    text is also streamed live; possible textual markup and tool-call deltas remain
-    buffered for whole-response repair and validation.
+    part of a tool call, so it can be forwarded the moment it arrives. The remaining
+    content stays buffered until tool calls are repaired and validated, preventing
+    transient code or arguments from flashing as assistant text in OpenCode.
     Returning a stripped ``obj`` keeps replay from displaying the reasoning twice.
     """
     choices = obj.get("choices") or []
-    if not choices or not (choices[0].get("delta") or {}).get("reasoning_content"):
+    if not choices:
         return None, obj
     choice = choices[0]
     delta = choice["delta"]
+    reasoning = next((delta.get(key) for key in
+                      ("reasoning_content", "reasoning", "reasoning_text")
+                      if isinstance(delta.get(key), str) and delta.get(key)), "")
+    if not reasoning:
+        return None, obj
     live = {k: v for k, v in obj.items() if k not in {"choices", "usage"}}
-    live["choices"] = [{**choice, "delta": {"reasoning_content": delta["reasoning_content"]},
+    live["choices"] = [{**choice, "delta": {"reasoning_content": reasoning},
                         "finish_reason": None}]
-    buffered_delta = {k: v for k, v in delta.items() if k != "reasoning_content"}
+    buffered_delta = {k: v for k, v in delta.items()
+                      if k not in {"reasoning_content", "reasoning", "reasoning_text"}}
     buffered = {**obj, "choices": [{**choice, "delta": buffered_delta}, *choices[1:]]}
     return live, buffered
+
+
+def _split_think_tags(text: str, state: dict) -> tuple[str, str]:
+    """Move inline <think>...</think> content into OpenAI's live reasoning field.
+
+    Some GGUF templates/runtime combinations stream the Qwen think block as ordinary
+    content instead of emitting `reasoning_content`. Keep a possible partial marker across
+    token chunks so neither the marker nor thinking text leaks into the answer stream.
+    """
+    source = state.get("pending", "") + text
+    state["pending"] = ""
+    reasoning, answer = [], []
+    while source:
+        marker = "</think>" if state.get("inside") else "<think>"
+        position = source.find(marker)
+        if position >= 0:
+            (reasoning if state.get("inside") else answer).append(source[:position])
+            source = source[position + len(marker):]
+            state["inside"] = not state.get("inside", False)
+            continue
+        # Retain a suffix that may be the start of a marker split across SSE deltas.
+        keep = 0
+        for size in range(1, min(len(marker), len(source) + 1)):
+            if source.endswith(marker[:size]):
+                keep = size
+        segment = source[:-keep] if keep else source
+        (reasoning if state.get("inside") else answer).append(segment)
+        if keep:
+            state["pending"] = source[-keep:]
+        break
+    return "".join(reasoning), "".join(answer)
 
 
 def _prepare_agent_request(body: dict) -> dict:
@@ -611,6 +648,7 @@ class _KeepaliveLineReader:
 def chat_completions():
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
+    body = advice_disclaimer.apply_body(body)
     body = lemonade_thinking.apply(model_test_profiles.apply(body, "lemonade"))
     body = _prepare_agent_request(body)
     if body.get("stream"):
@@ -681,20 +719,20 @@ def chat_completions():
         # own tee(). Buffering every Lemonade response used to make OpenCode show nothing at
         # all until the model finished - catastrophic for a thinking model like GLM-4.7-Flash
         # that can reason for minutes before its first answer token (2026-10-18 fix). Even in
-        # the buffered tool case, reasoning and ordinary answer text are forwarded live;
-        # tool-call fragments remain buffered for repair and contract validation.
+        # Tool calls require whole-response repair and validation before forwarding.
         buffer_tool_output = any(
             (tool.get("function") or {}).get("name") for tool in body.get("tools") or []
         )
-        stream_buffered_text = buffer_tool_output
-
+        # Do not expose ordinary content while Lemonade is still validating a tool
+        # response. Tool-oriented models can emit transient code/arguments as content
+        # before the completed tool call is reconstructed; OpenCode briefly renders
+        # those fragments as assistant text. Explicit reasoning deltas remain live.
         def tee():
             usage = {}
             outgoing = []
             pending_chars = 0
             pending_content = []
-            live_text = ""
-            held_text = ""
+            think_state = {"inside": False, "pending": ""}
             reported_finish = False
             metric_recorded = False
             failure_status = 502
@@ -753,23 +791,61 @@ def chat_completions():
                         else:
                             yield out_line
                         continue
-                    if buffer_tool_output:
+                    choices = obj.get("choices") or []
+                    first_delta = (choices[0].get("delta") or {}) if choices else {}
+                    inline_think = (
+                        think_state.get("inside")
+                        or "<think>" in str(first_delta.get("content") or "").lower()
+                        or "</think>" in str(first_delta.get("content") or "").lower()
+                    )
+                    reasoning_alias = any(first_delta.get(key) for key in
+                                           ("reasoning", "reasoning_text"))
+                    if buffer_tool_output or inline_think or reasoning_alias:
                         live_reasoning, obj = _split_live_reasoning(obj)
-                        if live_reasoning is not None:
-                            yield b"data: " + json.dumps(
-                                live_reasoning, separators=(",", ":")
-                            ).encode() + b"\n\n"
-                            # Rebuild from the reasoning-stripped object so the buffered
-                            # replay below can't send the same reasoning a second time.
-                            raw_line = b"data: " + json.dumps(obj, separators=(",", ":")).encode()
+                    else:
+                        # Preserve ordinary OpenAI SSE events byte-for-byte on the
+                        # no-tools path; canonical reasoning_content needs no adaptation.
+                        live_reasoning = None
+                    choices = obj.get("choices") or []
+                    if choices:
+                        choice = choices[0]
+                        delta = choice.get("delta") or {}
+                        content_piece = delta.get("content")
+                        if isinstance(content_piece, str) and content_piece:
+                            think_text, answer_text = _split_think_tags(content_piece, think_state)
+                            if think_text:
+                                tag_event = {k: v for k, v in obj.items()
+                                             if k not in {"choices", "usage"}}
+                                tag_event["choices"] = [{**choice,
+                                    "delta": {"reasoning_content": think_text},
+                                    "finish_reason": None}]
+                                if live_reasoning is not None:
+                                    prior = live_reasoning["choices"][0]["delta"].get(
+                                        "reasoning_content", "")
+                                    tag_event["choices"][0]["delta"]["reasoning_content"] = prior + think_text
+                                    live_reasoning = None
+                                else:
+                                    live_reasoning = tag_event
+                            if answer_text != content_piece:
+                                updated_delta = dict(delta)
+                                if answer_text:
+                                    updated_delta["content"] = answer_text
+                                else:
+                                    updated_delta.pop("content", None)
+                                obj = {**obj, "choices": [{**choice, "delta": updated_delta}, *choices[1:]]}
+                    if live_reasoning is not None:
+                        yield b"data: " + json.dumps(
+                            live_reasoning, separators=(",", ":")
+                        ).encode() + b"\n\n"
+                    if obj != json.loads(payload):
+                        # The buffered replay must not duplicate reasoning or inline tags.
+                        raw_line = b"data: " + json.dumps(obj, separators=(",", ":")).encode()
+                    try:
+                        delta = obj["choices"][0]["delta"]
+                    except (KeyError, IndexError, TypeError):
+                        delta = {}
                     if _repair_tool_arguments(obj, body):
                         raw_line = b"data: " + json.dumps(obj, separators=(",", ":")).encode()
-                    content_piece = delta.get("content") or ""
-                    if stream_buffered_text and isinstance(content_piece, str) and content_piece:
-                        visible, held_text = _streamable_text_prefix(held_text + content_piece)
-                        if visible:
-                            yield _live_content_event(obj, visible)
-                            live_text += visible
                     out_line = raw_line + b"\n"
                     if buffer_tool_output:
                         outgoing.append(out_line)
@@ -818,8 +894,6 @@ def chat_completions():
                     if textual_calls is not None:
                         repaired = textual_calls.splitlines(keepends=True)
                     repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body)
-                    if stream_buffered_text and live_text:
-                        repaired = _remove_streamed_content_prefix(repaired, live_text)
                     yield from generation_guard.guard_sse_bytes(repaired)
                 reported_finish = True
             except GeneratorExit:

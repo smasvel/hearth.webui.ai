@@ -74,6 +74,7 @@ from hearth.storage import secret_store
 from hearth.storage import users_store
 from hearth.integrations import web_search_client as web_search
 from hearth.core import generation_guard
+from hearth.core import advice_disclaimer
 
 psutil.cpu_percent()  # warm-up call: seeds the delta baseline for later non-blocking reads
 
@@ -315,6 +316,11 @@ def _login_csrf_token() -> str:
 @app.before_request
 def _require_csrf_for_authenticated_writes():
     """Expire idle logins, then reject cross-site authenticated state changes."""
+    # The login handler must be able to replace an idle signed-in session. If this
+    # guard processes its POST first, it clears the session and redirects before the
+    # submitted credentials are ever verified (the form appears to do nothing).
+    if request.endpoint == "login":
+        return None
     if not session.get("logged_in"):
         return None
     now = time.time()
@@ -1209,6 +1215,10 @@ def login():
             and secrets.compare_digest(supplied_csrf, expected_csrf)
         ):
             return "Invalid or expired sign-in form", 400
+        # Discard an old or expired authenticated session before attempting a new
+        # login. The login CSRF token was validated above; failed credentials render
+        # a fresh anonymous form, and successful credentials create a new session.
+        session.clear()
         if setup_mode:
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
@@ -6179,6 +6189,7 @@ def api_chat():
         system_content = "\n\n".join(m.get("content", "") for m in system_messages)
         conversation_messages = [m for m in messages if m.get("role") != "system"]
         messages = [{"role": "system", "content": system_content}] + conversation_messages
+    messages = advice_disclaimer.apply(messages)
 
     # Cross-chat memory is injected adjacent to the user's latest question, not in
     # the leading system message. Verified live (2026-11-09, KoboldCPP

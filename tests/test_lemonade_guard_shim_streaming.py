@@ -183,6 +183,11 @@ class StreamedResponseTests(unittest.TestCase):
         after = [raw for kind, raw in events if kind == "out"]
         self.assertEqual(sum(b"reasoning_content" in raw for raw in after), 1)
         self.assertEqual(b"".join(after).count(b"answer"), 1)
+        last_upstream = max(i for i, (kind, _) in enumerate(events) if kind == "up")
+        answer_output = next(i for i, (kind, raw) in enumerate(events)
+                             if kind == "out" and b"answer" in raw)
+        self.assertGreater(answer_output, last_upstream,
+                           "tool-enabled answer content must wait for validation")
 
     def test_tagged_textual_tool_call_becomes_structured_stream_call(self):
         body = {"model": "fixture", "stream": True, "tools": [{"type": "function", "function": {

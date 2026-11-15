@@ -26,6 +26,16 @@ remote access to your home setup.
 > and configures the app to start automatically after reboot. See the
 > [installation guide](deploy/FIRST_TIME_INSTALL.md) for setup details.
 
+## Important disclaimer
+
+Use Hearth and its model outputs at your own risk. Hearth is not a platform for
+investment, trading, or medical advice. Model responses may be inaccurate, incomplete,
+outdated, or otherwise unsuitable for your situation; Hearth does not verify every answer
+and makes no guarantee that model output is correct. Do not rely on model output as a
+substitute for advice from a qualified financial or medical professional. To the fullest
+extent permitted by law, Hearth and its operators are not responsible for decisions,
+actions, losses, or harm resulting from use of the platform or reliance on model output.
+
 ## Architecture at a glance
 
 <p><img src="docs/architecture.svg" alt="Animated Hearth architecture overview: client nodes,
@@ -162,6 +172,16 @@ all documented in their own sections below.
 
 Lemonade requests with tools disabled omit tool schemas before reaching the runtime,
 preventing native tool parsers from rejecting ordinary answers.
+
+Hearth adds shared response guidance to its chat and OpenAI-compatible model requests,
+including coding-agent relays. Responses about trading, stocks, tickers, securities, market
+indexes such as Nasdaq or S&P, index funds, ETFs, and other investment topics are instructed
+to identify themselves as general information rather than individualized financial or
+investment advice, avoid personalized transaction recommendations, and direct users to a
+qualified financial professional for personal decisions. Medical responses identify
+themselves as general information, avoid diagnoses or treatment plans, and direct users to a
+qualified medical professional; urgent symptoms are directed to emergency care. This
+guidance applies across the supported backends and models.
 
 | Use case | Included capabilities |
 |---|---|
@@ -679,6 +699,12 @@ unnecessary tool calls and repeated long prefill. Request attribution helps
 distinguish browser chat, OpenCode, and Continue traffic in **Metrics**.
 Continue can additionally use a configured embedding model for codebase indexing.
 
+The Lemonade gateway forwards reasoning deltas as they arrive, including backends that
+send reasoning under `reasoning`, `reasoning_text`, or inline `<think>...</think>` content.
+OpenCode Desktop can therefore show the thinking phase while a response is still being
+generated. For tool-enabled requests, answer content stays buffered through tool-call
+validation so intermediate code or arguments do not flash as assistant text.
+
 Generated OpenCode configurations enable automatic compaction by default, so older turns
 are summarized before the model's loaded context fills; Settings can disable this or
 adjust the retained history and buffer, and manual compaction remains available. Hearth's
@@ -1176,11 +1202,14 @@ computer refers to that computer, so it cannot reach Hearth.
 
 The UI is protected by a login page backed by a `users` table. Login uses a browser-session
 cookie (closing the browser requires a fresh login) and expires after 30 minutes without a
-request. The cookie name includes the listen port (`hearth_session_5443`,
-`hearth_session_5444`, and so on) because browsers share cookies across ports on the same
-host. Multiple Hearth installations on one machine therefore keep independent logins in the
-same browser instead of overwriting each other. Changing an installation's port starts a new
-cookie name, so users sign in once again. In Chat, use **Copy chat** to copy every user message and assistant response in the
+request. The cookie name includes the listen port and login generation (`hearth_session_5443_v2`,
+`hearth_session_5444_v2`, and so on) because browsers share cookies across ports on the same
+host. The new generation isolates sign-ins from stale cookies issued by an older app version.
+Multiple Hearth installations on one machine therefore keep independent logins in the same
+browser instead of overwriting each other. Changing an installation's port starts a new
+cookie name, so users sign in once again. After the 30-minute idle timeout, submit the
+credentials on the login page to create a fresh session; the expired session is discarded
+after the login form's CSRF check. In Chat, use **Copy chat** to copy every user message and assistant response in the
 current conversation as plain text. Each user message and assistant response also has its own
 copy control.
 Opening the site root (`/`) sends signed-out visitors to `/login`; after signing in, the same

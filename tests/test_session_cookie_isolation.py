@@ -7,8 +7,8 @@ from hearth.core.session_cookie import session_cookie_name
 class SessionCookieIsolationTests(unittest.TestCase):
     def test_each_port_gets_its_own_cookie_name(self):
         """Browsers ignore ports when scoping cookies, so the name must carry the isolation."""
-        self.assertEqual(session_cookie_name(5443), "hearth_session_5443")
-        self.assertEqual(session_cookie_name(5444), "hearth_session_5444")
+        self.assertEqual(session_cookie_name(5443), "hearth_session_5443_v2")
+        self.assertEqual(session_cookie_name(5444), "hearth_session_5444_v2")
         self.assertNotEqual(session_cookie_name(5443), session_cookie_name(5444))
 
     def test_name_is_a_valid_stable_cookie_token(self):
@@ -18,8 +18,8 @@ class SessionCookieIsolationTests(unittest.TestCase):
             self.assertEqual(name, session_cookie_name(port))
 
     def test_non_numeric_input_cannot_produce_an_empty_or_unsafe_name(self):
-        self.assertEqual(session_cookie_name("5443"), "hearth_session_5443")
-        self.assertRegex(session_cookie_name(""), r"^hearth_session_\d+$")
+        self.assertEqual(session_cookie_name("5443"), "hearth_session_5443_v2")
+        self.assertRegex(session_cookie_name(""), r"^hearth_session_\d+_v2$")
         self.assertTrue(re.fullmatch(r"[A-Za-z0-9_]+", session_cookie_name("54;43")))
 
     def test_two_flask_apps_with_different_ports_do_not_share_a_cookie(self):
@@ -36,10 +36,10 @@ class SessionCookieIsolationTests(unittest.TestCase):
 
         first = client_for(5443)
         second = client_for(5444)
-        self.assertIsNotNone(first.get_cookie("hearth_session_5443"))
-        self.assertIsNone(first.get_cookie("hearth_session_5444"))
-        self.assertIsNotNone(second.get_cookie("hearth_session_5444"))
-        self.assertIsNone(second.get_cookie("hearth_session_5443"))
+        self.assertIsNotNone(first.get_cookie("hearth_session_5443_v2"))
+        self.assertIsNone(first.get_cookie("hearth_session_5444_v2"))
+        self.assertIsNotNone(second.get_cookie("hearth_session_5444_v2"))
+        self.assertIsNone(second.get_cookie("hearth_session_5443_v2"))
 
 
 if __name__ == "__main__":

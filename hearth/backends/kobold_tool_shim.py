@@ -19,6 +19,7 @@ from werkzeug.serving import make_server
 
 from hearth.storage import settings_store
 from hearth.core import live_report
+from hearth.core import advice_disclaimer
 
 app = Flask(__name__)
 _server = None
@@ -225,6 +226,7 @@ def _encode_stream(payload):
 @app.post("/v1/chat/completions")
 def chat_completions():
     body = request.get_json(force=True, silent=True) or {}
+    body = advice_disclaimer.apply_body(body)
     source = _source_from_headers(request.headers)
     model = body.get("model") or "unknown"
     client_ip = _client_ip(request.headers, request.remote_addr)

@@ -4,6 +4,13 @@ The Lemonade gateway removes disabled tool schemas for `tool_choice: none`, avoi
 native parser failures on ordinary answers. Restart `lemonade-guard-shim.service`
 after updating the gateway code to apply this behavior.
 
+The Lemonade gateway streams model reasoning to OpenCode as it arrives. It normalizes
+`reasoning_content`, `reasoning`, and `reasoning_text`, and converts inline
+`<think>...</think>` output into OpenAI-compatible reasoning deltas. Restart
+`lemonade-guard-shim.service` after updating the gateway to apply this behavior. For
+tool-enabled requests, answer content remains buffered until tool-call validation finishes
+so intermediate code and arguments are not briefly displayed as assistant text.
+
 Lemonade's `Ornith-1.5-35B-A3B-GGUF` and `K2-Horizon-MoVA-36B-A4B-GGUF` use the CPU backend when Hearth detects an
 AMD shared GPU memory pool below 32 GiB. This avoids Vulkan memory exhaustion at
 load time, at the cost of slower replies. Restart Hearth and
@@ -82,6 +89,16 @@ Live chat displays separate reasoning streams from backends that expose them. He
 normalizes the reasoning fields used by KoboldCpp and OpenCode for both the live panel
 and saved conversation history; models that do not emit a separate reasoning field show
 their answer without a thinking panel.
+
+Hearth adds shared response guidance to chat and OpenAI-compatible model requests,
+including project-agent relays. Across supported backends and models, responses about
+trading, stocks, tickers, securities, market indexes such as Nasdaq or S&P, index funds,
+ETFs, and other investment topics are instructed to identify themselves as general
+information, not individualized financial advice; avoid personalized transaction
+recommendations; and refer users to a qualified financial professional for personal
+decisions. Medical responses identify themselves as general information, avoid diagnoses
+or treatment plans, and refer users to a qualified medical professional. Urgent medical
+symptoms are directed to emergency care. No backend-specific configuration is required.
 
 Chat applies a final context-size guard after adding saved history, attachments, and
 web-research results. Cross-chat memory recall treats personal facts specially: the
@@ -257,11 +274,14 @@ stores plaintext passwords or returns password hashes through user APIs. Hashing
 intentional because passwords should be verified, not reversibly encrypted.
 The encrypted Flask session key is stored in PostgreSQL as well. Its encryption key is
 derived from the PostgreSQL connection password, so changing that database password
-rotates the session key and requires users to sign in again. The session cookie is named
-after the listen port (`hearth_session_5443`, `hearth_session_5444`, and so on), because
-browsers share cookies across ports on the same host. Several Hearth installations on
-one machine can therefore be signed in at the same time without their logins
-overwriting each other; changing a port starts a new cookie and requires one new login.
+rotates the session key and requires users to sign in again. The session cookie includes
+the listen port and cookie generation (`hearth_session_5443_v2`, `hearth_session_5444_v2`,
+and so on), because browsers share cookies across ports on the same host. The new generation
+isolates sign-ins from stale cookies issued by an older app version. Several Hearth
+installations on one machine can therefore be signed in at the same time without their
+logins overwriting each other; changing a port starts a new cookie and requires one new login.
+After the 30-minute idle timeout, sign in from the login page with the existing account;
+Hearth discards the old session after validating the login form and creates a fresh one.
 
 Useful options:
 

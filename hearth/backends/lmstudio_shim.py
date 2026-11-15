@@ -41,6 +41,7 @@ from hearth.backends.flm_tool_shim import (
 from flask import Flask, Response, request
 
 from hearth.core import live_report
+from hearth.core import advice_disclaimer
 
 LMSTUDIO_BASE = "http://127.0.0.1:1234"
 LISTEN_PORT = 13307
@@ -157,6 +158,7 @@ def chat_completions():
     model_stream_cancel.streams.begin(stream_id)
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
+    body = advice_disclaimer.apply_body(body)
     if body.get("stream"):
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
     # normalize_tool_choice below rewrites a named tool_choice into LM Studio's

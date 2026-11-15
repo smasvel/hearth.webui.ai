@@ -43,6 +43,7 @@ from flask import Flask, Response, request, stream_with_context
 
 from hearth.backends import fastflowlm_client as fastflowlm
 from hearth.core import live_report
+from hearth.core import advice_disclaimer
 from hearth.core import npu_request_lock
 from hearth.backends import flm_context
 
@@ -1236,6 +1237,7 @@ def chat_completions():
         return {"error": {"message": "FastFlowLM was manually unloaded. Load a model in Hearth's Models panel to resume API requests.",
                           "type": "backend_unavailable", "code": "model_manually_unloaded"}}, 503
     body = request.get_json(force=True, silent=True) or {}
+    body = advice_disclaimer.apply_body(body)
     if body.get("stream"):
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
     body = model_test_profiles.apply(body, "fastflowlm")

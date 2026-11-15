@@ -27,6 +27,7 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 from hearth.core import live_requests
+from hearth.core import advice_disclaimer
 
 from hearth.agents.agent_opencode import AGENT, OpenCode, SYSTEM
 from hearth.agents import agent_store
@@ -201,6 +202,9 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
                 request_body = {}
             if not isinstance(request_body, dict):
                 request_body = {}
+            if self.command == 'POST' and request_path == '/v1/chat/completions':
+                request_body = advice_disclaimer.apply_body(request_body)
+                body = json.dumps(request_body, separators=(',', ':')).encode('utf-8')
             messages = request_body.get('messages') or []
             request_text = '\n'.join(
                 f"{item.get('role') or 'unknown'}: {item.get('content') or ''}"

@@ -12,6 +12,8 @@ import re
 
 
 def session_cookie_name(port: int) -> str:
-    """Return a cookie token that is valid, stable per port, and different per port."""
+    """Return a fresh-generation cookie name, isolated by Hearth listen port."""
     digits = re.sub(r"\D", "", str(port)) or "0"
-    return f"hearth_session_{digits}"
+    # Bump this generation when replacing stale/expired session cookies so the browser
+    # sends the new login independently of the cookie created by the previous app build.
+    return f"hearth_session_{digits}_v2"
