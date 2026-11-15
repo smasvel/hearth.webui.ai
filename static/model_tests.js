@@ -6,13 +6,14 @@
   let job = null, running = false, starting = false, timer = null, selectedSuite = "all";
   const suiteDescriptions = {
     all: ["Run chat, streaming, tool choices, typed arguments, file-tool contracts, long OpenCode build workflows, question/choice prompts, checkpoint resume, recovery from failures, large-code input, and context-limit checks. KoboldCPP also checks that generated OpenCode agent config advertises tool availability, so a passing endpoint test cannot hide an agent configuration gap. Question answers and tool results are simulated. Dependent steps stop if an earlier step fails. Models are tested sequentially; local loads unload other local chat models and leave the final local model loaded. Returned tools are inspected; no generated shell commands or project changes are executed.", "Automatic repair applies a reversible per-model tool-instruction profile and keeps it only if results improve."],
-    complete: ["Run every model evaluation in one report: the full compatibility suite, coding workflows, reasoning benchmark, and security probes. Tool checks already included in compatibility run once rather than being duplicated. Question answers and tool results are simulated; no generated tools or actions execute.", "This comprehensive run takes longer. Automatic repair may rerun checks when failures appear, and keeps a profile only when results improve."],
+    complete: ["Run every model evaluation in one report: the full compatibility suite, coding workflows, reasoning benchmark, and security probes, including investment and healthcare advice disclaimer checks. Tool checks already included in compatibility run once rather than being duplicated. Question answers and tool results are simulated; no generated tools or actions execute.", "This comprehensive run takes longer. Automatic repair may rerun checks when failures appear, and keeps a profile only when results improve."],
     core: ["Run the chat basics: plain chat and streaming, tool choice auto/required/named/none, parallel tool calls, tool results, typed arguments, no-argument calls, file read/edit request contracts, and the large-code context input. KoboldCPP also checks that generated OpenCode agent config advertises tool availability. Tools are inspected, never executed.", "These are the fastest high-value checks; automatic repair applies the same reversible per-model profile when failures appear."],
     opencode: ["Run the long OpenCode coding scenarios: plan/build workflows, multi-step source reads and edits, test failures and fix reruns, permission denial, task delegation, paged reads, checkpoint resume, and question prompt handling. KoboldCPP also checks the OpenCode tool-availability capability that gates agent tools. Answers and tool results are simulated and nothing is executed.", "A failed workflow step stops its dependents; the partial results still appear in the report. Automatic repair applies the same reversible per-model profile."],
     extra: ["Run the remaining tool-behavior checks: forced tool choice among alternatives, none-when-tool-requested, follow-up after a tool error, the blocked-shell contract on guarded backends, and the context-overflow rejection check.", "Automatic repair applies the same reversible per-model profile when failures appear."],
     tools: ["Checks tool selection, exact and parallel calls, typed arguments, simulated tool results, and file read/edit request contracts in normal and streaming responses. Returned calls are inspected and never executed.", "Tool compatibility checks use simulated schemas and data; automatic repair is not applied."],
     iq: ["Runs 12 original, individually presented reasoning questions covering patterns, deduction, arithmetic, spatial reasoning, and probability. Each question is sent separately and scored against a fixed answer key.", "This is a reasoning benchmark score (points correct), not a human IQ score. Human IQ requires standardized, normed tests; model results are not comparable to human IQ."],
-    security: ["Runs 10 harmless behavioral probes covering prompt injection, secret disclosure, credential theft, unsafe requests, privacy, and unauthorized tool use. No tools are connected and generated actions are never executed.", "This evaluates responses to these probes only. It does not scan the host, runtime, model weights, or deployment, and passing does not establish security."]
+    security: ["Runs 10 harmless security probes plus investment and healthcare advice disclaimer checks. Each advice check asks for personalized guidance, verifies a disclaimer and referral to a qualified professional, and shows a response preview. No tools are connected and generated actions are never executed.", "These probes evaluate response behavior only. They do not scan the host, runtime, model weights, or deployment, and passing does not establish security."],
+    custom: ["Run enabled custom scenarios saved in PostgreSQL. Each question is checked against its saved expected answer using the selected contains or exact match rule. View the model response, edit scenarios, or draft new ones with the floating AI assistant.", "Custom scenarios are separate from Hearth's built-in checks. The AI assistant uses the selected installed model and may load it or switch the active local model; no scenario is saved until you review and save it."]
   };
   // Suites where an automatic compatibility repair is attempted after failures.
   const repairableSuites = new Set(["all", "complete", "core", "opencode", "extra"]);
@@ -94,7 +95,7 @@
       if (result.rolled_back) statusCell.appendChild(document.createTextNode(" (rolled back)"));
       cell(row, "Seconds", typeof result.seconds === "number" ? result.seconds.toFixed(2) : "—", "test-number test-seconds");
       const detailsCell = cell(row, "Details", "", "test-details");
-      const detailText = result.error || result.detail;
+      const detailText = [result.error, result.detail].filter(Boolean).join("\n\n");
       if (detailText) {
         const details = document.createElement("details");
         details.dataset.resultKey = `${job.id}:${index}`;
@@ -179,7 +180,7 @@
   async function loadModels(preferred) {
     try {
       const {models} = await api("/api/models");
-      const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "kobold", "q38rocm"]);
+      const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "kobold", "q38rocm", "opencode"]);
       const media = new Set(["embedding", "embeddings", "transcription", "tts", "image", "video"]);
       const targets = [...new Map(models.filter(m => supported.has(m.backend) && !media.has(m.type) && m.loadable !== false)
         .map(m => [JSON.stringify([m.backend, m.id]), m])).values()];
@@ -203,6 +204,169 @@
       el("tests-run").disabled = running || starting || !select.value;
     } catch (error) { el("tests-status").textContent = `Could not load installed models: ${error.message}`; }
   }
+
+  const scenarioToggle = el("scenario-assistant-toggle");
+  const scenarioPanel = el("scenario-assistant-panel");
+  const scenarioPanelStateKey = "hearth-model-test-scenario-assistant-open";
+  let scenarioMessages = [], scenarioRows = [], editingScenarioId = null, scenarioAssistantBusy = false;
+  function showScenarioPanel(show) {
+    scenarioPanel.hidden = !show;
+    scenarioPanel.style.display = show ? "flex" : "none";
+    scenarioPanel.setAttribute("aria-hidden", String(!show));
+    scenarioPanel.inert = !show;
+    scenarioToggle.setAttribute("aria-expanded", String(show));
+    try { sessionStorage.setItem(scenarioPanelStateKey, show ? "open" : "closed"); } catch {}
+    if (show) {
+      loadScenarioChatModels();
+      loadScenarios();
+      el("scenario-assistant-message").focus();
+    } else {
+      scenarioToggle.focus();
+    }
+  }
+  function appendScenarioMessage(role, content) {
+    const node = document.createElement("p");
+    node.className = `scenario-assistant-message ${role}`;
+    node.textContent = content;
+    el("scenario-assistant-log").appendChild(node);
+    el("scenario-assistant-log").scrollTop = el("scenario-assistant-log").scrollHeight;
+  }
+  async function loadScenarioChatModels() {
+    const select = el("scenario-assistant-model");
+    const selectedBefore = select.value;
+    try {
+      const {models} = await api("/api/models");
+      const supported = new Set(["fastflowlm", "lmstudio", "lemonade", "vllm", "kobold", "q38rocm", "opencode"]);
+      const media = new Set(["embedding", "embeddings", "transcription", "tts", "image", "video"]);
+      const choices = [...new Map(models.filter(m => supported.has(m.backend) && !media.has(m.type)
+        && m.loadable !== false && m.state === "loaded")
+        .map(m => [JSON.stringify([m.backend, m.id]), m])).values()];
+      select.replaceChildren();
+      const placeholder = document.createElement("option"); placeholder.value = "";
+      placeholder.textContent = choices.length ? "Choose a loaded model" : "No chat models are loaded";
+      select.appendChild(placeholder);
+      for (const model of choices) {
+        const option = document.createElement("option");
+        option.value = JSON.stringify({backend: model.backend, id: model.id});
+        option.textContent = `${model.backend} · ${model.name || model.id} · loaded`;
+        select.appendChild(option);
+      }
+      const preferred = selectedBefore || el("tests-model").value;
+      if (preferred && [...select.options].some(option => option.value === preferred)) select.value = preferred;
+    } catch (error) {
+      select.replaceChildren(new Option(`Could not load models: ${error.message}`, ""));
+    }
+  }
+  function fillScenarioDraft(scenario, scenarioId = null) {
+    editingScenarioId = scenarioId;
+    el("scenario-draft-name").value = scenario.name || "";
+    el("scenario-draft-prompt").value = scenario.prompt || "";
+    el("scenario-draft-expected").value = scenario.expected_answer || "";
+    el("scenario-draft-match").value = scenario.match_mode || "contains";
+    el("scenario-draft-save").textContent = scenarioId ? "Update scenario" : "Save scenario";
+    el("scenario-draft-form").hidden = false;
+  }
+  function clearScenarioDraft() {
+    editingScenarioId = null;
+    el("scenario-draft-form").reset();
+    el("scenario-draft-save").textContent = "Save scenario";
+    el("scenario-draft-form").hidden = true;
+  }
+  async function loadScenarios() {
+    try {
+      const {scenarios} = await api("/api/model-tests/scenarios");
+      scenarioRows = scenarios;
+      renderScenarios();
+    } catch (error) { el("scenario-library-status").textContent = error.message; }
+  }
+  function renderScenarios() {
+    const list = el("scenario-library-list"); list.replaceChildren();
+    el("scenario-library-status").textContent = scenarioRows.length
+      ? `${scenarioRows.length} saved · ${scenarioRows.filter(row => row.enabled).length} enabled for Custom scenarios`
+      : "No saved scenarios yet. Chat with the assistant or write one in the draft form.";
+    for (const scenario of scenarioRows) {
+      const row = document.createElement("article"); row.className = "scenario-library-item";
+      const copy = document.createElement("div"); copy.className = "scenario-library-copy";
+      const title = document.createElement("strong"); title.textContent = scenario.name;
+      const expected = document.createElement("p"); expected.textContent = `Expected (${scenario.match_mode}): ${scenario.expected_answer}`;
+      copy.append(title, expected);
+      const actions = document.createElement("div"); actions.className = "scenario-library-actions";
+      const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = !!scenario.enabled;
+      enabled.setAttribute("aria-label", `Enable ${scenario.name} in Custom scenarios`);
+      enabled.addEventListener("change", async () => {
+        try { const result = await api(`/api/model-tests/scenarios/${encodeURIComponent(scenario.id)}`, {enabled: enabled.checked}, "PATCH");
+          scenarioRows = scenarioRows.map(item => item.id === result.scenario.id ? result.scenario : item); renderScenarios(); }
+        catch (error) { enabled.checked = !enabled.checked; el("scenario-library-status").textContent = error.message; }
+      });
+      const edit = document.createElement("button"); edit.type = "button"; edit.className = "panel-btn secondary"; edit.textContent = "Edit";
+      edit.addEventListener("click", () => fillScenarioDraft(scenario, scenario.id));
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "panel-btn secondary"; remove.textContent = "Delete";
+      remove.addEventListener("click", async () => {
+        if (!confirm(`Delete “${scenario.name}” from saved custom scenarios?`)) return;
+        try { await api(`/api/model-tests/scenarios/${encodeURIComponent(scenario.id)}`, undefined, "DELETE");
+          scenarioRows = scenarioRows.filter(item => item.id !== scenario.id); renderScenarios(); }
+        catch (error) { el("scenario-library-status").textContent = error.message; }
+      });
+      actions.append(enabled, edit, remove); row.append(copy, actions); list.appendChild(row);
+    }
+  }
+  scenarioToggle.addEventListener("click", () => showScenarioPanel(scenarioPanel.hidden));
+  el("scenario-assistant-close").addEventListener("click", () => showScenarioPanel(false));
+  try {
+    if (sessionStorage.getItem(scenarioPanelStateKey) === "open") showScenarioPanel(true);
+  } catch {}
+  el("scenario-assistant-chat-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (scenarioAssistantBusy) return;
+    const text = el("scenario-assistant-message").value.trim();
+    let selected;
+    try { selected = JSON.parse(el("scenario-assistant-model").value || "null"); }
+    catch { selected = null; }
+    if (!text) return;
+    if (!selected) { appendScenarioMessage("assistant", "Choose an installed model first."); return; }
+    if (scenarioMessages.length >= 16) { appendScenarioMessage("assistant", "Start a new conversation to continue with this model."); return; }
+    scenarioMessages.push({role: "user", content: text});
+    appendScenarioMessage("user", text); el("scenario-assistant-message").value = "";
+    scenarioAssistantBusy = true; el("scenario-assistant-send").disabled = true;
+    appendScenarioMessage("assistant", "Thinking…");
+    const pending = el("scenario-assistant-log").lastElementChild;
+    try {
+      const result = await api("/api/model-tests/scenario-assistant", {
+        backend: selected.backend, model: selected.id, messages: scenarioMessages
+      });
+      pending.remove();
+      scenarioMessages.push({role: "assistant", content: result.reply});
+      appendScenarioMessage("assistant", result.reply);
+      if (result.scenario) fillScenarioDraft(result.scenario);
+    } catch (error) {
+      pending.textContent = error.message;
+    } finally {
+      scenarioAssistantBusy = false; el("scenario-assistant-send").disabled = false;
+      el("scenario-assistant-message").focus();
+    }
+  });
+  el("scenario-draft-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const scenario = {
+      name: el("scenario-draft-name").value.trim(),
+      prompt: el("scenario-draft-prompt").value.trim(),
+      expected_answer: el("scenario-draft-expected").value.trim(),
+      match_mode: el("scenario-draft-match").value,
+      enabled: true,
+    };
+    try {
+      const result = await api(editingScenarioId
+        ? `/api/model-tests/scenarios/${encodeURIComponent(editingScenarioId)}`
+        : "/api/model-tests/scenarios", scenario, editingScenarioId ? "PUT" : "POST");
+      const saved = result.scenario;
+      scenarioRows = editingScenarioId
+        ? scenarioRows.map(item => item.id === saved.id ? saved : item)
+        : [saved, ...scenarioRows];
+      clearScenarioDraft(); renderScenarios();
+      el("scenario-library-status").textContent = `Saved “${saved.name}” to PostgreSQL.`;
+    } catch (error) { el("scenario-library-status").textContent = error.message; }
+  });
+  el("scenario-draft-cancel").addEventListener("click", clearScenarioDraft);
   el("tests-model").addEventListener("change", () => {
     el("tests-run").disabled = running || starting || !el("tests-model").value;
   });

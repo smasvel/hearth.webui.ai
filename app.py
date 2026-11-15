@@ -68,6 +68,7 @@ from hearth.core import npu_request_lock
 from hearth.core import resource_guard
 from hearth.storage import model_resource_warnings
 from hearth.storage import model_metadata_store
+from hearth.storage import model_test_scenario_store
 from hearth.core import security_scan
 from hearth.storage import settings_store
 from hearth.storage import secret_store
@@ -85,6 +86,7 @@ users_store.init_db()
 agent_store.init_db()
 settings_store.init_db()
 model_metadata_store.init_db()
+model_test_scenario_store.init_db()
 try:
     model_metadata_store.record_service_status("hearth", "started", detail="Hearth started")
 except Exception:
@@ -3680,6 +3682,161 @@ def api_model_tests_list():
                              for job in _model_test_registry.list()]})
 
 
+def _validate_model_test_scenario(body):
+    if not isinstance(body, dict):
+        return None, 'Expected a scenario object.'
+    name = body.get('name')
+    prompt = body.get('prompt')
+    expected = body.get('expected_answer')
+    mode = body.get('match_mode', 'contains')
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
+        return None, 'Scenario name must contain 1–120 characters.'
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt.strip()) > 5000:
+        return None, 'Test question must contain 1–5,000 characters.'
+    if not isinstance(expected, str) or not expected.strip() or len(expected.strip()) > 1000:
+        return None, 'Expected answer must contain 1–1,000 characters.'
+    if mode not in ('contains', 'exact'):
+        return None, 'Choose contains or exact answer matching.'
+    enabled = body.get('enabled', True)
+    if not isinstance(enabled, bool):
+        return None, 'enabled must be a boolean.'
+    return {'name': name.strip(), 'prompt': prompt.strip(),
+            'expected_answer': expected.strip(), 'match_mode': mode,
+            'enabled': enabled}, None
+
+
+@app.get('/api/model-tests/scenarios')
+@admin_required
+def api_model_test_scenarios_list():
+    return jsonify({'scenarios': model_test_scenario_store.list_scenarios()})
+
+
+@app.post('/api/model-tests/scenarios')
+@admin_required
+def api_model_test_scenarios_create():
+    body, error = _validate_model_test_scenario(request.get_json(silent=True) or {})
+    if error:
+        return jsonify({'error': error}), 400
+    scenario = model_test_scenario_store.save_scenario(**body, created_by=session['user_id'])
+    return jsonify({'scenario': scenario}), 201
+
+
+@app.put('/api/model-tests/scenarios/<scenario_id>')
+@admin_required
+def api_model_test_scenarios_update(scenario_id):
+    if model_test_scenario_store.get_scenario(scenario_id) is None:
+        return jsonify({'error': 'Custom scenario not found.'}), 404
+    body, error = _validate_model_test_scenario(request.get_json(silent=True) or {})
+    if error:
+        return jsonify({'error': error}), 400
+    scenario = model_test_scenario_store.save_scenario(**body, scenario_id=scenario_id)
+    return jsonify({'scenario': scenario})
+
+
+@app.patch('/api/model-tests/scenarios/<scenario_id>')
+@admin_required
+def api_model_test_scenarios_enable(scenario_id):
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body.get('enabled'), bool):
+        return jsonify({'error': 'enabled must be a boolean.'}), 400
+    scenario = model_test_scenario_store.set_enabled(scenario_id, body['enabled'])
+    if scenario is None:
+        return jsonify({'error': 'Custom scenario not found.'}), 404
+    return jsonify({'scenario': scenario})
+
+
+@app.delete('/api/model-tests/scenarios/<scenario_id>')
+@admin_required
+def api_model_test_scenarios_delete(scenario_id):
+    if not model_test_scenario_store.delete_scenario(scenario_id):
+        return jsonify({'error': 'Custom scenario not found.'}), 404
+    return jsonify({'deleted': True})
+
+
+@app.post('/api/model-tests/scenario-assistant')
+@admin_required
+def api_model_test_scenario_assistant():
+    if _agent_tasks.busy() or any(job.get('status') in model_tests.ACTIVE
+                                  for job in _model_test_registry.list()):
+        return jsonify({'error': 'Wait for model tests and assigned agents to finish before chatting with the scenario assistant.'}), 409
+    body = request.get_json(silent=True) or {}
+    backend, model_id = body.get('backend'), body.get('model')
+    if backend not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm', 'opencode') or not isinstance(model_id, str):
+        return jsonify({'error': 'Choose a supported installed chat model for the scenario assistant.'}), 400
+    messages = body.get('messages')
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 16:
+        return jsonify({'error': 'Keep the assistant conversation to 1–16 messages.'}), 400
+    clean_messages = []
+    for message in messages:
+        if (not isinstance(message, dict) or message.get('role') not in ('user', 'assistant')
+                or not isinstance(message.get('content'), str) or len(message['content']) > 4000):
+            return jsonify({'error': 'Assistant messages must be short user or assistant text.'}), 400
+        clean_messages.append({'role': message['role'], 'content': message['content']})
+    if clean_messages[-1]['role'] != 'user':
+        return jsonify({'error': 'Send a user message to continue the scenario conversation.'}), 400
+    available = {(item.get('backend'), item.get('id')): item for item in _test_model_inventory()}
+    selected = available.get((backend, model_id))
+    if not selected or selected.get('loadable') is False:
+        return jsonify({'error': 'That model is no longer available.'}), 404
+    try:
+        target = {'backend': backend, 'id': model_id}
+        _test_load_model(target)
+        url, served_model, headers = _test_connection({'backend': backend, 'id': model_id})
+        system_message = {
+            'role': 'system',
+            'content': (
+                'You help an administrator design reusable model regression scenarios. '
+                'Discuss what behavior to test, then return exactly one JSON object and no '
+                'markdown with keys assistant_message and scenario. assistant_message is '
+                'a brief reply. scenario is null while clarification is needed; otherwise '
+                'it is an object with name, prompt, expected_answer, and match_mode. Make '
+                'the user prompt self-contained and safe. Keep expected_answer short and '
+                'specific. Use match_mode contains for a required phrase, or exact only for '
+                'a deterministic short answer. Never claim the scenario has been saved; the '
+                'administrator reviews and saves it separately.'
+            ),
+        }
+        request_body = {
+            'model': served_model,
+            'messages': advice_disclaimer.apply([system_message, *clean_messages]),
+            'temperature': 0.2,
+            'max_tokens': 900,
+            'stream': False,
+        }
+        request_body = model_test_profiles.apply(request_body, backend)
+        if backend == 'q38rocm':
+            request_body = q38rocm.prepare_request(request_body)
+        response = requests.post(url, json=request_body, headers=headers, timeout=(10, 180))
+        if response.status_code >= 400:
+            return jsonify({'error': f'Model request failed (HTTP {response.status_code}): {response.text[:600]}'}), 502
+        payload = response.json()
+        message = ((payload.get('choices') or [{}])[0].get('message') or {})
+        text = message.get('content') or message.get('reasoning_content') or ''
+        if not isinstance(text, str) or not text.strip():
+            return jsonify({'error': 'The selected model returned no text.'}), 502
+        parsed = None
+        candidate_text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.I)
+        try:
+            decoded = json.loads(candidate_text)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict):
+            candidate = decoded.get('scenario')
+            if isinstance(candidate, dict):
+                valid, validation_error = _validate_model_test_scenario(candidate)
+                if not validation_error:
+                    parsed = valid
+            reply = decoded.get('assistant_message')
+            reply = reply.strip() if isinstance(reply, str) and reply.strip() else 'Review the proposed scenario below.'
+        else:
+            reply = text.strip()[:2000]
+        return jsonify({'reply': reply, 'scenario': parsed})
+    except requests.RequestException as exc:
+        return jsonify({'error': f'Could not reach the selected model: {exc}'}), 503
+    except (ValueError, KeyError, TypeError, RuntimeError) as exc:
+        return jsonify({'error': f'Could not prepare the scenario assistant response: {exc}'}), 502
+
+
 @app.post('/api/model-tests')
 @admin_required
 def api_model_tests_start():
@@ -3694,6 +3851,13 @@ def api_model_tests_start():
     suite = body.get('suite', 'all')
     if suite not in model_tests.SUITES:
         return jsonify({'error': 'Choose a supported model test suite.'}), 400
+    scenarios = None
+    if suite == 'custom':
+        scenarios = model_test_scenario_store.list_scenarios(enabled_only=True)
+        if not scenarios:
+            return jsonify({'error': 'Save and enable at least one custom scenario before running this suite.'}), 400
+        if body.get('auto_repair', False):
+            return jsonify({'error': 'Automatic compatibility repair is not available for custom scenarios.'}), 400
     inventory = {(m.get('backend'), m.get('id')): m for m in _test_model_inventory()}
     targets = []
     seen = set()
@@ -3710,7 +3874,8 @@ def api_model_tests_start():
         targets.append({'backend': pair[0], 'id': pair[1]})
     try:
         job = _model_test_registry.start(targets, body.get('auto_repair', False),
-            _test_load_model, _test_connection, _test_context, suite=suite)
+            _test_load_model, _test_connection, _test_context, suite=suite,
+            scenarios=scenarios)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 409
     return jsonify(job), 202

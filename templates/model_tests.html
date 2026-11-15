@@ -51,6 +51,7 @@
         <button type="button" class="console-tab" role="tab" id="suite-tools-tab" aria-selected="false" aria-controls="model-tests" data-suite="tools">Tool-calling tests</button>
         <button type="button" class="console-tab" role="tab" id="suite-iq-tab" aria-selected="false" aria-controls="model-tests" data-suite="iq">Model IQ</button>
         <button type="button" class="console-tab" role="tab" id="suite-security-tab" aria-selected="false" aria-controls="model-tests" data-suite="security">Security testing</button>
+        <button type="button" class="console-tab" role="tab" id="suite-custom-tab" aria-selected="false" aria-controls="model-tests" data-suite="custom">Custom scenarios</button>
       </div>
       <section class="console-card model-test-panel" id="model-tests" aria-labelledby="model-tests-heading">
         <h2 id="model-tests-heading">Test progress and results</h2>
@@ -83,6 +84,36 @@
         </table></div>
       </section>
     </div>
+    <button id="scenario-assistant-toggle" class="scenario-assistant-toggle" type="button" aria-expanded="false" aria-controls="scenario-assistant-panel">Design a test with AI</button>
+    <aside id="scenario-assistant-panel" class="scenario-assistant-panel" role="dialog" aria-modal="false" aria-hidden="true" aria-labelledby="scenario-assistant-title" hidden inert>
+      <header class="scenario-assistant-header">
+        <div><h2 id="scenario-assistant-title">Test scenario assistant</h2><p class="hint">Draft a prompt and expected answer, then review before saving.</p></div>
+        <button id="scenario-assistant-close" class="icon-btn" type="button" aria-label="Close assistant">×</button>
+      </header>
+      <label class="scenario-assistant-model-label">Chat model
+        <select id="scenario-assistant-model" class="panel-input" aria-label="Chat model"><option value="">Choose a loaded model…</option></select>
+      </label>
+      <div id="scenario-assistant-log" class="scenario-assistant-log" role="log" aria-live="polite">
+        <p class="scenario-assistant-message assistant">Tell me what behavior you want to check. I can help shape it into a test question and an expected answer.</p>
+      </div>
+      <form id="scenario-assistant-chat-form" class="scenario-assistant-chat-form">
+        <textarea id="scenario-assistant-message" class="panel-input" rows="2" maxlength="4000" placeholder="Describe a behavior to test…" required></textarea>
+        <button id="scenario-assistant-send" class="panel-btn" type="submit">Send</button>
+      </form>
+      <form id="scenario-draft-form" class="scenario-draft-form" hidden>
+        <h3>Review the test scenario</h3>
+        <label>Name<input id="scenario-draft-name" class="panel-input" maxlength="120" required /></label>
+        <label>Test question<textarea id="scenario-draft-prompt" class="panel-input" rows="3" maxlength="5000" required></textarea></label>
+        <label>Expected answer<textarea id="scenario-draft-expected" class="panel-input" rows="2" maxlength="1000" required></textarea></label>
+        <label>Match rule<select id="scenario-draft-match" class="panel-input"><option value="contains">Response contains this answer</option><option value="exact">Response exactly matches this answer</option></select></label>
+        <div class="scenario-draft-actions"><button id="scenario-draft-save" class="panel-btn" type="submit">Save scenario</button><button id="scenario-draft-cancel" class="panel-btn secondary" type="button">Clear draft</button></div>
+      </form>
+      <section class="scenario-library-section" aria-labelledby="scenario-library-title">
+        <h3 id="scenario-library-title">Saved custom scenarios</h3>
+        <div id="scenario-library-status" class="hint" role="status"></div>
+        <div id="scenario-library-list" class="scenario-library-list"></div>
+      </section>
+    </aside>
   </main></div>
   <div id="toast" class="users-toast" style="display:none;"></div>
   <script src="{{ asset('system_stats.js') }}"></script>

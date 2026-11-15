@@ -1,7 +1,7 @@
 // Search lives inside each model picker; the native select remains the form value.
 (() => {
   const ids = ["model-select", "settings-default-model", "tests-model", "tests-history",
-    "agent-model", "agent-edit-model", "agent-resume-model"];
+    "agent-model", "agent-edit-model", "agent-resume-model", "scenario-assistant-model"];
   for (const id of ids) {
     const select = document.getElementById(id);
     if (!select) continue;

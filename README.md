@@ -525,16 +525,28 @@ the large-code context input), the long OpenCode coding workflows as their own
 tab, extra tool-behavior checks (forced named choices, none-when-tool-requested,
 tool-error follow-up, the blocked-shell contract, and context-overflow handling
 (rejection or truncation within the reported token window)), tool-calling tests,
-a 12-question reasoning benchmark, and 10 model security behavior probes.
+a 12-question reasoning benchmark, 10 model security probes, and investment and
+healthcare advice disclaimer checks that show response previews.
 The reasoning benchmark presents each original question separately, checks it against
 a fixed answer key, and reports points correct. It is not a human IQ measurement:
 human IQ scores depend on standardized, normed psychological assessments and must not
 be inferred from this model benchmark. The security suite probes response behavior
-for injection, disclosure, unsafe requests, privacy, and unauthorized actions; it
-does not scan the host or prove the model or deployment secure. Tool calls are never
+for injection, disclosure, unsafe requests, privacy, and unauthorized actions; its
+investment and healthcare advice checks verify the disclaimer and show each model response preview.
+It does not scan the host or prove the model or deployment secure. Tool calls are never
 executed by these suites. Results and individual check details are saved with the
 existing model-test reports. An upstream 502/503 or unreachable backend is kept as
 the failure; dependent checks are marked skipped until the backend is available.
+Administrators can use **Design a test with AI** on this page to discuss a regression
+idea with a chosen loaded chat model, review the drafted question and expected
+answer, then save it in PostgreSQL. The model selector lists only currently loaded,
+supported chat models, including available hosted opencode.ai models; search the list
+by typing part of a model name. Saved scenarios can be edited, enabled, or
+deleted. The floating chat stays open across page refreshes in the same browser tab;
+closing it removes the panel and leaves the page unobscured.
+The **Custom scenarios** suite runs enabled entries using a contains or exact
+answer match and includes the expected answer and response preview in each saved report.
+Scenario changes apply to future runs; active reports retain their recorded results.
 For KoboldCPP, the core, OpenCode, and comprehensive suites also check that the
 generated OpenCode model config advertises tool availability. This catches cases
 where direct endpoint tool tests pass but OpenCode would withhold agent tools. The

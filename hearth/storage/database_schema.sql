@@ -183,6 +183,21 @@ CREATE TABLE IF NOT EXISTS model_test_runs (
 COMMENT ON TABLE model_test_runs IS
     'Persisted model evaluation reports and active run state; downloadable reports are serialized from this table.';
 CREATE INDEX IF NOT EXISTS idx_model_test_runs_started ON model_test_runs(started_at DESC);
+CREATE TABLE IF NOT EXISTS model_test_scenarios (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    expected_answer TEXT NOT NULL,
+    match_mode TEXT NOT NULL DEFAULT 'contains' CHECK (match_mode IN ('contains', 'exact')),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_test_scenarios_enabled
+    ON model_test_scenarios(enabled, updated_at DESC);
+COMMENT ON TABLE model_test_scenarios IS
+    'User-authored model test prompts and expected answers, managed from the Model tests page.';
 CREATE TABLE IF NOT EXISTS model_resource_warnings (
     backend TEXT NOT NULL,
     model_id TEXT NOT NULL,

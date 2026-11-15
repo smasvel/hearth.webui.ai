@@ -917,11 +917,14 @@ reasoning and security in one report), core checks, the OpenCode coding workflow
 extra tool-behavior checks, tool calling, model reasoning, and model security behavior.
 The reasoning tab asks 12 original questions one at a time and
 scores points correct; it is a comparison benchmark, not a human IQ score. The
-security tab runs 10 safe behavioral probes and reports how the model handles them;
-it does not scan the host or certify security. Test prompts are sent individually,
+security tab runs 10 safe behavioral probes plus investment and healthcare advice
+disclaimer checks. Both checks show the model's response preview and verify a disclaimer
+and referral to a qualified professional; the suite does not scan the host or certify security.
+Test prompts are sent individually,
 and generated tools/actions are not executed. Results are saved as model-test reports.
 Choose **All tests** to run the selected model's complete compatibility checks,
-reasoning questions, and security probes together in one report. Tool checks already
+reasoning questions, and security probes plus both advice disclaimer checks together in one
+report. Tool checks already
 included in the compatibility suite are not duplicated.
 For KoboldCPP, core, OpenCode, and comprehensive runs also report whether generated
 OpenCode model metadata enables agent tools. This distinguishes endpoint tool-call
@@ -1076,6 +1079,17 @@ The Model tests dropdown also selects Ornith by default when available, and allo
 choosing another installed model. Select the repair option on the Model tests
 page to enable repairs for a run; the option appears on the full run and on the
 core, coding-workflow, and extra-tool tabs, which all support the verified recipe.
+
+The Model tests page also has a **Design a test with AI** chat. Its selector lists
+only currently loaded, supported chat models, including available hosted opencode.ai
+models, and its list can be searched by model name. If left open, the chat stays open across page refreshes in the same browser tab. Closing it hides the panel and leaves the page unobscured.
+Discuss the behavior to check, review the suggested test question and expected answer, and save the scenario
+to PostgreSQL. Administrators can edit, enable, disable, or delete saved scenarios.
+Select **Custom scenarios** to run enabled scenarios using their contains or exact
+answer match rule. Test questions and expected answers are stored in Hearth's existing
+PostgreSQL database, and each report keeps the scenario details and model response used
+for that run. Restart Hearth after updating so it initializes the scenario table and
+serves the updated Model tests page.
 
 Administrators can open **Browse history** to search and page through visits from chat
 research and agent tasks, including URLs returned by configured agent research providers

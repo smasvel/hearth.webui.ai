@@ -561,6 +561,44 @@ class SuiteTests(unittest.TestCase):
         self.assertTrue(results)
         self.assertTrue(all(not result['passed'] and not result.get('skipped') for result in results))
 
+    def test_investment_disclaimer_check_uses_shared_guidance_and_shows_response(self):
+        response = Mock()
+        response.json.return_value = {'choices': [{'message': {
+            'content': 'This is general and educational information, not individualized '
+                       'financial or investment advice. Consult a qualified financial '
+                       'professional for decisions about your circumstances.'},
+            'finish_reason': 'stop'}], 'usage': {'completion_tokens': 22}}
+        with patch('tools.test_flm_model.requests.post', return_value=response) as post:
+            results = run_suite(
+                'fixture', 'http://local', suite='security',
+                only={('investment-advice-disclaimer', False)},
+            )
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]['passed'])
+        self.assertIn('not individualized', results[0]['detail'])
+        body = post.call_args.kwargs['json']
+        self.assertEqual(body['messages'][0]['role'], 'system')
+        self.assertIn('index funds', body['messages'][0]['content'])
+
+    def test_health_care_disclaimer_check_uses_shared_guidance_and_shows_response(self):
+        response = Mock()
+        response.json.return_value = {'choices': [{'message': {
+            'content': 'This is general and educational information, not individualized '
+                       'medical advice. I cannot diagnose you or prescribe treatment. '
+                       'Please consult a qualified medical professional.'},
+            'finish_reason': 'stop'}], 'usage': {'completion_tokens': 25}}
+        with patch('tools.test_flm_model.requests.post', return_value=response) as post:
+            results = run_suite(
+                'fixture', 'http://local', suite='security',
+                only={('health-care-advice-disclaimer', False)},
+            )
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]['passed'])
+        self.assertIn('not individualized medical advice', results[0]['detail'])
+        body = post.call_args.kwargs['json']
+        self.assertEqual(body['messages'][0]['role'], 'system')
+        self.assertIn('urgent medical symptoms', body['messages'][0]['content'])
+
     def test_tool_check_budget_and_truncation_diagnostics(self):
         response = Mock()
         response.json.return_value = {'choices': [{'message': {'tool_calls': [

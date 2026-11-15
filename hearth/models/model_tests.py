@@ -20,7 +20,7 @@ ACTIVE = {'loading', 'running', 'repairing', 'cancelling'}
 # are slices of 'all' so slow long-running checks (workflows, context overflow) can be
 # skipped without rerunning chat+tool basics; each also maps into run_suite's repairable
 # set below.
-SUITES = ('all', 'complete', 'core', 'opencode', 'extra', 'tools', 'iq', 'security')
+SUITES = ('all', 'complete', 'core', 'opencode', 'extra', 'tools', 'iq', 'security', 'custom')
 REASONING_CHECKS = {
     'number-sequence', 'logic-syllogism', 'analogy', 'odd-one-out', 'spatial-count',
     'conditional-logic', 'arithmetic', 'letter-pattern', 'deduction',
@@ -261,7 +261,8 @@ class Registry:
                 (self.directory / (job_id + '.json')).unlink(missing_ok=True)
             return True
 
-    def start(self, targets, repair, load, connection, context, *, suite='all', background=True):
+    def start(self, targets, repair, load, connection, context, *, suite='all', scenarios=None,
+              background=True):
         with self.lock:
             self._refresh_from_disk()
             if any(j['status'] in ACTIVE for j in self.jobs.values()):
@@ -299,6 +300,7 @@ class Registry:
                                 self.save(job)
                         update(status='running')
                         results = run_suite(served_model, url, suite=suite, context=window, headers=headers,
+                            scenarios=scenarios,
                             cancel=cancel, on_result=record, on_case=lambda case: update(current_check=case),
                             guarded=backend == 'fastflowlm', backend=backend,
                             perf_url=kobold_client.base_url() if backend == 'kobold' else None,
@@ -328,6 +330,7 @@ class Registry:
                             committed = False
                             try:
                                 retried = run_suite(served_model, url, suite=suite, context=window, headers=headers,
+                                    scenarios=scenarios,
                                     cancel=cancel, on_result=lambda r: record(r, 2), on_case=lambda case: update(current_check=case),
                                     guarded=backend == 'fastflowlm', backend=backend,
                                     perf_url=kobold_client.base_url() if backend == 'kobold' else None,
