@@ -38,15 +38,13 @@ actions, losses, or harm resulting from use of the platform or reliance on model
 
 ## Architecture at a glance
 
-<p><img src="docs/architecture.svg" alt="Animated Hearth architecture overview: client nodes,
+<p><img src="docs/architecture.svg" alt="Architecture overview: client nodes,
 the Flask core with chat, model lifecycle, tests, memory, research and voice, six local inference
 backends, the Caddy gateway, persistence stores, the agentic workflow layer, and the opencode.ai
 hosted-models column with encrypted key storage, session routing, and usage allowances. Dashed
-flow lines and traveling packets animate the chat, inference, hosted-model, and model-storage
-paths; node glows pulse to highlight each layer." width="100%"></p>
+flow lines connect chat, inference, hosted-model, and model-storage paths." width="100%"></p>
 
-<p align="center"><em>Animated SVG overview — flows and packets move; falls back to a static
-picture where animation is unavailable.</em></p>
+<p align="center"><em>System architecture overview.</em></p>
 
 <details>
 <summary>Diagram source (Mermaid)</summary>
@@ -83,7 +81,6 @@ flowchart LR
         KO["🟣 KoboldCPP"]
         FLM["🔴 FastFlowLM"]
         Q38["🟡 q38rocm<br/>Radeon Vulkan"]
-        COMFY["🎨 ComfyUI"]
     end
 
     subgraph CLOUD["☁️ Hosted Models (opencode.ai)"]
@@ -158,7 +155,7 @@ models and switch which loaded model you're chatting with. Hearth started as an 
 front-end and now drives **six** local inference backends behind one chat UI — [LM Studio](https://lmstudio.ai), [Lemonade / Ryzen AI NPU](https://github.com/lemonade-sdk/lemonade),
 [vLLM](https://github.com/vllm-project/vllm), [KoboldCPP](https://github.com/LostRuins/koboldcpp),
 the q38rocm Qwen 3.8 server, and [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) (the Ryzen AI NPU runtime run
-standalone) — plus ComfyUI for image generation — and the opencode.ai hosted catalog
+standalone) — plus local image generation — and the opencode.ai hosted catalog
 (OpenCode Go subscription or pay-as-you-go) routed per conversation through its
 OpenAI-compatible endpoint. Local backends are exposed to LAN coding tools
 (Continue, OpenCode) over their own authenticated Caddy reverse-proxy ports (see **Help**).
@@ -193,7 +190,7 @@ guidance applies across the supported backends and models.
 | Personal AI memory | Cross-chat memory retrieval with local embeddings and stored conversation history |
 | Web research | Relevance-ranked web search, broad configurable Playwright page retrieval, ad/tracker blocking, read-only chat browser research, per-agent DuckDuckGo/Exa/Firecrawl/Parallel/Tavily/TinyFish MCP tools, and searchable AI browser history |
 | Voice assistant | Microphone input, speech transcription, and spoken responses with configured voice components |
-| Creative tools | Image and video generation through separately configured ComfyUI workflows |
+| Creative tools | Image generation through Lemonade; local Wan 2.2 TI2V-5B text-to-video through Lemonade's bundled Vulkan sd.cpp |
 | Learning | In-chat practice tests and quizzes |
 | Hosted models (opencode.ai) | Free `-free` tier models, the $10/month OpenCode Go subscription, or pay-as-you-go credits — usable for chat, codebase-RAG chat, and agentic tasks; plan selection and encrypted key storage in Settings | Settings → opencode.ai |
 | Performance monitoring | Request metrics, token usage, generation speed, and a dedicated live developer logs page |
@@ -263,12 +260,11 @@ administrator to find models, then use **Models** to load and evaluate them.
    show all sizes again.
 5. **Downloads** opens with backend search fields empty. Catalogs and suggestions that
    support browsing load automatically; search for a model to narrow results or search
-   backends that require a query. During first-time Ubuntu setup, the installer offers
-   to download `Ornith-1.5-9B-GGUF` before starting the service when Lemonade is reachable.
-   It shows the catalog
-   size, free disk space, available RAM, and an example transfer time, then requires
-   your confirmation. You can decline or pass `--skip-model-download` and download it
-   here later. Follow progress and logs, inspect active downloads, or
+   backends that require a query. Fresh Ubuntu setup automatically downloads the
+   required audio, image, and video models: Whisper-Tiny, kokoro-v1, Anima-Turbo, and
+   Wan 2.2. Allow about 13 GB for these model assets; setup stops if a required
+   download fails. The separate `Ornith-1.5-9B-GGUF` chat-model download is optional
+   and can be skipped with `--skip-model-download`. Follow progress and logs, inspect active downloads, or
    cancel a download.
 6. In **Downloads**, search Lemonade’s catalog and Hugging Face GGUF repositories together;
    a typed query includes newly published GGUF repos, even before Lemonade adds them to
@@ -320,10 +316,9 @@ the hosted OpenCode model provider:
 | LM Studio | Local chat models; Hugging Face GGUF search and direct model/repository references | CPU or GPU as supported by LM Studio; models load and unload through Hearth |
 | Lemonade | Local chat models; Lemonade catalog and Hugging Face GGUF search | CPU, GPU, or Ryzen AI NPU according to recipe and hardware; Hearth manages loading, context, and downloads |
 | vLLM | Local chat models; Hugging Face causal language-model repositories | Uses the configured vLLM server; the documented host setup runs it on CPU |
-| KoboldCPP | Local chat models; Hugging Face GGUF search and downloads | CPU or GPU according to the installed build; Hearth uses its compatibility shim for tool calls |
+| KoboldCPP | Local chat models; Hugging Face GGUF search and downloads | CPU or GPU according to the installed build; Hearth uses its compatibility shim for tool calls and preserves assistant text when repairing parallel calls |
 | FastFlowLM | Local NPU chat models; FastFlowLM catalog and exact model tags | AMD Ryzen AI NPU; runs as a separate host service |
 | q38rocm | Local Qwen 3.8 model; the Qwen GGUF download is listed under its Hugging Face repository ID | One model served at a time by the local RADV/Vulkan service; see the [q38rocm setup](deploy/FIRST_TIME_INSTALL.md#open-the-application-and-configure-a-model-backend) |
-| ComfyUI | Image and video generation workflows | Separate media-generation service; configured for Hearth's creative tools rather than the chat-model lifecycle |
 | OpenCode (`opencode.ai`) | Hosted chat and coding models discovered from the connected account | Pay-as-you-go or OpenCode Go; credentials are stored encrypted, and models remain remotely managed |
 
 **Search all backends** searches the six local language-model backends. It also checks
@@ -438,11 +433,14 @@ shared load preflight keeps the current model loaded when available RAM can fit 
 incoming model's known weight size plus 1 GB headroom. Otherwise Hearth evicts the
 current model first; backend-specific model-size checks still apply.
 Embedding, speech, image, and video models have separate purposes from chat models.
+KoboldCPP stays unloaded at Hearth startup, even if it is saved as the LAN default;
+load a KoboldCPP model explicitly from the Models page when you want to use it.
 
 On **Models**, each model label includes its maximum supported context-token count
 when the backend reports or Hearth can determine it. This helps compare model
 limits before loading or chatting; the actual usable context may be lower when a
-runtime or backend setting applies a smaller value. Chat models on Lemonade, LM
+runtime or backend setting applies a smaller value. Token counts use grouped digits
+and wrap cleanly on mobile screens. Chat models on Lemonade, LM
 Studio, vLLM, and KoboldCPP also show a **ctx-size** field. KoboldCPP reads its
 maximum from the installed GGUF metadata. Saving the field stores the window for
 that model and reloads it when it is already loaded; the saved value is reused on
@@ -727,10 +725,9 @@ buffers long-lived event streams.
 If OpenCode or an agent reports a context overflow, check the model's **loaded** context in
 Models: its maximum supported context can be much larger. Use the card's **ctx-size** field
 to load a larger supported window; agent startup applies the saved ctx-size automatically.
-For every backend and model, generated OpenCode context and compaction budgets use the
-currently loaded context size. When a model is unloaded, Hearth uses its saved per-model
-ctx-size or the backend default. Hearth does not inflate a loaded window from the model's
-larger advertised maximum.
+Generated OpenCode context and compaction budgets use the selected model's currently
+loaded context size. When unloaded, Hearth uses saved per-model ctx-size or the backend
+default; it does not inflate a loaded window from the model's larger advertised maximum.
 Refresh the generated LAN or Tailscale config from Help and restart OpenCode after changing
 the loaded window. Continue for VS Code receives each model's advertised loaded context;
 its own client settings control compaction. Every model still has a finite loaded window.
@@ -825,7 +822,7 @@ Tailscale Serve or tailnet access policy.
 | Web research | Automatic search detection, relevance-ranked search, configurable large-batch Playwright page retrieval, ad/tracker blocking, and searchable AI browser history | [Web search](#web-search-and-browsing); Browse history |
 | Voice | Microphone transcription, spoken replies, and hands-free conversation with configured speech models | [Voice](#voice-translation-images-and-video) |
 | Translation | Local voice, image, and video translation with configured compatible models | Chat translation controls |
-| Image and video creation | Image generation and short video workflows through ComfyUI | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
+| Image and video creation | Local Anima-Turbo image generation and Wan 2.2 TI2V-5B Q4 video generation | [Image generation](#voice-translation-images-and-video); [Video generation](#voice-translation-images-and-video) |
 | Study and practice | Built-in and user-created quiz decks, generated questions, and state DMV practice | Quizzes; DMV |
 | Performance and diagnostics | Live requests, recent request filters, token usage, throughput, latency, backend/client attribution, supported NPU statistics, and live CPU/RAM/disk/temperature readings on Chat, Downloads, Live logs, and Model tests | Metrics; system statistics |
 | User administration | Accounts, roles, password resets, per-user agent workflow access, per-user data, gateway-token controls, and admin-only login/password audit history including the acting administrator | Users |
@@ -835,7 +832,7 @@ Tailscale Serve or tailnet access policy.
 | Self-hosted operation | Clean PostgreSQL provisioning, application DDL initialization, first admin setup, and systemd boot startup | [Installation](deploy/FIRST_TIME_INSTALL.md) |
 
 Feature availability follows the components you install and configure. Speech,
-translation, embeddings, ComfyUI media generation, coding agents, gateway access,
+translation, embeddings, coding agents, gateway access,
 and NPU inference each require their corresponding runtime, models, or host setup.
 The experimental custom FLM conversion path remains unavailable without its required
 validation and kernel/ABI artifacts.
@@ -1139,11 +1136,12 @@ the matching bundle and run `deploy/install-release.ps1` on Windows or
 dependencies, prepares PostgreSQL, and asks which backend endpoint to configure.
 The installer verifies the PDF reader dependency used by Hearth Chat attachments.
 Linux setup also builds the isolated coding-agent container; agent execution is
-Linux-only. You can enter a different URL or API key during setup. Setup offers
-optional installation of LM Studio headless (llmster) and Lemonade (Ubuntu only).
-Model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
-for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
-remote runtime.
+Linux-only. You can enter a different URL or API key during setup. Release bundles
+offer optional installation of LM Studio headless (llmster) and Lemonade (Ubuntu only);
+model weights remain separate downloads there. Use `--install-backends lmstudio lemonade`
+for unattended release-bundle setup or `--skip-backend-install` to preserve an existing
+or remote runtime. The Ubuntu first-time installer has a separate required Lemonade
+setup that downloads its supported media models.
 
 After setup, run `deploy/start-hearth.ps1` on Windows or
 `bash deploy/start-hearth.sh` on macOS/Linux. Open `https://localhost:5443`; the
@@ -1172,9 +1170,11 @@ start after a reboot, even before login. Schedules are saved in PostgreSQL and r
 if a run became due while Hearth was stopped, it runs once after startup and skips
 missed intervals. With `--no-service`, scheduled runs start only while you run
 Hearth manually. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for
-first-run account setup. Optional runtime installation is offered during setup;
-the Ubuntu installer can download the suggested Lemonade model with your confirmation
-before starting Hearth.
+first-run account setup. The Ubuntu installer requires Lemonade and downloads the
+required audio, image, and video models before Hearth starts; LM Studio is optional.
+The initial Ornith chat-model download is optional too. Pass `--skip-model-download`
+to skip that offer while keeping the required media downloads. See
+[required first-install media models](#required-first-install-media-models-and-optional-runtimes).
 
 Before pushing this repository, activate the versioned secret check in each clone:
 `git config --local core.hooksPath .githooks`. The pre-push hook scans the files and
@@ -1380,19 +1380,35 @@ screens while the typing area keeps its full width. Longer messages grow the edi
 up to a viewport-based limit, then scroll inside it. The keyboard shortcut shown
 above the editor follows the multi-line input setting. No setup is required.
 
-- **Voice:** microphone transcription, spoken replies, and hands-free conversation
-  with voice activity detection, using configured speech models. FFmpeg is required
-  for audio processing.
+- **Voice:** microphone transcription and hands-free recording use Lemonade's
+  Whisper-Tiny speech model; spoken replies use kokoro-v1. Hearth loads both at startup
+  and restores them if Lemonade evicts them for inactivity. FFmpeg is required for audio
+  processing.
 - **Translation:** voice, image, and video translation through configured compatible
   models, including the supported local Gemma workflow.
-- **Images:** generation through a configured ComfyUI image workflow, with images
-  displayed in chat and saved locally.
-- **Video:** short video generation through a configured ComfyUI video workflow.
-  The documented workflows include SD-Turbo for images and Wan 2.1 for video.
+- **Images:** local generation through the image model loaded in Lemonade. Anima-Turbo
+  is downloaded and loaded by the Ubuntu first-time installer, then restored at Hearth
+  startup and after Lemonade evicts it for inactivity. Flux.2 Klein 4B failed
+  generation with both Lemonade's `sd-cpp` and TheNoise runtimes here and was removed.
+  Hearth keeps each Lemonade image model's configured size and step defaults. Generated
+  images are displayed in chat and saved locally, with controls to copy the image, share it,
+  or download it.
+- **Video:** text-to-video uses Wan 2.2 TI2V-5B Q4 through the sd.cpp runtime bundled in
+  the Lemonade container. The first request downloads about 8 GB of model files into
+  Lemonade's shared Hugging Face cache; later requests reuse them. The tested low-memory
+  profile renders a 480×320 WebM clip (17 frames at 16 fps) and displays it in chat.
+  Generation runs on CPU by default; larger GPUs can be selected with `HEARTH_WAN22_BACKEND`.
+  The Models page shows Wan's download/readiness state and offers a download action when
+  files are missing. The CLI loads weights for each generation and releases them afterward,
+  so the card reports **ready · loads per request** instead of a persistent loaded state.
+  Clips include controls to copy a local link, share, or download. Prompts and model files
+  stay local; Hearth does not use an external inference API or ComfyUI.
+  See [local video setup](deploy/FIRST_TIME_INSTALL.md#local-image-and-video-generation).
 
-Install the corresponding runtimes and model weights separately, or use the optional
-runtime installation during setup. Generation speed,
-resolution, and supported inputs depend on the selected workflow and hardware.
+The Ubuntu first-time installer downloads the required speech, image, and video models.
+For other installation paths, install the needed runtime and model weights separately.
+Generation speed, resolution, and supported inputs depend on the selected workflow and
+hardware.
 
 ## Practice tests and quizzes
 
@@ -1936,17 +1952,21 @@ behavior superseded by later fixes; use this README for current setup and usage.
 Agent assignments now group the task name, goal, technical requirements, persistent memory notes, and HTML result requirements before advanced execution controls. HTML requirements accept a plain-text template with `TITLE`, `SECTIONS`, `COMPONENTS`, `INTERACTIONS`, and `ACCESSIBILITY` lines. The execution page presents activity as a live terminal-style stream while retaining the rendered HTML result preview. Technical requirements and memory notes are included in the account-scoped agent RAG context and durable `agent_memory.md` indexing.
 
 
-### Optional automatic model runtime installation
+### Required first-install media models and optional runtimes
 
-Both first-time and release installers ask whether to install LM Studio, Lemonade,
-both, or skip (the default for an existing or remote backend). For unattended setup:
+The release installer offers LM Studio, Lemonade, both, or skip. The Ubuntu first-time
+installer installs Lemonade by default because it downloads the supported media
+models automatically: Whisper-Tiny, kokoro-v1, Anima-Turbo, and Wan 2.2. It also loads
+Anima-Turbo after download, and Hearth loads it again at startup when available. Reserve about
+13 GB of cache space plus download headroom; setup fails if any required asset is missing.
+LM Studio remains optional. For unattended first-time setup:
 
 ```bash
-bash deploy/install-first-time.sh --install-backends lmstudio lemonade
-# Release bundles use the same options:
+bash deploy/install-first-time.sh --install-backends lemonade
+# Release bundles use their separate optional runtime options:
 bash deploy/install-release.sh --backend lmstudio --install-backends lmstudio
-# Preserve an existing runtime or use a remote server:
-bash deploy/install-first-time.sh --skip-backend-install
+# Add optional LM Studio:
+bash deploy/install-first-time.sh --install-backends lemonade lmstudio
 # Skip either of the optional installer-created service units:
 bash deploy/install-first-time.sh --skip-backend-broker --skip-lmstudio-server
 ```
@@ -1967,10 +1987,11 @@ Lemonade installation uses Docker and starts the official
 container at `http://localhost:13305`. Lemonade stores models in Docker volumes;
 when `~/lemonade-hf-cache` exists, the installer mounts that existing cache so
 migrated models appear without copying hundreds of gigabytes. Otherwise, it uses
-the `lemonade-cache` named volume. The installer does not install a
-Snap or host package and does not download model weights. Configure the local URL
-in Hearth Settings (the release installer saves its selected endpoint), then
-download models through Hearth's Downloads page. On Linux the container uses host
+the `lemonade-cache` named volume. The release installer does not install a Snap or
+host package and does not download model weights; configure its selected endpoint,
+then download models through Hearth's Downloads page. The Ubuntu first-time installer
+also uses this Docker runtime, then automatically downloads Whisper-Tiny, kokoro-v1,
+Anima-Turbo, and Wan 2.2 as required media assets. On Linux the container uses host
 networking so Hugging Face downloads use the host's working DNS and internet route;
 its API remains available at `localhost:13305`.
 On Linux hosts with AMD Ryzen AI NPU support, the installer passes
@@ -1987,8 +2008,11 @@ replacing the existing container.
 An explicitly configured remote URL is preserved even when local runtimes are installed.
 
 
-For noninteractive setup, use `--skip-backend-install` or an explicit
-`--install-backends` selection; closed input skips the optional runtime prompt.
+For noninteractive first-time setup, use `--install-backends lemonade` (add `lmstudio`
+to install both). The first-time installer cannot skip Lemonade because it must install
+the required media models. Release installers accept `--skip-backend-install` or an
+explicit backend selection. Release installers accept `--no-api-key` to skip the secret
+prompt while preserving
 Release installers accept `--no-api-key` to skip the secret prompt while preserving
 an existing key, and `--project-name NAME` with `--postgres-port PORT` to isolate
 an additional installation. Blank API key input also preserves an existing key.
@@ -2140,8 +2164,8 @@ container, so Help → Connect over Tailscale reports this route automatically.
 
 
 First-time setup validates that the configured application database URL selects
-PostgreSQL, along with database ports and service availability, before prompting
-for optional runtime installation. Without systemd, the shell installer reports
+PostgreSQL, along with database ports and service availability, before offering the
+optional LM Studio runtime (Lemonade is required). Without systemd, the shell installer reports
 `--no-service` before installing packages. Both setup paths refuse to create a fresh
 database over an unconfigured installation with populated legacy local database
 files; configure the existing installation's `DATABASE_URL` first. Runtime and agent-image

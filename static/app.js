@@ -952,17 +952,88 @@
     // use case for embedding external images in chat text, and this keeps it simple/safe.
     html = html.replace(
       /!\[video:\s*([^\]]*)\]\((\/api\/videos\/[a-zA-Z0-9_.-]+)\)/g,
-      '<video src="$2" class="chat-video" controls playsinline preload="metadata" aria-label="$1"></video><a class="video-download" href="$2" download>Download MP4</a>'
+      '<div class="generated-media" data-media-type="video"><video src="$2" class="chat-video" controls playsinline preload="metadata" aria-label="$1"></video><div class="generated-media-actions"><button type="button" class="media-copy-btn">Copy link</button><button type="button" class="media-share-btn">Share</button><a class="video-download" href="$2" download>Download video</a></div></div>'
     );
     html = html.replace(
       /!\[([^\]]*)\]\((\/api\/images\/[a-zA-Z0-9_.-]+)\)/g,
-      '<img src="$2" alt="$1" class="chat-image" loading="lazy" />'
+      '<div class="generated-media" data-media-type="image"><img src="$2" alt="$1" class="chat-image" loading="lazy" /><div class="generated-media-actions"><button type="button" class="media-copy-btn">Copy image</button><button type="button" class="media-share-btn">Share</button><a class="video-download" href="$2" download>Download image</a></div></div>'
     );
     html = html.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
     html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
     return html;
   }
+
+  // Generated media stays on Hearth. Copy places image pixels on the clipboard;
+  // videos use a copyable local link because browsers do not commonly support
+  // video/webm clipboard payloads. Share uses native file sharing when available.
+  messagesEl.addEventListener("click", async (event) => {
+    const button = event.target.closest?.(".media-copy-btn, .media-share-btn");
+    if (!button) return;
+    const card = button.closest(".generated-media");
+    const media = card?.querySelector("img, video");
+    const url = media?.currentSrc || media?.src;
+    if (!url) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    const isImage = card.dataset.mediaType === "image";
+    const mediaUrl = new URL(url, location.href).href;
+    const loadBlob = async () => {
+      const response = await fetch(url, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`Media request failed (${response.status})`);
+      return response.blob();
+    };
+    const imageAsPng = async (blob) => {
+      const bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      canvas.getContext("2d").drawImage(bitmap, 0, 0);
+      bitmap.close();
+      return new Promise((resolve, reject) => canvas.toBlob(
+        (file) => file ? resolve(file) : reject(new Error("Could not prepare image")),
+        "image/png"
+      ));
+    };
+    try {
+      if (button.classList.contains("media-copy-btn")) {
+        if (isImage && navigator.clipboard?.write && window.ClipboardItem) {
+          const png = await imageAsPng(await loadBlob());
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+          button.textContent = "Copied image";
+        } else {
+          await navigator.clipboard.writeText(mediaUrl);
+          button.textContent = "Copied link";
+        }
+      } else {
+        const title = isImage ? "Generated image" : "Generated video";
+        if (!navigator.share) {
+          await navigator.clipboard.writeText(mediaUrl);
+          button.textContent = "Link copied";
+        } else {
+          const mimeType = isImage ? "image/png" : "video/webm";
+          const shareProbe = new File([], `hearth-generated.${isImage ? "png" : "webm"}`, { type: mimeType });
+          if (navigator.canShare?.({ files: [shareProbe] })) {
+            const blob = await loadBlob();
+            const fileData = isImage ? await imageAsPng(blob) : blob;
+            const file = new File([fileData], `hearth-generated.${isImage ? "png" : "webm"}`, { type: mimeType });
+            await navigator.share({ title, files: [file] });
+          } else {
+            await navigator.share({ title, url: mediaUrl });
+          }
+          button.textContent = "Shared";
+        }
+      }
+      setTimeout(() => { button.textContent = originalText; button.disabled = false; }, 1800);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        button.disabled = false;
+        return;
+      }
+      button.disabled = false;
+      addSystemMessage(`Could not ${button.classList.contains("media-copy-btn") ? "copy" : "share"} this media: ${error.message}`, true);
+    }
+  });
 
   // GFM-style pipe tables, e.g.:
   //   | Model | Params | Speed |
@@ -1422,7 +1493,7 @@
   async function runChatTurn(text, preservedReply = "", regenerationFallback = null, documents = []) {
     const isSecurityScan = ["/security-scan", "/security scan"].includes(text.toLowerCase());
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
-    const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "Wan 2.1 T2V 1.3B" : ""));
+    const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "gemini-omni-1.1-flash" : ""));
     if (!model) { addSystemMessage("Load a model first.", true); return; }
     if (!currentConversationId) currentConversationId = crypto.randomUUID();
     const id = currentConversationId;

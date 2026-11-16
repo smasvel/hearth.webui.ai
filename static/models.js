@@ -104,7 +104,7 @@
     { key: "kobold", label: "KoboldCPP" },
     { key: "q38rocm", label: "q38rocm (Qwen 3.8 27B)" },
     { key: "fastflowlm", label: "FastFlowLM (NPU)" },
-    { key: "comfyui", label: "ComfyUI — Image & Video" },
+    { key: "wan22", label: "Video generation" },
   ];
   const LABEL = Object.fromEntries(GROUPS.map((g) => [g.key, g.label]));
   const NON_CHAT = ["embeddings", "transcription", "tts", "image", "video"];
@@ -163,7 +163,7 @@
 
   function renderSummary() {
     const loaded = models.filter((m) => m.backend !== "opencode" && m.state === "loaded");
-    const totalGb = models.reduce((s, m) => s + (m.size_gb || 0), 0);
+    const onDisk = models.filter((m) => m.backend !== "opencode" && (m.backend !== "wan22" || m.assets_ready));
     const chip = (val, label) =>
       `<div class="model-sum-chip"><div class="model-sum-val">${val}</div><div class="model-sum-label">${esc(label)}</div></div>`;
     let loadedHtml = "";
@@ -174,18 +174,19 @@
     }
     summaryEl.innerHTML =
       `<div class="model-sum-chips">` +
-      chip(models.filter((m) => m.backend !== "opencode").length, "on disk") +
+      chip(onDisk.length, "on disk") +
       chip(loaded.length, "loaded") +
-      chip(fmtSize(models.filter((m) => m.backend !== "opencode").reduce((s, m) => s + (m.size_gb || 0), 0)) || "—", "total size") +
+      chip(fmtSize(onDisk.reduce((s, m) => s + (m.size_gb || 0), 0)) || "—", "total size") +
       chip(models.filter(m => m.resource_warning || m.load_status?.state === "error").length, "with warnings") +
       `</div>` + loadedHtml;
   }
 
   function card(m) {
     const loaded = m.state === "loaded";
-    const managedAutomatically = m.backend === "comfyui";
+    const isWanVideoModel = m.backend === "wan22";
+    const managedAutomatically = false;
     const externallyManaged = m.externally_managed === true;
-    const isBusy = m.id === busyModelId;
+    const isBusy = m.id === busyModelId || m.download_state === "downloading";
     const size = fmtSize(m.size_gb);
     const metaParts = [m.publisher, m.quantization, m.type, size].filter(Boolean);
     const meta = metaParts.map(esc).join(" · ");
@@ -194,9 +195,20 @@
     c.dataset.name = (m.id || "").toLowerCase();
     const unavailable = m.loadable === false;
     const downloadIncomplete = m.download_incomplete === true;
-    const badge = isBusy
+    const wanBadge = isWanVideoModel
+      ? m.download_state === "downloading"
+        ? `<span class="badge loading">downloading model…</span>`
+        : !m.runtime_available
+          ? `<span class="badge not-loaded">runtime unavailable</span>`
+          : m.assets_ready
+            ? `<span class="badge ready">ready · loads per request</span>`
+            : m.download_state === "error"
+              ? `<span class="badge not-loaded">download failed</span>`
+              : `<span class="badge not-loaded">model files missing</span>`
+      : null;
+    const badge = isBusy && !isWanVideoModel
       ? `<span class="badge loading">${esc(busyLabel)}…</span>`
-      : `<span class="badge ${loaded ? "loaded" : "not-loaded"}">${managedAutomatically ? (loaded ? "loaded · ready" : "service unavailable") : (loaded ? "loaded" : (downloadIncomplete ? "download incomplete" : (unavailable ? "converted · kernels pending" : "not loaded")))}</span>`;
+      : wanBadge || `<span class="badge ${loaded ? "loaded" : "not-loaded"}">${managedAutomatically ? (loaded ? "loaded · ready" : "service unavailable") : (loaded ? "loaded" : (downloadIncomplete ? "download incomplete" : (unavailable ? "converted · kernels pending" : "not loaded")))}</span>`;
     c.innerHTML =
       `<div class="model-card2-main">
         <div class="model-card2-name" title="${esc(m.id)}">${esc(m.id)}</div>
@@ -218,7 +230,8 @@
       const contextLabel = document.createElement("span");
       contextLabel.className = "model-context-label";
       const isModelMax = m.context_window_source === "model_max";
-      contextLabel.textContent = `${isModelMax ? "max " : "ctx "}${contextTokens.toLocaleString()} tokens`;
+      const labelPrefix = isModelMax ? "Max context" : "Context";
+      contextLabel.textContent = `${labelPrefix}: ${new Intl.NumberFormat(undefined).format(contextTokens)} tokens`;
       const sourceText = {
         model_max: "Maximum context reported by the model backend.",
         loaded_runtime: "Current loaded runtime context; the model may support a larger window.",
@@ -321,7 +334,23 @@
     // slow cold-start (vLLM/KoboldCPP/FastFlowLM can take 60-90+s) can't be double-clicked
     // into a second, conflicting request — the card visibly shows why the buttons are inert
     // instead of just silently no-op'ing like the old `busy` guard alone did.
-    if (externallyManaged) {
+    if (isWanVideoModel) {
+      const note = document.createElement("span");
+      note.className = "hint";
+      if (!m.runtime_available) {
+        note.textContent = "The sd.cpp runtime in the Lemonade container is unavailable.";
+      } else if (m.download_state === "downloading") {
+        note.textContent = "Downloading the model, VAE, and text encoder into Lemonade's shared cache…";
+      } else if (m.assets_ready) {
+        note.textContent = "Ready. sd.cpp loads the weights for each video generation, then releases them.";
+      } else {
+        note.textContent = m.load_error || `About ${m.expected_size_gb} GB is downloaded on first use.`;
+      }
+      actions.appendChild(note);
+      if (m.runtime_available && !m.assets_ready && m.download_state !== "downloading") {
+        actions.appendChild(btn("Download model", "primary", () => prepareWan22Model(m), isBusy));
+      }
+    } else if (externallyManaged) {
       const note = document.createElement("span");
       note.className = "hint";
       actions.appendChild(note);
@@ -379,6 +408,26 @@
       }, isBusy));
     }
     return c;
+  }
+
+  async function prepareWan22Model(model) {
+    if (busy) return;
+    const stopTicker = startBusyOp(model.id, "Preparing", "Starting Wan 2.2 model download…");
+    try {
+      const res = await fetch("/api/models/wan22/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "could not start the model download");
+      toast("Wan 2.2 files are downloading. This card will show when the model is ready.");
+    } catch (err) {
+      toast(`Could not prepare Wan 2.2: ${err.message}`, true);
+    } finally {
+      endBusyOp(stopTicker);
+      fetchModels();
+    }
   }
   async function setModelThinking(model, input) {
     input.disabled = true;

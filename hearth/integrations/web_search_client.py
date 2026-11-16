@@ -2,7 +2,7 @@
 needed — verified live before adopting it: `DDGS().text(query, max_results=N)` returns
 real, current results as `[{title, href, body}, ...]`).
 
-Auto-detected via should_search_web(), the same style as comfyui_client's image-request
+Auto-detected via should_search_web(), following the lightweight media-intent detector
 detection — no manual per-message toggle anymore (there used to be one; removed once
 this existed, since asking the user to flip a switch is exactly the kind of thing
 automatic detection should make unnecessary). Deliberately biased toward *not*

@@ -224,6 +224,74 @@ def offer_initial_model_download(input_fn=input):
     return True
 
 
+REQUIRED_MEDIA_MODELS = ('Whisper-Tiny', 'kokoro-v1', 'Anima-Turbo')
+
+
+def download_required_media_models():
+    """Install all supported audio/image/video assets before completing setup."""
+    from hearth.backends import lemonade_client as lemonade
+    from hearth.backends import video_generation
+    from hearth.storage import model_metadata_store
+
+    try:
+        lemonade.search_catalog(REQUIRED_MEDIA_MODELS[0])
+    except Exception as exc:
+        raise RuntimeError('Required Lemonade runtime is unavailable at ' + lemonade.base_url() + '.') from exc
+
+    pending = []
+    catalog_entries = {}
+    for model_id in REQUIRED_MEDIA_MODELS:
+        matches = lemonade.search_catalog(model_id)
+        model = next((entry for entry in matches if entry.get('id') == model_id), None)
+        if model is None:
+            raise RuntimeError(f'Required media model {model_id} is missing from the Lemonade catalog.')
+        catalog_entries[model_id] = model
+        if not model.get('downloaded'):
+            pending.append((model_id, model.get('size_gb')))
+    video_entry = video_generation.model_inventory_entry()
+    if not video_entry.get('assets_ready'):
+        pending.append(('Wan 2.2 TI2V-5B Q4_K_S (diffusion model, VAE, and text encoder)',
+                        video_entry.get('expected_size_gb', 7.5)))
+
+    print('Required first-install media models: Whisper-Tiny, kokoro-v1, Anima-Turbo, and Wan 2.2.')
+    if pending:
+        known_bytes = sum(size * 1_000_000_000 for _, size in pending
+                          if isinstance(size, (int, float)) and math.isfinite(size) and size > 0)
+        free_bytes = shutil.disk_usage(Path.home()).free
+        print(f'Pending downloads: {len(pending)}; estimated known download size: {known_bytes / 1e9:.1f} GB; '
+              f'{free_bytes / 1e9:.1f} GB free on the home filesystem.')
+        print('The required downloads start automatically; ensure the configured model cache has enough space.')
+
+    for model_id in REQUIRED_MEDIA_MODELS:
+        model = catalog_entries[model_id]
+        if model.get('downloaded'):
+            print(f'{model_id} already downloaded.')
+            continue
+        print(f'Downloading required model {model_id}...')
+        completed = False
+        for progress in lemonade.pull_catalog_model(model_id):
+            if progress.get('done'):
+                completed = True
+                break
+            if progress.get('percent') is not None:
+                print(f"  {progress.get('file') or model_id}: {progress['percent']}%", flush=True)
+        if not completed:
+            raise RuntimeError(f'Lemonade did not confirm completion of required media model {model_id}.')
+        model_metadata_store.mark_model_downloaded('lemonade', model_id)
+
+    print('Downloading required Wan 2.2 video model assets...')
+    paths = video_generation._download_model_files()
+    missing = [path for path in paths if not path]
+    if missing:
+        raise RuntimeError('Wan 2.2 download finished without all required model files.')
+    # Verify the CLI exists now, so the installer cannot complete with weights that
+    # the installed Lemonade runtime cannot use.
+    video_generation._find_sd_cli()
+    print(f'Loading default image model {lemonade.IMAGE_MODEL_ID}...')
+    lemonade.load_model(lemonade.IMAGE_MODEL_ID)
+    print('Required audio, image, and video models are ready.')
+
+
 def validate_existing_installation():
     existing = dotenv_values(ROOT / '.env')
     if not existing.get('DATABASE_URL') and has_sqlite_data():
@@ -237,10 +305,10 @@ def main():
     parser.add_argument('--project-name', help='Optional separate Compose project name')
     parser.add_argument('--rebuild-agent-image', action='store_true',
                         help='Rebuild the isolated agent image even if it is already installed')
-    parser.add_argument('--skip-model-download', action='store_true',
-                        help='Do not offer the initial Lemonade model download')
+    parser.add_argument('--skip-model-download', '--skip-chat-model-download', dest='skip_model_download', action='store_true',
+                        help='Skip the optional initial chat model; required audio, image, and video downloads still run')
     from tools import backend_installer
-    backend_installer.add_arguments(parser)
+    backend_installer.add_arguments(parser, require_lemonade=True)
     args = parser.parse_args()
     if not 1 <= args.postgres_port <= 65535:
         parser.error('--postgres-port must be between 1 and 65535')
@@ -252,9 +320,11 @@ def main():
         raise RuntimeError('Run deploy/install-first-time.sh to install missing host dependencies first.')
     subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL)
     validate_existing_installation()
-    backends = backend_installer.select_backends(args)
-    if backends:
-        backend_installer.install_backends(backends)
+    backends = backend_installer.select_backends(args, require_lemonade=True)
+    if 'lemonade' not in backends:
+        raise RuntimeError('Lemonade is required for first-install audio, image, and video models. '
+                           'Do not use --skip-backend-install; install it with --install-backends lemonade.')
+    backend_installer.install_backends(backends)
     install_agent_runtime(args.rebuild_agent_image)
     values = prepare_environment(args.postgres_port)
     # This process must use the selected configuration even if the caller exported
@@ -267,11 +337,12 @@ def main():
     user_count = initialize_application_storage()
     from hearth.core.local_tls import ensure_certificate
     ensure_certificate(ROOT / 'certs')
+    download_required_media_models()
     if not args.skip_model_download:
         try:
             offer_initial_model_download()
         except Exception as exc:
-            print(f'Initial model download failed: {exc}. Use Downloads after setup.')
+            print(f'Optional initial chat model download failed: {exc}. Use Downloads after setup.')
     if user_count == 0:
         print('No users exist. The first page visit will prompt you to create the administrator account.')
     else:

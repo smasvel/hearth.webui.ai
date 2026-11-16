@@ -55,7 +55,7 @@ class KoboldToolCompatibilityTests(unittest.TestCase):
 
     def test_proxy_repairs_nonstream_parallel_response(self):
         upstream = Mock(status_code=200, headers={"content-type": "application/json"}, content=b"original")
-        upstream.json.return_value = {"choices": [{"message": {"tool_calls": [{
+        upstream.json.return_value = {"choices": [{"message": {"content": "Checking both locations.", "tool_calls": [{
             "id": "kobold-call", "type": "function",
             "function": {"name": "get_weather", "arguments": '{"city":"Boston"}'},
         }]}, "finish_reason": "tool_calls"}]}
@@ -67,6 +67,8 @@ class KoboldToolCompatibilityTests(unittest.TestCase):
         calls = response.get_json()["choices"][0]["message"]["tool_calls"]
         self.assertEqual([json.loads(call["function"]["arguments"]) for call in calls],
                          [{"city": "Boston"}, {"city": "Paris"}])
+        self.assertEqual(response.get_json()["choices"][0]["message"]["content"],
+                         "Checking both locations.")
 
     def test_proxy_withholds_tools_on_explicit_text_only_followup(self):
         payload = {"choices": [{"message": {"content": "4 tests passed"}, "finish_reason": "stop"}]}

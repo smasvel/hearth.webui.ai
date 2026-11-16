@@ -25,7 +25,6 @@ with contextlib.ExitStack() as stack:
                                         [dict(m) for m in models if m['backend'] == key]))
         stack.enter_context(patch.object(client, 'base_url', return_value='http://127.0.0.1:9999'))
     stack.enter_context(patch.object(app.q38rocm, 'list_models', return_value=[]))
-    stack.enter_context(patch.object(app.comfyui, 'video_model_info', return_value={'id': 'media', 'backend': 'comfyui', 'type': 'video'}))
     stack.enter_context(patch.object(app._model_test_registry, 'list', return_value=[]))
     stack.enter_context(patch.object(app.users_store, 'get_user_by_id', return_value={'id': 'ui-test', 'username': 'ui-test', 'role': 'admin'}))
     stack.enter_context(patch.dict(app.app.config, {'SESSION_COOKIE_SECURE': False}))

@@ -165,7 +165,6 @@ def _repair_completion(payload: dict, body: dict) -> bool:
     calls, repaired = _normalize_calls(message.get("tool_calls") or [], _parallel_contract(body))
     if repaired:
         message["tool_calls"] = calls
-        message["content"] = None
         choice["finish_reason"] = "tool_calls"
     return repaired
 

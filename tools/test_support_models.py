@@ -1,4 +1,4 @@
-"""Live endpoint checks for downloaded embedding, speech and video models.
+"""Live endpoint checks for downloaded embedding and speech models.
 
 Run after the chat matrix so support checks never compete for model ownership.
 Only local admin API actions are used for chat/embedding/voice handoffs.
@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import requests
 import urllib3
 import app
-from hearth.backends import comfyui_client
 from hearth.backends import lemonade_client
 
 urllib3.disable_warnings()
@@ -72,9 +71,6 @@ def run(after_job, output):
     results = []
     inventory = api(client, '/api/models')['models']
     targets = [m for m in inventory if m.get('type') in ('embeddings', 'transcription', 'tts', 'video')]
-    checkpoint = Path(comfyui_client.COMFYUI_MODELS_DIR) / 'checkpoints' / comfyui_client.CHECKPOINT
-    if checkpoint.is_file() and checkpoint.stat().st_size:
-        targets.append({'backend': 'comfyui', 'id': comfyui_client.CHECKPOINT, 'type': 'image'})
     # TTS before STT permits a real speech round trip rather than silence-only ASR.
     targets.sort(key=lambda m: {'embeddings': 0, 'tts': 1, 'transcription': 2, 'image': 3, 'video': 4}[m['type']])
     spoken = None
@@ -113,19 +109,6 @@ def run(after_job, output):
                 text = lemonade_client.transcribe_audio(spoken, 'sample.mp3')
                 assert 'validation' in text.lower() and 'complete' in text.lower(), text
                 result['transcript'] = text
-            elif model['type'] == 'image':
-                generated = comfyui_client.generate_image('A red ball on a plain white background.',
-                    width=256, height=256, steps=2, seed=5829)
-                info = probe_media(generated['image_bytes'], '.png', still=True)
-                picture = info['streams'][0]
-                assert (picture['width'], picture['height']) == (256, 256) and picture['codec_name'] == 'png'
-                result['image_bytes'] = len(generated['image_bytes'])
-            else:
-                generated = comfyui_client.generate_video('A red ball on a plain white background.',
-                    frames=5, steps=12, seed=5829, timeout=3600)
-                info = probe_media(generated['video_bytes'], '.mp4')
-                assert any(s['codec_type'] == 'video' for s in info['streams'])
-                result['video_bytes'] = len(generated['video_bytes'])
             result['passed'] = True
         except Exception as exc:
             result.update(passed=False, error=str(exc)[:1500])

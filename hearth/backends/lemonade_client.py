@@ -86,8 +86,8 @@ def loaded_image_model() -> str | None:
     except requests.RequestException:
         return None
     for entry in resp.json().get("all_models_loaded", []):
-        if entry.get("type") == "image" and entry.get("loaded"):
-            return entry.get("model_name")
+        if (entry.get("type") in ("image", "images") or "image" in (entry.get("labels") or [])) and entry.get("loaded"):
+            return entry.get("model_name") or entry.get("model_id")
     return None
 
 
@@ -95,39 +95,54 @@ def generate_image(
     prompt: str,
     *,
     model: str,
-    width: int = 512,
-    height: int = 512,
-    steps: int = 4,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
 ) -> dict:
-    """Generate an image with Lemonade's OpenAI-compatible image endpoint."""
+    """Generate an image with Lemonade's OpenAI-compatible image endpoint.
+
+    Omit size and steps by default so image models with different recipe defaults
+    (for example Anima-Turbo's 1024px output and eight-step recipe) retain their
+    configured generation settings. Callers may explicitly override either value.
+    """
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    if width and height:
+        payload["size"] = f"{width}x{height}"
+    if steps:
+        payload["steps"] = steps
     try:
         resp = requests.post(
             f"{base_url()}/v1/images/generations",
             headers=_auth_headers(),
-            json={
-                "model": model,
-                "prompt": prompt,
-                "size": f"{width}x{height}",
-                "n": 1,
-                "steps": steps,
-                "response_format": "b64_json",
-            },
+            json=payload,
             timeout=(10, 900),
         )
         resp.raise_for_status()
         item = (resp.json().get("data") or [{}])[0]
         encoded = item.get("b64_json")
+        mime_type = item.get("mime_type") or item.get("mimeType") or "image/png"
         if encoded:
             image_bytes = base64.b64decode(encoded)
         elif item.get("url"):
             image_resp = requests.get(item["url"], timeout=60)
             image_resp.raise_for_status()
             image_bytes = image_resp.content
+            mime_type = image_resp.headers.get("Content-Type", mime_type).split(";", 1)[0]
         else:
             raise LemonadeError("Image backend returned neither b64_json nor an image URL.")
-    except (requests.RequestException, ValueError, TypeError) as exc:
+    except requests.RequestException as exc:
+        detail = ""
+        if getattr(exc, "response", None) is not None:
+            detail = f" (HTTP {exc.response.status_code}: {exc.response.text[:500]})"
+        raise LemonadeError(f"Image generation with '{model}' failed{detail}: {exc}") from exc
+    except (ValueError, TypeError) as exc:
         raise LemonadeError(f"Image generation with '{model}' failed: {exc}") from exc
-    return {"image_bytes": image_bytes, "model": model}
+    return {"image_bytes": image_bytes, "model": model, "mime_type": mime_type}
 
 
 def _infer_type_from_labels(labels: list[str] | None) -> str:
@@ -425,7 +440,10 @@ def list_models() -> list[dict]:
             continue
         incomplete_download = _catalog_entry_incomplete_download(m)
         cached = _catalog_entry_is_cached(m)
-        if (m.get("recipe") != "flm" and not m.get("downloaded")
+        catalog_type = _infer_type_from_labels(m.get("labels"))
+        is_image_model = (catalog_type == "image" or m.get("type") in ("image", "images")
+                          or m.get("recipe") in ("sd-cpp", "stable-diffusion-cpp"))
+        if (m.get("recipe") != "flm" and not is_image_model and not m.get("downloaded")
                 and not cached and not incomplete_download):
             continue
         model_id = m.get("id")
@@ -507,7 +525,9 @@ def list_models() -> list[dict]:
                 or model_id in deleted_model_ids):
             continue
         raw_type = entry.get("type") or "llm"
-        entry_type = "embeddings" if raw_type == "embedding" else raw_type
+        entry_type = "image" if raw_type in ("images", "image-generation") else raw_type
+        if entry_type == "embedding":
+            entry_type = "embeddings"
         models.append(
             {
                 "id": model_id,
@@ -1513,6 +1533,7 @@ def embed(texts: list[str]) -> list[list[float]]:
 # loaded - confirmed live, same coexistence guarantee embed() already relies on above.
 STT_MODEL_ID = os.environ.get("LEMONADE_STT_MODEL_ID", "Whisper-Tiny")
 TTS_MODEL_ID = os.environ.get("LEMONADE_TTS_MODEL_ID", "kokoro-v1")
+IMAGE_MODEL_ID = os.environ.get("LEMONADE_IMAGE_MODEL_ID", "Anima-Turbo")
 DEFAULT_TTS_VOICE = os.environ.get("LEMONADE_TTS_VOICE", "af_heart")
 
 
@@ -1520,7 +1541,7 @@ def _ensure_voice_model_loaded(model_id: str) -> None:
     """Loads a voice model on first use, same lazy-load pattern
     _ensure_embedding_model_loaded() in app.py uses for the embedding model. Whisper
     specifically needs one real fix baked in here, not left to Lemonade's own default:
-    its default backend on this machine is ROCm, which - like the ComfyUI and llama.cpp
+    its default backend on this machine is ROCm, which - like the llama.cpp
     GPU crashes documented elsewhere in this README - doesn't actually work here (the
     whisper-server process crashes immediately, exit code 134, confirmed live). The CPU
     backend works correctly and is plenty fast for Whisper-Tiny/Base-sized models, so
@@ -1538,6 +1559,16 @@ def _ensure_voice_model_loaded(model_id: str) -> None:
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise LemonadeError(f"Failed to load voice model '{model_id}': {exc}") from exc
+
+
+def _ensure_image_model_loaded(model_id: str = IMAGE_MODEL_ID) -> None:
+    """Keep the default image-generation model ready after install and app restart."""
+    if is_model_loaded(model_id):
+        return
+    try:
+        load_model(model_id)
+    except LemonadeError as exc:
+        raise LemonadeError(f"Failed to load image model '{model_id}': {exc}") from exc
 
 
 def _convert_to_wav(audio_bytes: bytes) -> bytes:

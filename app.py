@@ -48,7 +48,8 @@ from hearth.content import quiz_content
 from hearth.core import session_cookie
 from hearth.storage import quiz_store
 from hearth.backends import flm_conversion
-from hearth.backends import comfyui_client as comfyui
+from hearth.backends import media_intent
+from hearth.backends import video_generation
 from hearth.backends import lemonade_client as lemonade
 from hearth.backends import lmstudio_client as lms
 from hearth.backends import vllm_client as vllm
@@ -85,6 +86,7 @@ memory_store.init_db()
 users_store.init_db()
 agent_store.init_db()
 settings_store.init_db()
+settings_store.clear_removed_media_api_credentials()
 model_metadata_store.init_db()
 model_test_scenario_store.init_db()
 try:
@@ -932,10 +934,9 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
 
 
 def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model: str, backend, is_revision: bool = False) -> dict:
-    """Turns a casual chat ask ("draw me a cat in a wizard hat") into a proper SD-Turbo
-    txt2img prompt via the already-loaded chat model, instead of handing the user's raw
-    sentence straight to the diffusion model. Two concrete accuracy problems this fixes:
-    conversational filler ("can you please draw me...") burns tokens the tiny SD-Turbo
+    """Turns a casual chat ask ("draw me a cat in a wizard hat") into a detailed image
+    prompt via the already-loaded chat model, instead of handing the user's raw sentence
+    straight to the image model. Conversational filler ("can you please draw me...") burns
     text encoder has no use for, and a bare one-line ask under-specifies composition/
     style/lighting that a distilled model needs spelled out to stay on-subject. Grounds
     the rewrite in the last few turns of chat context too, so a follow-up like "make it
@@ -961,7 +962,7 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
     )
     if is_revision:
         # The raw "prompt" here is feedback ("not clear", "the face is wrong"), not a
-        # fresh description - on its own it's useless to SD-Turbo. The conversation
+        # fresh description - on its own it's not a useful image prompt. The conversation
         # excerpt below carries the previous image's alt-text prompt, which is what
         # actually anchors the rewrite; this just tells the model how to use it.
         instruction += (
@@ -1050,24 +1051,27 @@ def _stream_image_reply(
     # existing "thinking" panel (reasoning_content) rather than adding new frontend UI:
     # it already auto-opens live and auto-closes the moment a real content delta arrives.
     image_model = lemonade.loaded_image_model()
-    renderer_name = image_model or "sd-turbo (ComfyUI fallback)"
+    renderer_name = image_model or "Lemonade image model (not loaded)"
+    renderer_backend = "lemonade"
     status_chunk = {"choices": [{"delta": {
         "reasoning_content": f"Generating image with {renderer_name}... enhancing the prompt first, then rendering."
     }}]}
     yield f"data: {json.dumps(status_chunk)}\n\n"
     enhanced = _enhance_image_prompt(raw_request, context_messages, model, backend, is_revision=is_revision)
     try:
-        result = (
-            lemonade.generate_image(enhanced["prompt"], model=image_model)
-            if image_model
-            else comfyui.generate_image(enhanced["prompt"], negative_prompt=enhanced["negative_prompt"])
-        )
-    except (lemonade.LemonadeError, comfyui.ComfyUIError) as exc:
+        if image_model:
+            result = lemonade.generate_image(enhanced["prompt"], model=image_model)
+        else:
+            raise lemonade.LemonadeError(
+                "No Lemonade image model is loaded. Load a supported local image model from the Models page."
+            )
+    except lemonade.LemonadeError as exc:
         yield f"data: {json.dumps({'error': f'Image generation failed: {exc}'})}\n\n"
         return
     duration = time.monotonic() - start_time
 
-    filename = f"{uuid.uuid4().hex}.png"
+    extension = {"image/jpeg": "jpg", "image/webp": "webp"}.get(result.get("mime_type"), "png")
+    filename = f"{uuid.uuid4().hex}.{extension}"
     (IMAGES_DIR / filename).write_bytes(result["image_bytes"])
     content = f"![{enhanced['prompt']}](/api/images/{filename})"
 
@@ -1081,41 +1085,40 @@ def _stream_image_reply(
         content,
         duration=duration,
         model=renderer_name,
-        backend="lemonade" if image_model else "comfyui",
+        backend=renderer_backend,
     )
 
 
 def _stream_video_reply(context_messages: list[dict], raw_request: str, model: str,
                         backend, conversation_id: str):
     start_time = time.monotonic()
-    yield f"data: {json.dumps({'choices': [{'delta': {'reasoning_content': 'Creating a clear AI scene and a stabilized cinematic camera move. Fast coherent mode does not synthesize independent subject movement.'}}]})}\n\n"
-    prompt = re.sub(
-        r"^\s*(?:please\s+)?(?:generate|create|make|render|produce)\s+(?:(?:a|an)\s+)?(?:short\s+)?(?:video|movie|clip|animation)\s+(?:of\s+)?",
-        "", raw_request, flags=re.IGNORECASE,
-    ).strip() or raw_request
-    prompt = (
-        f"{prompt}. Clear recognizable subject, coherent scene, natural motion, stable camera, "
-        "consistent shapes and colors, sharp focus"
-    )
-    try:
-        result = comfyui.generate_fast_video(
-            prompt,
-            negative_prompt=(
-                "blurry, abstract color wash, unrecognizable subject, distorted, low detail, "
-                "flicker, text, watermark"
-            ),
+    status_chunk = {"choices": [{"delta": {
+        "reasoning_content": (
+            "Preparing Wan 2.2 TI2V-5B. The first request downloads about 8 GB of model files, "
+            "then renders a short local video using Lemonade's sd.cpp runtime."
         )
-    except comfyui.ComfyUIError as exc:
+    }}]}
+    yield f"data: {json.dumps(status_chunk)}\n\n"
+    try:
+        result = video_generation.generate_video(raw_request)
+    except video_generation.VideoGenerationError as exc:
         yield f"data: {json.dumps({'error': f'Video generation failed: {exc}'})}\n\n"
         return
-    duration = time.monotonic() - start_time
-    filename = f"{uuid.uuid4().hex}.mp4"
+
+    filename = f"{uuid.uuid4().hex}.webm"
     (VIDEOS_DIR / filename).write_bytes(result["video_bytes"])
-    content = f"![video: {prompt}](/api/videos/{filename})"
+    content = f"![video:Wan 2.2 generated clip](/api/videos/{filename})"
+    duration = time.monotonic() - start_time
     yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
     yield "data: [DONE]\n\n"
-    chat_store.add_message(conversation_id, "assistant", content, duration=duration,
-                           model="SD-Turbo fast coherent video", backend="comfyui")
+    chat_store.add_message(
+        conversation_id,
+        "assistant",
+        content,
+        duration=duration,
+        model=result["model"],
+        backend="lemonade-sd-cpp",
+    )
 
 
 def _remember_exchange(user_id: str, conversation_id: str, user_text: str | None,
@@ -1597,10 +1600,7 @@ def api_restart_hearth():
 @app.get("/downloads")
 @admin_required
 def downloads_page():
-    return render_template(
-        "downloads.html", username=session.get("username"),
-        video_model=comfyui.video_model_info(),
-    )
+    return render_template("downloads.html", username=session.get("username"))
 
 
 @app.get("/flm-converter")
@@ -2243,7 +2243,10 @@ def api_list_models():
         m["backend"] = "q38rocm"
         m["enable_thinking"] = _q38rocm_model_thinking_overrides().get(m.get("id"), False)
     models += q38_models
-    models.append(comfyui.video_model_info())
+    # Wan's sd.cpp CLI loads weights per generation rather than remaining resident
+    # behind a Lemonade model slot. Expose it in inventory with its cache/readiness
+    # status without reporting it as a chat model or falsely claiming it is loaded.
+    models.append(video_generation.model_inventory_entry())
     # Per-model context the admin saved from the Models page. Backends only report what is
     # currently loaded (or their own default), so without this an unloaded model would lose
     # the chosen window on the next load. Also what the Models page edits and what the
@@ -4447,12 +4450,6 @@ def api_unload_model():
         except lemonade.LemonadeError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True})
-    if comfyui.owns_model(identifier):
-        try:
-            comfyui.unload_model(identifier)
-        except comfyui.ComfyUIError as exc:
-            return jsonify({"error": str(exc)}), 502
-        return jsonify({"ok": True})
     try:
         lms.unload_model(identifier)
     except lms.LMStudioError as exc:
@@ -4562,6 +4559,13 @@ def api_download_model():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/models/wan22/prepare")
+@admin_required
+def api_prepare_wan22_model():
+    state = video_generation.start_model_download()
+    return jsonify({"state": state}), 202 if state == "downloading" else 200
 
 
 _MODEL_BACKEND_INFO = {
@@ -5301,7 +5305,7 @@ def api_test_settings():
         ok, message = _test_caddy(port, caddy["bearer_token"], path, host=ts_ip)
     else:
         return jsonify({
-            "error": "'target' must be lmstudio, lemonade, vllm, opencode, kobold, q38rocm, fastflowlm, "
+        "error": "'target' must be lmstudio, lemonade, vllm, opencode, kobold, q38rocm, fastflowlm, "
                      "or a caddy_*/tailscale_* variant",
         }), 400
     return jsonify({"ok": ok, "message": message})
@@ -5427,7 +5431,6 @@ def api_update_settings():
             settings_store.set(key, (body.get(key) or "").strip())
     if body.get("opencode_api_clear") is True:
         settings_store.set("opencode_api_key", None)
-
     # Checkbox-backed boolean arrives as JSON true/false, not a string — stored as "true"/
     # "false" text (settings_store is a plain string key/value store) so _settings_snapshot's
     # `(... or "true") == "true"` check stays a simple or-else-default check.
@@ -5882,8 +5885,10 @@ def api_voice_transcribe():
     if not audio_bytes:
         return jsonify({"error": "empty audio"}), 400
     try:
-        text = fastflowlm.transcribe_audio(audio_bytes)
-    except fastflowlm.FastFlowLMError as exc:
+        text = lemonade.transcribe_audio(
+            audio_bytes, filename=audio_file.filename or "recording.webm"
+        )
+    except lemonade.LemonadeError as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify({"text": text})
 
@@ -6015,35 +6020,32 @@ def api_generate_image():
         return jsonify({"error": "'conversation_id' is required"}), 400
 
     user_id = session["user_id"]
-    chat_store.ensure_conversation(conversation_id, user_id, "sd-turbo (ComfyUI)", prompt)
+    image_model = lemonade.loaded_image_model()
+    renderer_name = image_model or "Lemonade image model (not loaded)"
+    renderer_backend = "lemonade"
+    chat_store.ensure_conversation(conversation_id, user_id, renderer_name, prompt)
     chat_store.add_message(conversation_id, "user", prompt)
 
     start_time = time.monotonic()
-    image_model = lemonade.loaded_image_model()
     try:
-        result = (
-            lemonade.generate_image(
+        if image_model:
+            result = lemonade.generate_image(
                 prompt,
                 model=image_model,
-                steps=body.get("steps") or 4,
-                width=body.get("width") or 512,
-                height=body.get("height") or 512,
+                steps=body.get("steps") or None,
+                width=body.get("width") or None,
+                height=body.get("height") or None,
             )
-            if image_model
-            else comfyui.generate_image(
-                prompt,
-                negative_prompt=(body.get("negative_prompt") or "").strip(),
-                steps=body.get("steps") or 2,
-                width=body.get("width") or 512,
-                height=body.get("height") or 512,
-                seed=body.get("seed") or None,
+        else:
+            raise lemonade.LemonadeError(
+                "No Lemonade image model is loaded. Load a supported local image model from the Models page."
             )
-        )
-    except (lemonade.LemonadeError, comfyui.ComfyUIError) as exc:
+    except lemonade.LemonadeError as exc:
         return jsonify({"error": str(exc)}), 502
     duration = time.monotonic() - start_time
 
-    filename = f"{uuid.uuid4().hex}.png"
+    extension = {"image/jpeg": "jpg", "image/webp": "webp"}.get(result.get("mime_type"), "png")
+    filename = f"{uuid.uuid4().hex}.{extension}"
     (IMAGES_DIR / filename).write_bytes(result["image_bytes"])
 
     content = f"![{prompt}](/api/images/{filename})"
@@ -6052,15 +6054,15 @@ def api_generate_image():
         "assistant",
         content,
         duration=duration,
-        model=image_model or "sd-turbo (ComfyUI)",
-        backend="lemonade" if image_model else "comfyui",
+        model=renderer_name,
+        backend=renderer_backend,
     )
     return jsonify({
         "ok": True,
         "content": content,
         "duration": duration,
         "seed": result.get("seed"),
-        "model": image_model or "sd-turbo (ComfyUI)",
+        "model": renderer_name,
     })
 
 
@@ -6138,7 +6140,7 @@ def api_start_chat():
     security = user_text.strip().lower() in {"/security-scan", "/security scan"}
     if security and session.get("role") != "admin":
         return jsonify({"error": "admin access required"}), 403
-    if not body.get("model") and not security and not comfyui.looks_like_video_request(user_text):
+    if not body.get("model") and not security and not media_intent.looks_like_video_request(user_text):
         return jsonify({"error": "'model' is required"}), 400
     user_id = session["user_id"]
     # Serialize registration with persistence so repeat clicks cannot start two turns.
@@ -6205,12 +6207,12 @@ def api_chat():
     is_security_scan = (last_user_message or "").strip().lower() in {
         "/security-scan", "/security scan"
     }
-    video_request = comfyui.looks_like_video_request(last_user_message)
+    video_request = media_intent.looks_like_video_request(last_user_message)
     if not model and not is_security_scan and not video_request:
         return jsonify({"error": "'model' is required"}), 400
     chat_store.ensure_conversation(
         conversation_id, user_id,
-        model or ("Wan 2.1 T2V 1.3B" if video_request else "system-security-scan"),
+        model or ("Wan 2.2 TI2V-5B" if video_request else "system-security-scan"),
         last_user_message,
     )
     if last_user_message is not None and not (job and job.user_saved):
@@ -6248,11 +6250,11 @@ def api_chat():
     # Checked before the system-message/memory-recall block below since none of that
     # (language hint, cross-chat memory, web search) is relevant to an image request;
     # context_messages keeps the pre-injection conversation for prompt-enhancement context.
-    image_request = not video_request and comfyui.looks_like_image_request(last_user_message)
+    image_request = not video_request and media_intent.looks_like_image_request(last_user_message)
     is_revision = False
     if (
         not image_request
-        and comfyui.looks_like_image_followup(last_user_message)
+        and media_intent.looks_like_image_followup(last_user_message)
         and _last_reply_was_image(messages)
     ):
         # "that's not clear" / "the face is wrong" said right after a generated image is
@@ -6857,6 +6859,13 @@ def _restore_default_model() -> None:
         print("Startup model: Default LAN model is Auto; leaving backend state unchanged.", flush=True)
         return
 
+    # KoboldCPP's model server is heavyweight and must remain stopped until a user
+    # explicitly loads a Kobold model from Models. Do not restore a saved LAN default
+    # into its systemd service during startup.
+    if backend_name == "kobold":
+        print("Startup model: leaving KoboldCPP unloaded; load it explicitly from Models.", flush=True)
+        return
+
     clients = {
         "lmstudio": lms,
         "lemonade": lemonade,
@@ -6941,7 +6950,23 @@ def _warm_up_startup_models() -> None:
         lemonade._ensure_voice_model_loaded(lemonade.TTS_MODEL_ID)
     except Exception as exc:
         print(f"Startup support model: TTS failed: {exc}", flush=True)
+    try:
+        lemonade._ensure_image_model_loaded(lemonade.IMAGE_MODEL_ID)
+    except Exception as exc:
+        print(f"Startup support model: image model failed: {exc}", flush=True)
+    else:
+        print(f"Startup support model: {lemonade.IMAGE_MODEL_ID} is loaded.", flush=True)
     print("Startup: support models warmed up.", flush=True)
+
+
+def _keep_model_loaded_periodically(model_id: str, ensure_loaded, interval: int = 60) -> None:
+    """Recheck an automatically managed support model after Lemonade may evict it."""
+    while True:
+        time.sleep(interval)
+        try:
+            ensure_loaded(model_id)
+        except Exception as exc:
+            print(f"Model keeper: couldn't restore {model_id}: {exc}", flush=True)
 
 
 if __name__ == "__main__":
@@ -6963,6 +6988,25 @@ if __name__ == "__main__":
     if ts_url:
         print(f"Tailscale access: {ts_url}")
     threading.Thread(target=_warm_up_startup_models, daemon=True).start()
+    # Lemonade can evict image/support models after its idle timeout. Keep the
+    # configured default image generator restored after each eviction/restart.
+    threading.Thread(
+        target=lambda: _keep_model_loaded_periodically(
+            lemonade.IMAGE_MODEL_ID, lemonade._ensure_image_model_loaded, interval=60
+        ),
+        name="hearth-image-model-keeper",
+        daemon=True,
+    ).start()
+    for voice_model_id in (lemonade.STT_MODEL_ID, lemonade.TTS_MODEL_ID):
+        threading.Thread(
+            target=lambda model_id=voice_model_id: _keep_model_loaded_periodically(
+                model_id,
+                lambda current_id: lemonade._ensure_voice_model_loaded(current_id),
+                interval=60,
+            ),
+            name="hearth-voice-model-keeper",
+            daemon=True,
+        ).start()
     # Pre-build the Help-panel snapshot so the first post-sign-in redirect to `/` is
     # instant even when a backend or the Tailscale CLI is slow (see help_data.build).
     help_data.warm_cache(port)

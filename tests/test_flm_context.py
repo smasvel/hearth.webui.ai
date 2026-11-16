@@ -124,8 +124,9 @@ class ContextTests(unittest.TestCase):
         cfg = json.loads(help_data.build_opencode_config('100.1.2.3', 'test-key', help_data._DEFAULT_PORTS,
             {'fastflowlm': ['flm/qwen3.8-mtp:27b']}, {}, ctx_by_model={('fastflowlm', 'flm/qwen3.8-mtp:27b'): 65536}))
         self.assertEqual(cfg['default_agent'], 'flm-small')
-        self.assertEqual(cfg['compaction']['keep']['tokens'], 1024)
-        self.assertEqual(cfg['compaction']['buffer'], 1024)
+        expected = help_data.compaction_for_window(8192)
+        self.assertEqual(cfg['compaction']['keep']['tokens'], expected['keep'])
+        self.assertEqual(cfg['compaction']['buffer'], expected['buffer'])
         limit = cfg['provider']['fastflowlm']['models']['flm/qwen3.8-mtp:27b']['limit']
         self.assertEqual(limit, {'context': 8192, 'output': 4096})
         agent = cfg['agent']['flm-small']
@@ -136,9 +137,10 @@ class ContextTests(unittest.TestCase):
 
     @patch.object(context, 'context_limit', side_effect=lambda model=None: 262144 if model is None or 'minicpm' in model else 1024 if 'flash' in model else 8192)
     @patch.object(help_data.settings_store, 'get', side_effect=lambda key: '32768' if key == 'opencode_compaction_buffer' else None)
-    def test_large_running_model_does_not_set_buffer_above_qwen_window(self, *_):
+    def test_loaded_model_window_drives_compaction_with_smaller_siblings(self, *_):
         cfg = json.loads(help_data.build_opencode_config('100.1.2.3', 'test', help_data._DEFAULT_PORTS,
             {'fastflowlm': ['flm/minicpm-v-4.7:1b', 'flm/qwen3.8-mtp:27b', 'flm/gemma4e-flash:e4b']},
             {'fastflowlm': ['flm/minicpm-v-4.7:1b']}))
-        self.assertEqual(cfg['compaction']['buffer'], 2048)
-        self.assertEqual(cfg['compaction']['keep']['tokens'], 1024)
+        expected = help_data.configured_compaction_for_window(262144, buffer_override=32768)
+        self.assertEqual(cfg['compaction']['buffer'], expected['buffer'])
+        self.assertEqual(cfg['compaction']['keep']['tokens'], expected['keep'])

@@ -231,7 +231,8 @@ class OpenCodeFileToolTests(unittest.TestCase):
         response = self.request({}, [tool("edit", ["path", "oldString", "newString"])], True, events)
         choices = self.stream_choices(response)
         self.assertEqual(choices[-1]["finish_reason"], "stop")
-        self.assertEqual(choices[-1]["delta"], {"content": "Fixed and verified."})
+        self.assertEqual("".join(choice["delta"].get("content", "") for choice in choices),
+                         "Fixed and verified.")
         self.assertNotIn("tool_calls", response.data.decode())
 
 

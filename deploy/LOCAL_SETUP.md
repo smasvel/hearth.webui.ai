@@ -20,8 +20,8 @@ on port 5443. Other existing routes should be preserved.
 | Speech recognition | Whisper Tiny | Transcribed synthesized speech correctly |
 | Spoken replies | Kokoro v1, af_heart voice | Generated MP3 audio |
 | Voice translation | Gemma 4 E4B IT NPU2, including audio and vision weights | English speech translated into Spanish |
-| Images | SD-Turbo | Generated and visually checked a 512×512 PNG |
-| Video | Wan 2.1 T2V 1.3B, UMT5 FP8 encoder, Wan VAE | Generated and inspected a five-frame MP4 |
+| Images | Anima-Turbo through Lemonade | Generated and visually checked a PNG; copy, share, and download actions |
+| Video | Wan 2.2 TI2V-5B Q4 through Lemonade's bundled sd.cpp | Downloads about 8 GB on first use; CPU fallback tested; copy-link, share, and download actions |
 
 Nomic Embed Text v1.5 is also installed for LM Studio. FastFlowLM exposes
 Gemma's flash variant from the same downloaded weights.
@@ -43,13 +43,13 @@ docker compose --env-file .env.postgres ps
 
 ## Runtime and services
 
-Hearth uses its existing Python 3.14 environment. ComfyUI, vLLM and the generic
+Hearth uses its existing Python 3.14 environment. vLLM and the generic
 FLM converter have separate Python 3.12 environments under
 `~/.local/share/hearth`. PyTorch and vLLM use CPU builds on this AMD machine.
 LM Studio and KoboldCPP have working GPU inference; FastFlowLM has working NPU
 inference with its system service's unlimited memory-lock allowance.
 
-Enabled user services: `ai-webui`, `lmstudio`, `comfyui`,
+Enabled user services: `ai-webui`, `lmstudio`,
 `lemonade-guard-shim`, `lmstudio-shim`, and `flm-tool-shim`. User lingering is enabled.
 Lemonade runs in the `lemonade-server` Docker container. `kobold`, `vllm` and the
 system `flm` service start when selected, rather than loading all chat models
@@ -83,9 +83,10 @@ All three Python runtime dependency checks passed. The PostgreSQL suite
 covers startup, MCP, model handoffs, and first-time setup. Fresh database/admin creation and idempotent installer reruns were checked
 in a separate disposable Compose deployment.
 
-Media generation runs on CPU. The 512×512 one-step image check took about
-15 seconds; the 256×144 five-frame, twelve-step video check took about
-88 seconds. Larger jobs take longer.
+Local image generation runs through Lemonade. Text-to-video uses Wan 2.2 TI2V-5B Q4 with
+the sd.cpp runtime bundled in Lemonade; the model downloads on first use into the shared
+Hugging Face cache. CPU inference was verified; the integrated GPU's Vulkan workspace
+was insufficient. No hosted media provider is configured.
 
 The generic FLM converter is installed and its CLI works. The experimental
 custom 27B conversion feature remains unavailable: its project-specific

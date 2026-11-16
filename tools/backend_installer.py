@@ -10,30 +10,44 @@ from pathlib import Path
 from urllib.request import urlopen
 
 
-def add_arguments(parser):
+def add_arguments(parser, *, require_lemonade=False):
     parser.add_argument('--install-backends', nargs='+', choices=('lmstudio', 'lemonade'),
                         help='Install local runtimes: lmstudio (headless), lemonade (Ubuntu), or both')
     parser.add_argument('--skip-backend-install', action='store_true',
-                        help='Skip the optional runtime installation prompt')
+                        help=('Skip runtime installation prompt' if not require_lemonade else
+                              'Skip runtime installation prompt (not supported by fresh installer; Lemonade is required)'))
 
 
-def select_backends(options, input_fn=input):
+def select_backends(options, input_fn=input, *, require_lemonade=False):
     if options.install_backends and options.skip_backend_install:
         raise ValueError('--install-backends and --skip-backend-install cannot be combined')
     if options.install_backends:
-        return list(dict.fromkeys(options.install_backends))
+        selected = list(dict.fromkeys(options.install_backends))
+        if require_lemonade and 'lemonade' not in selected:
+            raise ValueError('Lemonade is required for mandatory first-install media models; include it in --install-backends.')
+        return selected
     if options.skip_backend_install:
+        if require_lemonade:
+            raise ValueError('--skip-backend-install is not supported for fresh setup because Lemonade and the required media models must be installed.')
         return []
-    print('Optional local runtimes: LM Studio headless (llmster); Lemonade (Ubuntu only).')
+    if require_lemonade:
+        print('Local runtimes: Lemonade is required for first-install audio, image, and video models; LM Studio is optional.')
+    else:
+        print('Optional local runtimes: LM Studio headless (llmster); Lemonade (Ubuntu only).')
     while True:
         try:
-            answer = input_fn('Install runtimes? [0 skip, 1 LM Studio, 2 Lemonade, 3 both; default 0]: ').strip() or '0'
+            prompt = ('Install runtimes? [1 Lemonade, 2 Lemonade + LM Studio; default 1]: '
+                      if require_lemonade else
+                      'Install runtimes? [0 skip, 1 LM Studio, 2 Lemonade, 3 both; default 0]: ')
+            answer = input_fn(prompt).strip() or ('1' if require_lemonade else '0')
         except EOFError:
-            print('No interactive input; skipping optional runtime installation.')
-            return []
-        if answer in ('0', '1', '2', '3'):
-            return {'0': [], '1': ['lmstudio'], '2': ['lemonade'],
-                    '3': ['lmstudio', 'lemonade']}[answer]
+            print('No interactive input; installing the required Lemonade runtime.' if require_lemonade
+                  else 'No interactive input; skipping optional runtime installation.')
+            return ['lemonade'] if require_lemonade else []
+        if require_lemonade and answer in ('1', '2'):
+            return {'1': ['lemonade'], '2': ['lemonade', 'lmstudio']}[answer]
+        if not require_lemonade and answer in ('0', '1', '2', '3'):
+            return {'0': [], '1': ['lmstudio'], '2': ['lemonade'], '3': ['lmstudio', 'lemonade']}[answer]
 
 
 def install_backends(backends):

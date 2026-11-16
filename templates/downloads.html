@@ -104,25 +104,8 @@
 
         <div class="console-grid">
           <div class="console-card span-all">
-            <h2>Local AI video model</h2>
-            <div class="model-card2{% if video_model.state == 'loaded' %} loaded{% endif %}">
-              <div class="model-card2-main">
-                <div class="model-card2-name">{{ video_model.id }}</div>
-                <div class="model-card2-meta">
-                  {{ video_model.publisher }} · {{ video_model.quantization }} · video ·
-                  {{ '%.1f'|format(video_model.size_gb) }} GB
-                </div>
-              </div>
-              <span class="badge {{ 'loaded' if video_model.downloaded else 'not-loaded' }}">
-                {{ 'downloaded · ready' if video_model.downloaded else 'not downloaded' }}
-              </span>
-            </div>
-            <p class="hint">
-              Installed as a three-file ComfyUI pipeline (Wan diffusion model, UMT5 text encoder,
-              and Wan VAE). It loads automatically when chat detects a request such as
-              <strong>“create a video of…”</strong>; it is intentionally excluded from the chat
-              model selector because it generates MP4 video rather than text.
-            </p>
+            <h2>Video generation</h2>
+            <p class="hint">No free local video model is currently supported on this AMD integrated GPU. Hearth does not send video prompts to an external service.</p>
           </div>
 
           <div class="console-card span-all">

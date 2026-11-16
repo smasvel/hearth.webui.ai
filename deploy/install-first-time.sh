@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
   echo 'Usage: bash deploy/install-first-time.sh [--skip-browser] [--no-service] [--rebuild-agent-image] [--skip-backend-broker] [--skip-lmstudio-server] [--skip-model-download]'
+  echo 'Lemonade and required media model downloads are mandatory; --skip-model-download skips only the optional initial chat model.'
   echo 'Additional options are passed to tools/first_time_setup.py (--help lists them).'
   exit 0
 fi

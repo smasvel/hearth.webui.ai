@@ -5,6 +5,23 @@ import app
 
 
 class StartupModelTests(unittest.TestCase):
+    def test_startup_does_not_restore_kobold_default(self):
+        with patch.object(app.settings_store, "get", return_value="kobold/koboldcpp/example.gguf"), \
+             patch.object(app.kobold, "owns_model") as owns, \
+             patch.object(app.kobold, "load_model") as load:
+            app._restore_default_model()
+        owns.assert_not_called()
+        load.assert_not_called()
+
+    def test_startup_restores_default_image_model(self):
+        with (
+            patch.object(app, "_ensure_embedding_model_loaded"),
+            patch.object(app.lemonade, "_ensure_voice_model_loaded"),
+            patch.object(app.lemonade, "_ensure_image_model_loaded") as image,
+        ):
+            app._warm_up_startup_models()
+        image.assert_called_once_with(app.lemonade.IMAGE_MODEL_ID)
+
     def test_single_model_session_skips_support_warmup(self):
         with (
             patch.object(app.settings_store, "get", return_value="false"),

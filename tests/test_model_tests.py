@@ -384,6 +384,13 @@ class ModelTestAPITests(unittest.TestCase):
         self.login()
         for suite in model_tests.SUITES:
             with self.subTest(suite=suite), patch.object(self.registry, 'start', return_value={'id': 'x'}) as start:
+                scenarios = ([{'id': 'fixture', 'name': 'Fixture', 'prompt': 'Check this',
+                               'expected_answer': 'A valid answer', 'match_mode': 'contains',
+                               'enabled': True}] if suite == 'custom' else None)
+                scenario_patch = patch.object(app.model_test_scenario_store, 'list_scenarios',
+                                              return_value=scenarios or [])
+                scenario_patch.start()
+                self.addCleanup(scenario_patch.stop)
                 response = self.client.post('/api/model-tests',
                     json={'models': [TARGET], 'suite': suite}, headers=self.headers)
                 self.assertEqual(response.status_code, 202)

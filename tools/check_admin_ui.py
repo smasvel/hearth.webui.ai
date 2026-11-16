@@ -20,10 +20,6 @@ with contextlib.ExitStack() as stack:
     stack.enter_context(patch.object(app, '_test_model_inventory', return_value=[]))
     for backend in (app.lms, app.lemonade, app.vllm, app.kobold, app.fastflowlm):
         stack.enter_context(patch.object(backend, 'list_models', return_value=[]))
-    stack.enter_context(patch.object(app.comfyui, 'video_model_info', return_value={
-        'id': 'fixture', 'backend': 'comfyui', 'type': 'video', 'size_gb': 0,
-        'publisher': 'test', 'quantization': 'test', 'state': 'not-loaded', 'downloaded': False,
-    }))
     stack.enter_context(patch.object(app.help_data, 'tailscale_ip', return_value=None))
     server = make_server('127.0.0.1', 0, app.app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()

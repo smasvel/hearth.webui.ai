@@ -30,7 +30,6 @@ with contextlib.ExitStack() as stack:
  stack.enter_context(patch.object(app.fastflowlm,'list_models',side_effect=lambda:[TARGET.copy()]))
  stack.enter_context(patch.object(app.zen,'list_models',return_value=[{
   'id':'opencode/hosted-fixture','name':'Hosted fixture model','type':'llm','loadable':True}]))
- stack.enter_context(patch.object(app.comfyui,'video_model_info',return_value={'id':'media','backend':'comfyui','type':'video'}))
  stack.enter_context(patch.object(profiles,'get',side_effect=lambda b,m:values.get((b,m.removeprefix('flm/')))))
  stack.enter_context(patch.object(profiles,'set_profile',side_effect=lambda b,m,v:values.__setitem__((b,m.removeprefix('flm/')),v)))
  def suite(model,url,**kw):
@@ -70,6 +69,8 @@ with contextlib.ExitStack() as stack:
   page.goto(f'http://127.0.0.1:{server.server_port}/model-tests')
   expect(page.locator('body')).not_to_contain_text('Hosted fixture model')
   expect(page.locator('#tests-auto-repair')).not_to_be_checked()
+  # Existing report history can restore its suite tab; make this UI run deterministic.
+  page.locator('[data-suite="all"]').click()
   page.locator('#tests-auto-repair').check()
   page.locator('#tests-model').select_option(label='fastflowlm · flm/test-fixture')
   page.get_by_role('button',name='Run tests for selected model').click()
@@ -89,9 +90,10 @@ with contextlib.ExitStack() as stack:
   expect(page).to_have_url(__import__('re').compile(r'.*/model-tests$'))
   expect(page.locator('#tests-status')).to_contain_text('Repair profile reset')
   assert values[('fastflowlm','test-fixture')] is None
+  page.locator('[data-suite="all"]').click()
   old_report_id = page.locator('#tests-history').input_value()
   mode['wait']=True
-  page.locator('#tests-model').select_option(index=1)
+  page.locator('#tests-model').select_option(label='fastflowlm · flm/test-fixture')
   page.get_by_role('button',name='Run tests for selected model').click()
   expect(page.locator('#tests-cancel')).to_be_enabled()
   expect(page.locator('#tests-status')).to_contain_text('waiting-check')

@@ -37,15 +37,19 @@ before running the bundle's installer. On Windows run
 `bash deploy/install-release.sh`. The installer prepares Hearth's Python
 environment and PostgreSQL database, then stores the selected endpoint and
 optional API key in Settings. Linux setup also builds the isolated coding-agent
-image; agent execution is Linux-only. Setup offers optional runtime installation;
-model weights remain separate downloads. Use `--install-backends lmstudio lemonade`
-for unattended Ubuntu setup or `--skip-backend-install` to preserve an existing or
-remote runtime.
+image; agent execution is Linux-only. Release bundles offer optional runtime
+installation and separate model downloads. Use `--install-backends lmstudio lemonade`
+for unattended release-bundle setup or `--skip-backend-install` to preserve an existing
+or remote runtime. The Ubuntu first-time installer separately requires Lemonade and
+downloads the supported media models.
 Open **Downloads** with backend search fields empty. Catalogs and suggestions that support
 browsing load automatically; search for a model to narrow results or search backends that
-require a query. Choose Download to install a model. During first-time setup, the installer
-can separately offer to download `Ornith-1.5-9B-GGUF` before starting Hearth when Lemonade
-is reachable. On Downloads, use **Exclude unknown support** to hide
+require a query. Choose Download to install a model. Fresh Ubuntu setup automatically
+downloads required media models: Whisper-Tiny, kokoro-v1, Anima-Turbo, and Wan 2.2.
+Reserve about 13 GB of cache space plus temporary download headroom. Setup stops if any
+required model cannot be downloaded or verified. The separate `Ornith-1.5-9B-GGUF`
+chat model remains optional; `--skip-model-download` skips only that download. On
+Downloads, use **Exclude unknown support** to hide
 search results whose catalog metadata does not say whether they support tool calling;
 the per-backend tool-calling filters remain available when you want only models that
 explicitly declare support.
@@ -212,14 +216,14 @@ the [login screenshot](../docs/screenshots/login.png).
 ## One-command Ubuntu installation
 
 Run these commands from the Hearth project directory. This installs the web app,
-PostgreSQL, and isolated agent build image. Model runtimes can be installed during
-setup. When Lemonade is reachable, it offers the recommended model download before
-starting Hearth, after checking catalog size, free home-filesystem space, and available
-RAM. The prompt includes a transfer-time example at 25 Mbps so you can judge your
-connection. Confirm with `y` to download; press Enter to skip. Use
-`--skip-model-download` for unattended setup. If the model is already downloaded,
-the installer reuses it. A missing runtime, catalog entry, or insufficient resources
-skips the download and leaves the model available through Downloads later.
+PostgreSQL, and isolated agent build image. The installer installs the required
+Lemonade runtime and automatically downloads Whisper-Tiny,
+kokoro-v1, Anima-Turbo, and Wan 2.2 before starting Hearth. It loads Anima-Turbo after
+download, and Hearth restores it at startup and after Lemonade evicts it for inactivity.
+Reserve about 13 GB of
+model cache space plus temporary download headroom. Setup stops if a required model
+cannot be downloaded or verified. `--skip-model-download` skips only the optional
+Ornith chat-model offer; mandatory media downloads still run.
 Use an ordinary account with sudo access and a graphical or terminal login session.
 
 ## Install and initialize Hearth
@@ -288,6 +292,7 @@ Useful options:
 ```bash
 bash deploy/install-first-time.sh --skip-browser --no-service
 bash deploy/install-first-time.sh --skip-backend-broker --skip-lmstudio-server
+# Skip only the optional chat model; required media downloads still run:
 bash deploy/install-first-time.sh --skip-model-download
 .venv/bin/python tools/first_time_setup.py --help
 ```
@@ -479,6 +484,8 @@ live metrics feed with `backend=kobold`, making KoboldCPP traffic visible in Liv
 and Metrics. The shim withholds tool schemas for an explicit "do not call more tools"
 follow-up and repairs a missing parallel call only when the request names two literal
 values for the same required string field. KoboldCPP model tests use this bridge too.
+If a completion contains assistant text together with a repairable parallel tool call,
+the shim preserves that text while adding the missing call.
 
 After signing in, open **Agents**. Use **New agent** to enter a required agent name,
 name the task, and describe what you want in everyday language; the agent name identifies
@@ -808,6 +815,8 @@ and credentials under Settings. LM Studio's default endpoint is
 `http://localhost:1234`; Lemonade's is `http://localhost:13305`. Download a model
 and load it from Models. The first-time Ubuntu installer offers a confirmed
 download when Lemonade is available; other models remain available in Downloads.
+Hearth does not start or load KoboldCPP by default. Start it and load a model explicitly
+from Models when needed, so it does not consume memory during normal startup.
 For one-command installation of Hearth with the optional q38rocm Qwen 3.8
 backend on Ubuntu or Debian, run this from the project checkout:
 
@@ -985,6 +994,7 @@ to new requests without reloading the model. An already running response keeps i
 setting. Large input histories and CPU inference can still take time with thinking disabled.
 Lemonade, LM Studio, vLLM, and KoboldCPP model cards also include an editable
 **ctx-size** field. KoboldCPP reads each GGUF file's native context maximum.
+Maximum-token labels use grouped digits and wrap cleanly on mobile screens.
 Saving a value stores it for that model and reloads the model when it is already loaded;
 the next Load reuses the saved value. **Set all to max context** saves every adjustable chat model's
 reported maximum at once and leaves already-loaded models running until their next Load.
@@ -1132,12 +1142,43 @@ installations or install the other runtimes.
 | vLLM | 0.33.0 CPU build | [vLLM releases](https://github.com/vllm-project/vllm/releases); keep the Hearth vLLM environment on the CPU wheel for CPU hosts |
 | KoboldCPP | 1.124.2 | [KoboldCPP releases](https://github.com/LostRuins/koboldcpp/releases); AMD hosts should use the Linux `nocuda` build with Vulkan support |
 | FastFlowLM | 1.0.13 | [FastFlowLM releases](https://github.com/ROCm/FastFlowLM/releases); install the package for the host Ubuntu release, then restart `flm.service` |
-| ComfyUI | 0.45.0; frontend 1.58.5 | [ComfyUI releases](https://github.com/Comfy-Org/ComfyUI/releases); update its separate Python environment from the matching release requirements |
 | q38rocm | No numbered release; current upstream source plus Hearth's local Vulkan build adjustments | [q38rocm source](https://github.com/julianmb/q38rocm); update the checkout, then rebuild with `deploy/build-q38rocm-vulkan.sh` |
 
-LM Studio, Lemonade, ComfyUI, and model-serving services can be running without a model
+LM Studio, Lemonade, and model-serving services can be running without a model
 loaded. vLLM, KoboldCPP, and q38rocm are normally started on demand when a model is
 selected. Updating a runtime does not download model weights.
+
+### Local image and video generation
+
+Image generation uses a supported image model loaded in Lemonade. On this host, Anima-Turbo
+is downloaded, loaded, and verified. Flux.2 Klein 4B failed generation with the available
+Lemonade runtimes and was removed. Hearth uses each Lemonade image model's configured size
+and step defaults. Load an image model from the Models page before generating images.
+Generated image cards include **Copy image**, **Share**, and **Download image** controls.
+
+Microphone transcription and hands-free recording use Lemonade's Whisper-Tiny speech
+model; spoken replies use kokoro-v1. Hearth loads both at startup and restores them if
+Lemonade evicts them for inactivity. FFmpeg is required for audio processing.
+
+Text-to-video uses Wan 2.2 TI2V-5B Q4 with the Vulkan `sd-cli` bundled in the Lemonade
+container. Install and start the Docker-based Lemonade backend, and keep its Hugging Face
+cache mounted at `/opt/lemonade/.cache/huggingface` (the standard installer does this).
+The first video request downloads the Q4 diffusion model, VAE, and T5 encoder from Hugging
+Face into that shared cache, using about 8 GB of disk; future requests reuse the files.
+The tested low-memory default generates a 17-frame, 16-fps, 480×320 WebM using CPU
+inference. Generation can take several minutes. Set `HEARTH_WAN22_BACKEND` in the Hearth
+service environment to select another sd.cpp backend, for example
+`te=cpu,diffusion=vulkan0,vae=cpu` on a compatible GPU; some integrated GPUs may not have
+enough workspace for Wan diffusion. `HEARTH_WAN22_WIDTH`, `HEARTH_WAN22_HEIGHT`,
+`HEARTH_WAN22_FRAMES`, `HEARTH_WAN22_FPS`, and `HEARTH_WAN22_STEPS` tune output size and
+duration. No Google API key, external inference API, or ComfyUI service is used. The active
+model is `off-grid-ai/Wan2.2-TI2V-5B-GGUF` and the shared text encoder is
+`off-grid-ai/Video-Companions-GGUF`. Generated clips include **Copy link**, **Share**, and
+**Download video** controls. Share uses the browser's native share sheet when available and
+falls back to copying the local media link. The Models page includes a Wan 2.2 card showing
+whether those files are ready, with a download button if any are missing. The runtime loads
+the weights for each generation and releases them afterward, so the card says **ready · loads
+per request** rather than claiming a persistent loaded state.
 
 The agent image is built by the installer as the regular Hearth user, using the
 existing Docker permission. Its apt and language package managers run inside
@@ -1157,17 +1198,26 @@ context and durable project-memory index. The task activity view streams in a
 terminal-style layout while completed HTML results remain available in the preview.
 
 
-### Optional automatic model runtime installation
+### Required first-install media models and optional runtimes
 
-Both first-time and release installers ask whether to install LM Studio, Lemonade,
-both, or skip (the default for an existing or remote backend). For unattended setup:
+The Ubuntu first-time installer installs Lemonade by default and requires it for the
+initial media model downloads: Whisper-Tiny for speech recognition, kokoro-v1 for speech
+synthesis, Anima-Turbo for image generation, and Wan 2.2 TI2V-5B for video generation.
+First-time setup loads Anima-Turbo after download. Hearth restores it at app startup and
+periodically if Lemonade evicts it for inactivity, so image generation stays ready without
+a manual Models-page load.
+The downloads total about 13 GB on a clean installation. Ensure the model cache has that
+space plus temporary download headroom. Setup reports and stops on a failed or incomplete
+required download. The optional chat model can be skipped with `--skip-model-download`
+(alias `--skip-chat-model-download`); this does not skip media assets. LM Studio remains
+optional. For unattended first-time setup:
 
 ```bash
-bash deploy/install-first-time.sh --install-backends lmstudio lemonade
-# Release bundles use the same options:
+bash deploy/install-first-time.sh --install-backends lemonade
+# Release bundles retain separate optional runtime setup:
 bash deploy/install-release.sh --backend lmstudio --install-backends lmstudio
-# Preserve an existing runtime or use a remote server:
-bash deploy/install-first-time.sh --skip-backend-install
+# Add the optional LM Studio runtime:
+bash deploy/install-first-time.sh --install-backends lemonade lmstudio
 ```
 
 LM Studio installation uses the [official headless llmster installer](https://lmstudio.ai/docs/developer/core/headless)
@@ -1228,8 +1278,10 @@ disconnects briefly while the service comes back. Active agent tasks may be
 interrupted and can be resumed from Agents.
 
 
-For noninteractive setup, use `--skip-backend-install` or an explicit
-`--install-backends` selection; closed input skips the optional runtime prompt.
+For noninteractive first-time Ubuntu setup, select Lemonade explicitly with
+`--install-backends lemonade` (add `lmstudio` if needed). Lemonade cannot be skipped
+because first-time setup requires the local audio, image, and video model assets. The
+release installer retains its optional runtime selection behavior.
 Release installers accept `--no-api-key` to skip the secret prompt while preserving
 an existing key, and `--project-name NAME` with `--postgres-port PORT` to isolate
 an additional installation. Blank API key input also preserves an existing key.

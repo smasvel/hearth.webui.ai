@@ -29,6 +29,15 @@ _LEGACY_ENV_SETTINGS = {
 _SECRET_KEYS = {key for key in _LEGACY_ENV_SETTINGS.values() if key.endswith('_api_key')}
 
 
+def clear_removed_media_api_credentials() -> None:
+    """Delete retired Google media credentials and settings during app startup."""
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM settings WHERE key IN (%s, %s, %s)",
+            ("gemini_image_api_key", "image_generation_provider", "gemini_image_resolution"),
+        )
+
+
 def _connect():
     return database.connect()
 
