@@ -1390,6 +1390,12 @@ above the editor follows the multi-line input setting. No setup is required.
   is downloaded and loaded by the Ubuntu first-time installer, then restored at Hearth
   startup and after Lemonade evicts it for inactivity. Flux.2 Klein 4B failed
   generation with both Lemonade's `sd-cpp` and TheNoise runtimes here and was removed.
+  Chat image requests use the selected chat model only when it is already loaded, along
+  with recent conversation context, so references such as “use the description above”
+  carry through without loading an unloaded model or evicting the active chat model. If
+  prompt preparation fails or the selected model is evicted, Hearth uses a
+  detail-preserving fallback, including Lord Murugan's
+  iconography, rather than sending only the deity's name.
   Hearth keeps each Lemonade image model's configured size and step defaults. Generated
   images are displayed in chat and saved locally, with controls to copy the image, share it,
   or download it.

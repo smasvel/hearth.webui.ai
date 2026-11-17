@@ -1151,8 +1151,13 @@ selected. Updating a runtime does not download model weights.
 ### Local image and video generation
 
 Image generation uses a supported image model loaded in Lemonade. On this host, Anima-Turbo
-is downloaded, loaded, and verified. Flux.2 Klein 4B failed generation with the available
-Lemonade runtimes and was removed. Hearth uses each Lemonade image model's configured size
+is downloaded, loaded, and verified. Chat image requests use the selected chat model when
+already loaded, plus recent conversation context, so references such as “use the description
+above” carry through without loading an unloaded model or evicting the active chat model. If
+prompt preparation fails or the selected model is evicted, Hearth uses a detail-preserving
+fallback, including Lord Murugan's iconography, rather than sending only the deity's name.
+Flux.2 Klein 4B failed generation with the available Lemonade runtimes and was removed.
+Hearth uses each Lemonade image model's configured size
 and step defaults. Load an image model from the Models page before generating images.
 Generated image cards include **Copy image**, **Share**, and **Download image** controls.
 

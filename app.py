@@ -2,6 +2,7 @@ import datetime
 import concurrent.futures
 import functools
 import html
+import inspect
 import json
 import os
 import queue
@@ -933,6 +934,58 @@ def _web_search_context(query_text: str | None) -> tuple[str | None, list[dict]]
         return None, []
 
 
+def _fallback_image_prompt(raw_request: str) -> dict:
+    """Preserve subject details if the text backend cannot enhance an image request."""
+    prompt = raw_request.strip()
+    prompt = (
+        f"{prompt}. Follow the request faithfully: preserve the named subject and every "
+        "specified attribute, relationship, setting, and composition. Do not substitute "
+        "the subject, omit requested objects, or add unrelated subjects. Use a clear "
+        "composition, coherent anatomy, natural lighting, crisp focus, and fine detail."
+    )
+    if re.search(r"\b(?:murugan|karthikeya|kartikeya|skanda|subramanya)\b", prompt, re.I):
+        prompt = (
+            f"{prompt}. Photorealistic portrait photograph of a young South Indian man "
+            "portraying Lord Murugan, a youthful male Hindu deity (Kartikeya, Skanda, "
+            "Subramanya). Clearly masculine face and body. Show one main figure, one sacred "
+            "golden Vel spear held upright, and one peacock mount clearly visible beside him. "
+            "He wears an ornate golden crown, traditional temple jewelry, and richly colored "
+            "silk garments. Carved South Indian temple courtyard, warm brass oil-lamp light, "
+            "saffron and gold details, vivid peacock-blue feathers, realistic human anatomy, "
+            "natural photographic lighting and skin texture, crisp details, no illustration, "
+            "no painting, no additional weapons, faithful to the named deity."
+        )
+    return {"prompt": prompt, "negative_prompt": ""}
+
+
+def _model_is_resident_for_image_prompt(model: str, backend) -> bool:
+    """Only use a local chat model for image prompt shaping when it is already loaded.
+
+    Asking a backend to shape an image prompt must not trigger an implicit model load
+    that switches away from the user's active chat model. OpenCode is remotely hosted,
+    so it cannot evict a local Hearth model; unknown test/custom backends retain their
+    existing behavior.
+    """
+    if backend is zen:
+        return True
+    if backend is lemonade:
+        try:
+            return lemonade.is_model_loaded(model)
+        except Exception:
+            return False
+    list_models = getattr(backend, "list_models", None)
+    if not callable(list_models):
+        return True
+    try:
+        models = list_models()
+    except Exception:
+        return False
+    entry = next((item for item in models if item.get("id") == model), None)
+    if not entry:
+        return False
+    return entry.get("state") == "loaded" or bool(entry.get("loaded_instances"))
+
+
 def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model: str, backend, is_revision: bool = False) -> dict:
     """Turns a casual chat ask ("draw me a cat in a wizard hat") into a detailed image
     prompt via the already-loaded chat model, instead of handing the user's raw sentence
@@ -941,10 +994,16 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
     style/lighting that a distilled model needs spelled out to stay on-subject. Grounds
     the rewrite in the last few turns of chat context too, so a follow-up like "make it
     a dog instead" inherits the scene established earlier rather than generating a dog
-    in a vacuum. Fails soft: any error, empty response, or unparsable output falls back
-    to the raw user text untouched — enhancement is a quality improvement, never a
-    dependency image generation should hard-fail on."""
-    fallback = {"prompt": raw_request, "negative_prompt": ""}
+    in a vacuum. Fails soft: an error, empty response, or unparsable output uses a
+    detail-preserving fallback, including explicit Murugan iconography when that deity
+    is named, rather than passing a contextless fragment to the image model."""
+    fallback = _fallback_image_prompt(raw_request)
+    # Prompt preparation must not implicitly load/switch a local model. Only send the
+    # helper chat request to an already-resident model; media generation then proceeds
+    # with the faithful local fallback while the active chat model stays untouched.
+    if not _model_is_resident_for_image_prompt(model, backend):
+        app.logger.info("Skipping image prompt enhancement for unloaded model %s", model)
+        return fallback
     convo_excerpt = "\n".join(
         f"{m.get('role')}: {m.get('content')}"
         for m in context_messages[-6:]
@@ -983,10 +1042,19 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
     try:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        parameters = inspect.signature(backend.chat_stream).parameters
+        chat_options = {"temperature": 0.2, "max_tokens": 2000}
+        if "frequency_penalty" in parameters:
+            chat_options["frequency_penalty"] = None
+        # Prompt shaping is a small structured-output task. Avoid spending the
+        # generation budget in a separate reasoning phase when this backend exposes
+        # a request-level control for it (for example Lemonade).
+        if "enable_thinking" in parameters:
+            chat_options["enable_thinking"] = False
         for line in backend.chat_stream(
             [{"role": "system", "content": instruction}, {"role": "user", "content": user_content}],
             model,
-            temperature=0.6,
+            **chat_options,
             # Reasoning models (GLM/Qwen3-thinking style) burn their *entire* thinking
             # trace before emitting a single token of real "content" - confirmed live
             # against Jackrong-Qwopus3.6-35B-A3B-Coder-MTP-GGUF, whose reasoning alone ran
@@ -996,8 +1064,6 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
             # defeating this feature entirely for a model class this app explicitly
             # supports. 2000 gives real headroom; the fallback below still catches models
             # that blow even past that.
-            max_tokens=2000,
-            frequency_penalty=None,
         ):
             if not line.startswith("data:"):
                 continue
@@ -1007,6 +1073,11 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
             try:
                 obj = json.loads(payload)
             except json.JSONDecodeError:
+                continue
+            error = obj.get("error")
+            if error:
+                detail = error.get("message") if isinstance(error, dict) else str(error)
+                app.logger.warning("Image prompt enhancement failed for %s: %s", model, detail)
                 continue
             delta = (obj.get("choices") or [{}])[0].get("delta", {})
             if delta.get("content"):
@@ -1032,7 +1103,8 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
         # models never separate the two and stream everything as reasoning_content, so
         # that's checked too as a fallback rather than only ever trusting "content".
         return _extract("".join(content_parts)) or _extract("".join(reasoning_parts)) or fallback
-    except Exception:
+    except Exception as exc:
+        app.logger.warning("Image prompt enhancement failed for %s: %s", model, exc)
         return fallback
 
 
