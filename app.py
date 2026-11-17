@@ -1039,11 +1039,17 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
         if convo_excerpt
         else f"Image request: {raw_request}"
     )
+    context_limit = _model_context_limit(backend, model) or 4096
+    prompt_max_tokens, prompt_budget = _chat_token_budgets(context_limit, 768)
+    prompt_messages = _fit_chat_context(
+        [{"role": "system", "content": instruction}, {"role": "user", "content": user_content}],
+        prompt_budget,
+    )
     try:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         parameters = inspect.signature(backend.chat_stream).parameters
-        chat_options = {"temperature": 0.2, "max_tokens": 2000}
+        chat_options = {"temperature": 0.2}
         if "frequency_penalty" in parameters:
             chat_options["frequency_penalty"] = None
         # Prompt shaping is a small structured-output task. Avoid spending the
@@ -1051,19 +1057,14 @@ def _enhance_image_prompt(raw_request: str, context_messages: list[dict], model:
         # a request-level control for it (for example Lemonade).
         if "enable_thinking" in parameters:
             chat_options["enable_thinking"] = False
+        chat_options["max_tokens"] = prompt_max_tokens
         for line in backend.chat_stream(
-            [{"role": "system", "content": instruction}, {"role": "user", "content": user_content}],
+            prompt_messages,
             model,
             **chat_options,
-            # Reasoning models (GLM/Qwen3-thinking style) burn their *entire* thinking
-            # trace before emitting a single token of real "content" - confirmed live
-            # against Jackrong-Qwopus3.6-35B-A3B-Coder-MTP-GGUF, whose reasoning alone ran
-            # ~700 tokens before the JSON answer even started. A tight budget here doesn't
-            # just truncate the enhancement, it silently produces *zero* content and falls
-            # back to the raw prompt every single time for any reasoning-capable model -
-            # defeating this feature entirely for a model class this app explicitly
-            # supports. 2000 gives real headroom; the fallback below still catches models
-            # that blow even past that.
+            # This is a bounded helper request: its prompt and completion budgets are
+            # derived from the same active context window as ordinary Hearth chat. Models
+            # that spend the budget on reasoning fall back to the detail-preserving prompt.
         ):
             if not line.startswith("data:"):
                 continue
@@ -5824,48 +5825,73 @@ def _last_reply_was_image(messages: list[dict]) -> bool:
 
 
 def _fit_chat_context(messages: list[dict], max_prompt_tokens: int) -> list[dict]:
-    """Keep ordinary chat requests below small local model context windows.
+    """Keep chat content within the prompt-token allowance for small local windows.
 
-    Backends do not expose a common tokenizer, so use a conservative four-characters
-    per token estimate. Preserve the leading system instruction and the newest exchange;
-    discard oldest turns first and trim an individual oversized message when necessary.
+    Backends do not expose a common tokenizer. Bound UTF-8 content bytes instead: a
+    tokenizer cannot produce more ordinary text tokens than input bytes, and the
+    caller separately reserves room for chat-template overhead. Preserve the leading
+    system instruction and newest turns; discard older turns first, then trim the
+    newest oversized message at a valid UTF-8 boundary.
     """
     if not messages:
         return messages
-    budget = max(4096, max_prompt_tokens * 4)
+
+    def byte_length(value: str) -> int:
+        return len(value.encode("utf-8"))
+
+    def tail_bytes(value: str, limit: int) -> str:
+        return value.encode("utf-8")[-max(0, limit):].decode("utf-8", errors="ignore") if limit else ""
+
     system = [m for m in messages if m.get("role") == "system"]
     turns = [m for m in messages if m.get("role") != "system"]
-    system_chars = sum(len(str(m.get("content") or "")) for m in system)
-    if system_chars > min(8000, budget // 2):
-        system_budget = min(8000, budget // 2)
+    budget = max(0, int(max_prompt_tokens))
+    system_text = [str(m.get("content") or "") for m in system]
+    system_bytes = sum(byte_length(content) for content in system_text)
+    system_budget = min(8000, budget // 2)
+    if system_bytes > system_budget:
         combined = "\n\n".join(str(m.get("content") or "") for m in system)
-        system = [{"role": "system", "content":
-                   combined[:2000] + "\n\n[Hearth compacted older injected context]\n\n" +
-                   combined[-(system_budget - 2050):]}]
-    system_chars = sum(len(str(m.get("content") or "")) for m in system)
-    remaining = max(2000, budget - system_chars)
+        marker = "\n\n[Hearth compacted older injected context]\n\n"
+        marker_bytes = byte_length(marker)
+        if system_budget > marker_bytes:
+            available = system_budget - marker_bytes
+            head_budget = min(2000, available // 2)
+            tail_budget = available - head_budget
+            compacted = (
+                combined.encode("utf-8")[:head_budget].decode("utf-8", errors="ignore")
+                + marker + tail_bytes(combined, tail_budget)
+            )
+        else:
+            compacted = tail_bytes(combined, system_budget)
+        system = [{"role": "system", "content": compacted}] if compacted else []
+    system_bytes = sum(byte_length(str(m.get("content") or "")) for m in system)
+    omission_notice = {
+        "role": "system",
+        "content": "Hearth omitted older chat messages to fit the loaded model's context window.",
+    }
+    remaining = max(0, budget - system_bytes - 128)
     kept: list[dict] = []
     used = 0
     for message in reversed(turns):
-        content = str(message.get("content") or "")
-        cost = len(content)
+        original = message.get("content") or ""
+        content = original if isinstance(original, str) else json.dumps(original, ensure_ascii=False, default=str)
+        cost = byte_length(content)
         if used + cost <= remaining:
             kept.append(message)
             used += cost
             continue
         room = remaining - used
-        if room > 400:
+        if room > 0:
             clipped = dict(message)
-            clipped["content"] = content[-room:]
+            clipped["content"] = tail_bytes(content, room)
             kept.append(clipped)
         break
     kept.reverse()
     omitted = len(turns) - len(kept)
     if omitted:
-        notice = {"role": "system", "content":
-                  f"Hearth omitted {omitted} older chat message(s) to fit the loaded model's context window. "
-                  "Use the visible recent conversation as the authoritative context."}
-        system = system + [notice]
+        omission_notice["content"] = (
+            f"Hearth omitted {omitted} older chat message(s) to fit the loaded model's context window."
+        )
+        system = system + [omission_notice]
     return system + kept
 
 
@@ -5874,9 +5900,19 @@ def _model_context_limit(backend, model: str) -> int | None:
     try:
         entry = next((item for item in backend.list_models() if item.get("id") == model), None)
     except Exception:
-        return None
+        return min(_saved_model_context("lemonade", model) or 4096, 4096) if backend is lemonade else None
     if not entry:
-        return None
+        return min(_saved_model_context("lemonade", model) or 4096, 4096) if backend is lemonade else None
+    is_loaded = entry.get("state") == "loaded" or bool(entry.get("loaded_instances"))
+    if backend is lemonade:
+        # Lemonade auto-loads a missing chat model at its 4,096-token default unless
+        # explicitly loaded first. Its catalog's max_context_length is a capability,
+        # not the live window; use the loaded value when reported and otherwise the
+        # saved setting capped at the known runtime auto-load default.
+        loaded_context = entry.get("loaded_context_length") if is_loaded else None
+        if isinstance(loaded_context, int) and loaded_context > 0:
+            return loaded_context
+        return min(_saved_model_context("lemonade", model) or 4096, 4096)
     for key in ("loaded_context_length", "configured_context_length", "max_context_length"):
         value = entry.get(key)
         if isinstance(value, int) and value > 0:
@@ -5899,19 +5935,25 @@ def _chat_finalize_reply(assistant_text: str, reasoning_text: str) -> tuple[str,
     return assistant_text, reasoning_text
 
 
-def _chat_token_budgets(context_limit: int, max_tokens: int) -> tuple[int, int]:
+def _chat_token_budgets(context_limit: int, max_tokens: int,
+                       reserved_tokens: int = 0) -> tuple[int, int]:
     """Split a model window into an output cap and a prompt budget.
 
     Small windows (a vLLM model loaded with ``--max-model-len 2048`` is the common
     case) reject a request whose ``max_tokens`` exceeds the window before generation
     starts. Keep at least a small prompt reserve and 256 tokens of template overhead,
-    then cap the caller's requested output budget to what remains.
+    plus any separately supplied tool-schema reserve, then cap the caller's requested
+    output budget to what remains.
     """
+    overhead = 256 + max(0, int(reserved_tokens))
+    usable = max(0, context_limit - overhead)
     prompt_reserve = min(1024, max(256, context_limit // 2))
-    max_output = max(1, context_limit - prompt_reserve - 256)
+    if reserved_tokens:
+        prompt_reserve = min(prompt_reserve, max(256, usable // 2))
+    max_output = max(1, usable - prompt_reserve)
     if max_tokens > max_output:
         max_tokens = max_output
-    prompt_budget = max(1, context_limit - max_tokens - 256)
+    prompt_budget = max(1, context_limit - max_tokens - overhead)
     return max_tokens, prompt_budget
 
 
@@ -6477,16 +6519,13 @@ def api_chat():
     # active/configured maximum. Reserve the requested completion budget and a small
     # template overhead so the combined request stays within the model window.
     if not image_request and not video_request:
-        context_limit = _model_context_limit(backend, model)
-        if context_limit:
-            # A small-context model (for example a vLLM instance loaded at 2,048
-            # tokens) rejects max_tokens above its window before generation starts.
-            # Cap the requested output to the remaining space after a prompt reserve
-            # instead of sending the default 32,768-token request.
-            max_tokens, prompt_budget = _chat_token_budgets(context_limit, max_tokens)
-        else:
-            # Backend metadata can be unavailable while a runtime is starting.
-            prompt_budget = 3500
+        context_limit = _model_context_limit(backend, model) or 4096
+        # A small-context model (for example a vLLM instance loaded at 2,048 tokens)
+        # rejects max_tokens above its window before generation starts. Cap the requested
+        # output to the remaining space after a prompt reserve instead of sending the
+        # default 32,768-token request. If backend metadata is missing, budget against a
+        # conservative 4,096-token window rather than sending an unbounded request.
+        max_tokens, prompt_budget = _chat_token_budgets(context_limit, max_tokens)
         messages = _fit_chat_context(messages, prompt_budget)
 
     def generate():
@@ -6571,6 +6610,17 @@ def api_chat():
                 except Exception as exc:
                     print(f"[webui-chat] MCP tools unavailable, continuing without: {exc}", flush=True)
                     tools_list = None
+            context_limit = _model_context_limit(backend, model) or 4096
+            tool_schema_bytes = (
+                len(json.dumps(tools_list, ensure_ascii=False).encode("utf-8"))
+                if tools_list else 0
+            )
+            if tools_list and tool_schema_bytes + 768 > context_limit:
+                # A tool catalog that alone consumes the model's whole window cannot
+                # leave enough space for a useful prompt and response. Skip tools for
+                # this turn rather than send a request guaranteed to exceed the window.
+                tools_list = None
+                tool_schema_bytes = 0
             # FastFlowLM+tools routes through flm_tool_shim.py (see fastflowlm_client.chat_stream's
             # docstring) instead of the raw engine - the shim does its OWN NPU-lock acquisition
             # and model loading as a separate process, so claiming the lock here too would
@@ -6624,6 +6674,10 @@ def api_chat():
                         first_system["content"] = f"{existing_content}\n\n{tool_instruction}"
                     else:
                         loop_messages.insert(0, {"role": "system", "content": tool_instruction})
+                request_max_tokens, request_prompt_budget = _chat_token_budgets(
+                    context_limit, max_tokens, tool_schema_bytes,
+                )
+                loop_messages = _fit_chat_context(loop_messages, request_prompt_budget)
                 tool_round = 0
                 while True:
                     if cancel_event.is_set():
@@ -6634,7 +6688,7 @@ def api_chat():
                         loop_messages,
                         model,
                         temperature=body.get("temperature", 0.7),
-                        max_tokens=max_tokens,
+                        max_tokens=request_max_tokens,
                         **extra_kwargs,
                     )
                     backend_lines = chat_jobs.cancelable_lines(backend_lines, cancel_event)

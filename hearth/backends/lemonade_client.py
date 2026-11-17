@@ -217,14 +217,12 @@ def _loaded_context_length(entry: dict | None) -> int | None:
     /v1/health — llama-server's own --ctx-size is echoed back as recipe_options.ctx_size
     (confirmed live; e.g. the embedding model reports ctx_size 8192 while its declared
     max_context_window is only 2048, so ctx_size is the real server limit we want).
-    Falls back to the entry's declared max_context_window when ctx_size is missing. None
-    when the model isn't loaded / Lemonade didn't report it — the caller then advertises a
-    backend-level default instead of guessing per model."""
+    Return None when the model isn't loaded or Lemonade omits ctx_size: max_context_window
+    describes model capability and can be much larger than the runtime's 4,096-token
+    auto-load default, so it must not be presented as the active setting."""
     if not entry:
         return None
     ctx = (entry.get("recipe_options") or {}).get("ctx_size")
-    if not isinstance(ctx, int) or ctx <= 0:
-        ctx = entry.get("max_context_window")
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 

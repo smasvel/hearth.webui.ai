@@ -942,8 +942,13 @@ shown in the report and excluded from model recommendation scoring.
 Metrics recorded for these checks carry the selected backend name, making validation
 requests filterable with that backend's chat traffic on the Metrics page.
 Context overflow checks accept a clear rejection or a successful response whose
-reported token usage stays within the model's context window. Hearth chat preserves
-an explicit single- or multi-select mode when normalizing structured question calls.
+reported token usage stays within the model's context window. Hearth chat keeps UTF-8
+content within a conservative byte budget and reserves space for chat templates and MCP
+tool schemas. When Lemonade does not report the live context, Hearth caps the saved ctx-size at the
+4,096-token auto-load default rather than using the model's larger advertised maximum. Image prompt enhancement
+applies the same loaded-context budget to its conversation excerpt. On very small windows,
+Hearth omits MCP tools for a turn if their schemas leave too little room for a response.
+Hearth chat preserves an explicit single- or multi-select mode when normalizing structured question calls.
 Tool-enabled chat requests also explicitly allow compatible backends to return
 multiple independent tool calls in one response.
 Tool checks use a 2,048-token completion budget to leave room for internal reasoning
