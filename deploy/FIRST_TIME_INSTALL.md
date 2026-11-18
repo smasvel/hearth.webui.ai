@@ -11,11 +11,11 @@ The Lemonade gateway streams model reasoning to OpenCode as it arrives. It norma
 tool-enabled requests, answer content remains buffered until tool-call validation finishes
 so intermediate code and arguments are not briefly displayed as assistant text.
 
-Lemonade's `Ornith-1.5-35B-A3B-GGUF` and `K2-Horizon-MoVA-36B-A4B-GGUF` use the CPU backend when Hearth detects an
-AMD shared GPU memory pool below 32 GiB. This avoids Vulkan memory exhaustion at
-load time, at the cost of slower replies. Restart Hearth and
-`lemonade-guard-shim.service` after updating, then reload the model from Models.
-The 9B variant and devices with larger GPU pools keep their default backend.
+When Hearth detects an AMD shared GPU memory pool below 32 GiB, Lemonade automatically
+uses CPU inference for models whose weights exceed half that pool. This size-based
+fallback helps avoid Vulkan memory exhaustion, including for newly added models; replies
+may be slower. Devices with larger GPU pools keep their default backend. Restart Hearth
+and `lemonade-guard-shim.service` after updating, then reload the model from Models.
 
 Hearth checks other backends before switching reasoning models, including when
 loading a Lemonade model such as `Ornith-1.5-35B-A3B-GGUF`. If a load reports that
@@ -104,28 +104,9 @@ decisions. Medical responses identify themselves as general information, avoid d
 or treatment plans, and refer users to a qualified medical professional. Urgent medical
 symptoms are directed to emergency care. No backend-specific configuration is required.
 
-Chat applies a final context-size guard after adding saved history, attachments, and
-web-research results. Cross-chat memory recall treats personal facts specially: the
-user's name and home location, once stated in any past conversation ("My name is …",
-"call me …", "my city is …"), are re-injected as an explicit known-fact directive so
-even small local models (verified with KoboldCPP Qwen3.8-2B) answer "what's my name?"
-correctly instead of claiming they were never told, and on a name question only the
-name fact is recalled — unrelated memory snippets are withheld so small models don't
-answer with the wrong fact. This also keeps working when the
-Lemonade embedding model is briefly unavailable. These explicit facts are recovered
-from saved chat messages even if embeddings were unavailable when the conversation was
-stored. The recall note is placed directly
-beside the user's latest message — clearly labeled as Hearth memory — rather than in
-the system prompt, because small models ignore facts buried there; the saved chat
-history keeps the original message text. It uses the selected model's active/configured maximum context
-when the backend reports one, reserves space for the reply, and keeps system instructions
-and newest turns while omitting older turns when necessary. When the requested output
-budget exceeds the available window, Hearth caps `max_tokens` to the space left after
-a prompt reserve; a vLLM model loaded at 2,048 tokens therefore no longer rejects the
-default 32,768-token request. vLLM's live `/v1/models` `max_model_len` is honored even
-when the model was started outside Hearth and is not yet in Hearth's registry. If model
-metadata is temporarily unavailable, it uses a conservative fallback. This avoids backend
-context-overflow errors.
+Cross-chat memory can recall explicit facts from saved conversations and keeps unrelated
+retrieved notes out of simple personal-fact questions. No additional setup is required for
+Lemonade embeddings.
 The local model proxies also preserve the blank-line delimiters required by streamed SSE
 responses, so OpenAI-compatible clients can receive tool and answer events reliably.
 No additional setup is required for Lemonade embeddings. To enable separate cross-chat
@@ -325,7 +306,7 @@ Model test runs and performance metrics are stored in PostgreSQL and shared acro
 
 ## Model test report
 
-The metrics page compares each supported local model's latest comprehensive test run (All tests or Complete) from the full saved history; narrow suites do not replace it, and saved reports are not automatically trimmed to the newest 30. Hosted OpenCode catalog results are excluded from this report, including historical saved runs. It shows pass/fail/skip counts, pass rate (skips excluded), reasoning benchmark score, generated tokens per second, generated tokens per test, and average test time. Recommendation is quality-first: pass rate is weighted at 70%, reasoning benchmark at 20%, speed at 5%, and lower token use at 5%; values are scaled against the other models, with available dimensions reweighted. The reasoning score uses the 12-question benchmark when present and is not a human IQ score. Token, speed, and reasoning fields show as unavailable when a run did not record those results. On narrow screens, scroll the report horizontally; its 12 columns stay aligned with the headers.
+The metrics page compares each supported local model's latest comprehensive test run (All tests or Complete) from the full saved history; narrow suites do not replace it, and saved reports are not automatically trimmed to the newest 30. Hosted OpenCode catalog results are excluded from this report, including historical saved runs. It shows pass/fail/skip counts, pass rate (skips excluded), reasoning benchmark score, generated tokens per second, generated tokens per test, and average test time. Recommendation is quality-first: pass rate is weighted at 70%, reasoning benchmark at 20%, speed at 5%, and lower token use at 5%; values are scaled against the other models, with available dimensions reweighted. The reasoning score uses the 12-question benchmark when present and is not a human IQ score. Token, speed, and reasoning fields show as unavailable when a run did not record those results. On narrow screens, scroll the report horizontally; its 12 columns stay aligned with the headers. The recent requests table also scrolls horizontally with aligned headers and rows.
 
 The repository README includes a dated snapshot of peak successful generation speeds for
 local models recorded on the development host, along with that host's CPU and memory specs.
@@ -942,13 +923,8 @@ shown in the report and excluded from model recommendation scoring.
 Metrics recorded for these checks carry the selected backend name, making validation
 requests filterable with that backend's chat traffic on the Metrics page.
 Context overflow checks accept a clear rejection or a successful response whose
-reported token usage stays within the model's context window. Hearth chat keeps UTF-8
-content within a conservative byte budget and reserves space for chat templates and MCP
-tool schemas. When Lemonade does not report the live context, Hearth caps the saved ctx-size at the
-4,096-token auto-load default rather than using the model's larger advertised maximum. Image prompt enhancement
-applies the same loaded-context budget to its conversation excerpt. On very small windows,
-Hearth omits MCP tools for a turn if their schemas leave too little room for a response.
-Hearth chat preserves an explicit single- or multi-select mode when normalizing structured question calls.
+reported token usage stays within the model's context window. Hearth chat preserves
+an explicit single- or multi-select mode when normalizing structured question calls.
 Tool-enabled chat requests also explicitly allow compatible backends to return
 multiple independent tool calls in one response.
 Tool checks use a 2,048-token completion budget to leave room for internal reasoning

@@ -704,7 +704,8 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
         raise LemonadeError(inventory_entry.get("load_error") or
                             f"'{model_key}' has an incomplete download and cannot be loaded yet.")
     payload: dict = {"model_name": model_key}
-    payload.update(lemonade_templates.load_options(model_key))
+    model_size = inventory_entry.get("size_gb") if inventory_entry else None
+    payload.update(lemonade_templates.load_options(model_key, model_size_gb=model_size))
     # Default to a 4096-token context window when none is specified; Lemonade's own
     # default (1280) is far too small for real chat, but large windows can fail to
     # load on memory-constrained systems. Users can increase via the Models page.

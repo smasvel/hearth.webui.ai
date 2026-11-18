@@ -2616,6 +2616,7 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
      rows have many numeric columns, so keep their table geometry and scroll it
      as one aligned region instead of turning each cell into an unlabeled block. */
   .metrics-page .metric-table thead { display: table-header-group; }
+  .metrics-page .metric-table thead tr { display: table-row; }
   .metrics-page .metric-table tbody { display: table-row-group; }
   .metrics-page .metric-table tbody tr { display: table-row; padding: 0; margin: 0; border: 0; border-radius: 0; }
   .metrics-page .metric-table td { display: table-cell; padding: 7px 9px; border-bottom: 1px solid var(--border); }

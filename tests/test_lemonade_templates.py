@@ -11,15 +11,15 @@ class DevstralTemplateTests(unittest.TestCase):
         path = Mock()
         glob.return_value = [path]
         path.read_text.return_value = str(23471587328)
-        self.assertTrue(lemonade_templates._small_amd_memory_budget())
+        self.assertEqual(lemonade_templates._amd_shared_gpu_budget_bytes(), 23471587328)
         path.read_text.return_value = str(64 * 1024**3)
-        self.assertFalse(lemonade_templates._small_amd_memory_budget())
+        self.assertEqual(lemonade_templates._amd_shared_gpu_budget_bytes(), 64 * 1024**3)
         path.read_text.side_effect = OSError('unavailable')
-        self.assertFalse(lemonade_templates._small_amd_memory_budget())
+        self.assertIsNone(lemonade_templates._amd_shared_gpu_budget_bytes())
         glob.return_value = []
-        self.assertFalse(lemonade_templates._small_amd_memory_budget())
+        self.assertIsNone(lemonade_templates._amd_shared_gpu_budget_bytes())
 
-    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=True)
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=24 * 1024**3)
     def test_nemotron_uses_cpu_without_losing_context_or_arguments(self, budget):
         current = {'ctx_size': 65536, 'llamacpp_backend': 'vulkan', 'llamacpp_args': '--parallel 1'}
         model = 'NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF'
@@ -29,11 +29,11 @@ class DevstralTemplateTests(unittest.TestCase):
         self.assertEqual(lemonade_templates.load_options(model, options), options)
         self.assertEqual(lemonade_templates.load_options('other-model', current), {})
 
-    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=False)
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=64 * 1024**3)
     def test_nemotron_keeps_gpu_on_other_hardware(self, budget):
         self.assertEqual(lemonade_templates.load_options('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF'), {})
 
-    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=True)
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=24 * 1024**3)
     def test_ornith_35b_uses_cpu_but_9b_keeps_default(self, budget):
         current = {'ctx_size': 65536, 'llamacpp_backend': 'vulkan', 'llamacpp_args': '--parallel 1'}
         options = lemonade_templates.load_options('Ornith-1.5-35B-A3B-GGUF', current)
@@ -41,9 +41,20 @@ class DevstralTemplateTests(unittest.TestCase):
         self.assertEqual(current['llamacpp_backend'], 'vulkan')
         self.assertEqual(lemonade_templates.load_options('Ornith-1.5-9B-GGUF', current), {})
 
-    @patch.object(lemonade_templates, '_small_amd_memory_budget', return_value=False)
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=64 * 1024**3)
     def test_ornith_keeps_gpu_on_other_hardware(self, budget):
         self.assertEqual(lemonade_templates.load_options('Ornith-1.5-35B-A3B-GGUF'), {})
+
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=24 * 1024**3)
+    def test_new_large_models_use_cpu_by_weight_size(self, budget):
+        self.assertEqual(
+            lemonade_templates.load_options('Muse-Glimmer-30B-GGUF', model_size_gb=20),
+            {'llamacpp_backend': 'cpu'},
+        )
+        self.assertEqual(
+            lemonade_templates.load_options('small-model', model_size_gb=4),
+            {},
+        )
 
     def test_scoped_override_preserves_context_and_is_idempotent(self):
         current = {"ctx_size": 63569, "llamacpp_args": "--parallel 1"}

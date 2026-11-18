@@ -73,6 +73,19 @@ def _saved_model_context(model_id: str) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
+def _catalog_model_size_gb(model_id: str) -> float | None:
+    """Read Lemonade's local size metadata for the implicit-load safety policy."""
+    try:
+        response = requests.get(f"{LEMONADE_BASE}/v1/models", params={"show_all": "true"}, timeout=5)
+        response.raise_for_status()
+        for entry in response.json().get("data", []):
+            if entry.get("id") == model_id and isinstance(entry.get("size"), (int, float)):
+                return float(entry["size"])
+    except (requests.RequestException, ValueError):
+        pass
+    return None
+
+
 def _normalize_tool_choice(body: dict) -> dict:
     """Translate OpenAI named-function forcing to required-only form for Lemonade."""
     choice = body.get("tool_choice")
@@ -527,13 +540,16 @@ def _unload_before_implicit_load(model_id: str) -> None:
     models remain resident.
     """
     try:
+        model_size_gb = _catalog_model_size_gb(model_id)
         health = requests.get(f"{LEMONADE_BASE}/v1/health", timeout=5)
         health.raise_for_status()
         models = health.json().get("all_models_loaded", [])
         saved_context = _saved_model_context(model_id)
         for entry in models:
             if entry.get("model_name") == model_id and entry.get("loaded", True):
-                options = lemonade_templates.load_options(model_id, entry.get("recipe_options"))
+                options = lemonade_templates.load_options(
+                    model_id, entry.get("recipe_options"), model_size_gb=model_size_gb
+                )
                 if saved_context:
                     options["ctx_size"] = saved_context
                 if options and options != entry.get("recipe_options"):
@@ -552,7 +568,7 @@ def _unload_before_implicit_load(model_id: str) -> None:
                     json={"model_name": loaded_id}, timeout=60,
                 )
                 resp.raise_for_status()
-        options = lemonade_templates.load_options(model_id)
+        options = lemonade_templates.load_options(model_id, model_size_gb=model_size_gb)
         if saved_context:
             # Load explicitly before forwarding the chat request so Lemonade cannot
             # auto-load this model at its catalog/default context and ignore Hearth's

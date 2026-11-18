@@ -10,16 +10,17 @@ import shlex
 from pathlib import Path
 
 
-def _small_amd_memory_budget() -> bool:
-    """Detect AMD devices with a shared GPU pool smaller than 32 GiB."""
+def _amd_shared_gpu_budget_bytes() -> int | None:
+    """Return the smallest detected AMD shared GPU pool, if available."""
+    budgets = []
     for path in Path('/sys/class/drm').glob('card*/device/mem_info_gtt_total'):
         try:
             budget = int(path.read_text().strip())
         except (OSError, ValueError):
             continue
-        if 0 < budget < 32 * 1024**3:
-            return True
-    return False
+        if budget > 0:
+            budgets.append(budget)
+    return min(budgets) if budgets else None
 
 
 # Flm-recipe models with a context window larger than the default are configured to run at
@@ -37,19 +38,24 @@ _LARGE_CONTEXT_FLM_MODELS = {
 _LARGE_CONTEXT_TOKENS = 120_000
 
 
-def load_options(model_id: str, current: dict | None = None) -> dict:
+def load_options(model_id: str, current: dict | None = None, model_size_gb: float | None = None) -> dict:
     if model_id.lower() in _LARGE_CONTEXT_FLM_MODELS:
         options = dict(current or {})
         options.setdefault('ctx_size', _LARGE_CONTEXT_TOKENS)
         return options
-    if (model_id.lower() in {
+    shared_gpu_budget = _amd_shared_gpu_budget_bytes()
+    known_gpu_heavy = model_id.lower() in {
             'nvidia-nemotron-3.5-lightning-30b-a3b-gguf',
             'ornith-1.5-35b-a3b-gguf',
             'k2-horizon-mova-36b-a4b-gguf',
+            'phillylabs-kat-coder-v2.5-dev-35b-a3b-abliterated-uncensored-philadelphia-class',
         }
-            and _small_amd_memory_budget()):
-        # These models exhaust the small shared GPU pool during initialization
-        # (radv command submission failure / ErrorDeviceLost). Use system RAM.
+    # On small AMD shared-memory systems, large GGUFs can exhaust Vulkan command
+    # submission even when their weights fit in system RAM. Make the decision by
+    # actual model size so newly added models receive the same protection.
+    if (shared_gpu_budget is not None and shared_gpu_budget < 32 * 1024**3
+            and (known_gpu_heavy or (model_size_gb is not None and
+                 model_size_gb * 1e9 >= shared_gpu_budget * 0.5))):
         options = dict(current or {})
         options['llamacpp_backend'] = 'cpu'
         return options
