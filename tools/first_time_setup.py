@@ -224,7 +224,7 @@ def offer_initial_model_download(input_fn=input):
     return True
 
 
-REQUIRED_MEDIA_MODELS = ('Whisper-Tiny', 'kokoro-v1', 'Anima-Turbo')
+REQUIRED_MEDIA_MODELS = ('Whisper-Small', 'kokoro-v1', 'Anima-Turbo')
 
 
 def download_required_media_models():
@@ -253,7 +253,7 @@ def download_required_media_models():
         pending.append(('Wan 2.2 TI2V-5B Q4_K_S (diffusion model, VAE, and text encoder)',
                         video_entry.get('expected_size_gb', 7.5)))
 
-    print('Required first-install media models: Whisper-Tiny, kokoro-v1, Anima-Turbo, and Wan 2.2.')
+    print('Required first-install media models: Whisper-Small, kokoro-v1, Anima-Turbo, and Wan 2.2.')
     if pending:
         known_bytes = sum(size * 1_000_000_000 for _, size in pending
                           if isinstance(size, (int, float)) and math.isfinite(size) and size > 0)

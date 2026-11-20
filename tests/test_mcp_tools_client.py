@@ -13,7 +13,7 @@ class MCPEventLoopTests(unittest.TestCase):
                  "browser_run_code_unsafe", "browser_take_screenshot", "execute_python"]
         tools = [{"type": "function", "function": {"name": "playwright__" + name}}
                  for name in names]
-        selected = mcp_tools_client.select_chat_tools(tools)
+        selected = mcp_tools_client.select_chat_tools(tools, "Click the button and run Python")
         selected_names = [tool["function"]["name"] for tool in selected]
         self.assertIn("playwright__browser_navigate", selected_names)
         self.assertIn("playwright__browser_snapshot", selected_names)

@@ -85,17 +85,64 @@ _CHAT_TOOL_NAMES = {
     "browser_click", "click", "browser_type", "type", "browser_fill_form", "fill_form",
     "execute_python",
 }
+_BROWSER_INTENT_RE = re.compile(
+    r"\b(?:navigate to|go to|browse|inspect|click|fill|interact with)\b"
+    r"|\b(?:open|visit|read)\s+(?:the\s+)?(?:page|website|site|link|url|tab)\b"
+    r"|\b(?:web ?page|website|browser tab|this link|this url|playwright|mcp tools?)\b",
+    re.IGNORECASE,
+)
+_BROWSER_INTERACTION_RE = re.compile(
+    r"\b(?:click|fill|type|select|submit|interact with)\b", re.IGNORECASE,
+)
+_PYTHON_INTENT_RE = re.compile(
+    r"\b(?:python|execute code|run code|run a script|analyze this (?:file|csv|dataset)|"
+    r"process this (?:file|csv|dataset))\b",
+    re.IGNORECASE,
+)
 CHAT_TOOL_RESULT_LIMIT = 1400
 CHAT_BROWSER_INSPECTION_LIMIT = 6000
 
 
-def select_chat_tools(tools: list[dict]) -> list[dict]:
-    """Return the compact, user-facing MCP tool set for Hearth chat."""
-    selected = [tool for tool in tools
-                if (tool.get("function") or {}).get("name", "").split("__", 1)[-1]
-                in _CHAT_TOOL_NAMES]
-    # Retain forward compatibility if an installed MCP server renames its tools.
-    return selected or tools
+def chat_tool_mode(user_text: str | None, *, research_fallback: bool = False) -> str | None:
+    """Select MCP tools only when a user turn explicitly needs them."""
+    text = user_text or ""
+    modes = []
+    if research_fallback or "http://" in text.lower() or "https://" in text.lower() or _BROWSER_INTENT_RE.search(text):
+        modes.append("browser")
+    if _PYTHON_INTENT_RE.search(text):
+        modes.append("python")
+    return "+".join(modes) if modes else None
+
+
+def select_chat_tools(tools: list[dict], user_text: str | None = None, *,
+                      web_evidence_ready: bool = False, research_fallback: bool = False) -> list[dict]:
+    """Return only the small MCP tool subset relevant to this Hearth chat turn."""
+    mode = chat_tool_mode(user_text, research_fallback=research_fallback)
+    if not mode:
+        return []
+    selected_names = set()
+    needs_interaction = _BROWSER_INTERACTION_RE.search(user_text or "")
+    if "browser" in mode and (not web_evidence_ready or needs_interaction):
+        # Navigation and a rendered-page snapshot cover inspection. Include form
+        # controls only when the user explicitly asks to interact with the page.
+        selected_names.update({
+            "browser_navigate", "navigate", "browser_snapshot", "browse_tab",
+            "browser_find", "find", "browser_wait_for", "wait_for",
+        })
+        if needs_interaction:
+            selected_names.update({
+                "browser_navigate_back", "navigate_back", "browser_tabs", "browse_tabs",
+                "browser_click", "click", "browser_type", "type",
+                "browser_fill_form", "fill_form",
+            })
+    if "python" in mode:
+        selected_names.add("execute_python")
+    selected = [
+        tool for tool in tools
+        if (tool.get("function") or {}).get("name", "").split("__", 1)[-1]
+        in selected_names & _CHAT_TOOL_NAMES
+    ]
+    return selected
 
 
 def compact_chat_tool_result(result: str, limit: int = CHAT_TOOL_RESULT_LIMIT) -> str:

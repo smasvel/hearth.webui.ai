@@ -642,6 +642,7 @@ class Manager:
             if sum(j['status'] in ACTIVE for j in self.jobs.values()) >= 20:
                 raise ValueError('The agent queue already has 20 active assignments.')
             job = {'id': uuid.uuid4().hex, 'owner': owner, **assignment,
+                'origin_conversation_id': values.get('origin_conversation_id'),
                 'project': 'PostgreSQL private workspace', 'auto_commands': assignment['shell_mode'] == 'auto',
                 'cycles': 0, 'run_count': 1, 'started': False, 'status': 'queued', 'session_id': None, 'created_at': time.time(),
                 'activity': [], 'messages': [], 'forms': [], 'permissions': [], 'error': None,
@@ -661,6 +662,15 @@ class Manager:
                     raise
             agent_store.save_research_credentials(job['id'], credentials)
             return copy.deepcopy(job)
+
+    def link_chat(self, task_id, owner, conversation_id):
+        with self.lock:
+            job = self.jobs.get(task_id)
+            if not job or job.get('owner') != owner:
+                return False
+            job['origin_conversation_id'] = conversation_id
+            self.save(job)
+            return True
 
     def create_schedule(self, values, owner):
         task_id = str(values.get('task_id', '')).strip()

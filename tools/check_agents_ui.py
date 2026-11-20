@@ -38,8 +38,15 @@ with contextlib.ExitStack() as stack:
   context.add_cookies([{'name':app.app.config['SESSION_COOKIE_NAME'],'value':client.get_cookie(app.app.config['SESSION_COOKIE_NAME']).value,'domain':'127.0.0.1','path':'/'}])
   page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
   page.on('dialog',lambda dialog:dialog.accept())
-  # The model picker lives on the New agent page, not the assignment list.
-  page.goto(f'http://127.0.0.1:{server.server_port}/agents/new')
+  base=f'http://127.0.0.1:{server.server_port}'
+  conversation_id=app.chat_store.new_id()
+  source_goal='Build the feature and verify the result.'
+  app.chat_store.ensure_conversation(conversation_id, owner, None, source_goal)
+  app.chat_store.add_message(conversation_id, 'user', source_goal)
+  page.goto(f'{base}/?conversation={conversation_id}')
+  expect(page.get_by_text(source_goal, exact=True)).to_be_visible()
+  page.get_by_role('button',name='Create agent task').click()
+  expect(page.locator('#agent-create [name=goal]')).to_have_value(source_goal)
   expect(page.locator('#agent-model option')).to_have_count(1)
   page.locator('[name=title]').fill('Build <img src=x onerror=alert(1)> project')
   page.locator('[name=assignee]').fill('UI fixture agent')
@@ -49,6 +56,7 @@ with contextlib.ExitStack() as stack:
   page.locator('#agent-assign').click()
   expect(page.locator('#agent-status')).to_contain_text('queued',timeout=7000)
   job=manager.list()[0];key=job['id'];manager.tick()
+  assert job['origin_conversation_id']==conversation_id
   # Snapshot active is initially true, so no prompt has been sent yet. Turn the
   # empty new session idle to dispatch its first goal.
   snap['active']=False;manager.tick();snap['active']=True
@@ -90,6 +98,23 @@ with contextlib.ExitStack() as stack:
   expect(page.locator('#agent-status')).to_contain_text('completed',timeout=7000)
   expect(page.locator('#agent-result-heading')).to_have_text('Completed result')
   expect(page.locator('#agent-result')).to_contain_text('Verified result')
+  result_chat=context.new_page()
+  result_chat.route('**/api/models',lambda route:route.fulfill(json={'models':[
+   {'id':model['id'],'backend':model['providerID'],'type':'llm','state':'loaded'},
+  ]}))
+  with patch.object(app,'_collect_completion',return_value='## Summary\n\n- Verified result') as formatter:
+   result_chat.goto(base+page.get_by_role('link',name='Open linked Chat').get_attribute('href'))
+   result= result_chat.get_by_role('region',name='Agent results')
+   expect(result.get_by_role('heading',name='Summary')).to_be_visible(timeout=12000)
+   expect(result).to_contain_text('Verified result')
+   expect(result.get_by_text('Original agent result',exact=True)).to_be_visible()
+   expect(result.get_by_role('link',name='Open assignment and full result')).to_have_attribute('href',f'/agents/{key}')
+   result_chat.reload()
+   expect(result.get_by_role('heading',name='Summary')).to_be_visible()
+   formatter.assert_called_once()
+  result_chat.close()
+  print('CASE PASS completed assignment is formatted once and persists in its source conversation')
+
   expect(page.locator('#agent-result')).to_contain_text('Verified by the assigned command')
   expect(page.get_by_role('heading',name='Conversation and tool logs')).to_be_visible()
   current=manager.jobs[key]

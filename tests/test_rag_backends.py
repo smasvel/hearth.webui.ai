@@ -77,6 +77,52 @@ class RagBackendRoutingTests(unittest.TestCase):
         self.assertEqual([hit["content"] for hit in hits], ["question"])
 
 
+    def test_failed_reply_embedding_still_indexes_user_fact_for_another_chat(self):
+        fact = "Project Atlas deployment location is the blue staging cluster."
+        query = "What is the Project Atlas deployment location?"
+
+        def embed(texts, provider):
+            self.assertEqual(provider, "lemonade")
+            if len(texts) > 1:
+                raise app.lemonade.LemonadeError("Assistant reply exceeds the embedding budget")
+            return "lemonade", [[1.0, 0.0]]
+
+        with patch.object(app, "_embed_rag_texts", side_effect=embed):
+            app._remember_exchange("owner", "previous", fact, "A long reply")
+            note = app._recall_memory("owner", "new-chat", query)
+            same_chat = app._recall_memory("owner", "previous", query)
+            other_user = app._recall_memory("other-user", "new-chat", query)
+
+        self.assertIn(fact, note)
+        self.assertIsNone(same_chat)
+        self.assertIsNone(other_user)
+
+    def test_missing_assistant_reply_still_indexes_user_message(self):
+        fact = "The planning forecast uses the conservative scenario."
+        with patch.object(app, "_embed_rag_texts", return_value=("lemonade", [[1.0]])):
+            app._remember_exchange("owner", "previous", fact, None)
+            note = app._recall_memory("owner", "new-chat", "Which scenario does the forecast use?")
+        self.assertIn(fact, note)
+
+    def test_similar_user_statements_keep_changed_fact_and_deduplicate_exact_text(self):
+        old = "Atlas deployment codename is blue lantern."
+        new = "Atlas deployment codename is green lantern."
+        with patch.object(app, "_embed_rag_texts", return_value=("lemonade", [[1.0]])):
+            app._remember_exchange("owner", "old-chat", old, None)
+            app._remember_exchange("owner", "new-chat", new, None)
+            app._remember_exchange("owner", "repeat-chat", new, None)
+            note = app._recall_memory("owner", "lookup-chat", "Atlas deployment codename?")
+        self.assertLess(note.index(new), note.index(old))
+        self.assertEqual(note.count(new), 1)
+
+    def test_empty_query_embedding_skips_retrieval_without_breaking_chat(self):
+        with patch.object(app, "_embed_rag_texts", return_value=("lemonade", [])), \
+             patch.object(memory_store, "search") as search:
+            note = app._recall_memory("owner", "new-chat", "Recall the deployment plan")
+        self.assertIsNone(note)
+        search.assert_not_called()
+
+
 class KoboldEmbeddingClientTests(unittest.TestCase):
     def test_openai_embeddings_response_is_returned_in_input_order(self):
         response = Mock()

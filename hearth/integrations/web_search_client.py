@@ -231,6 +231,14 @@ _WEATHER_FILLER = {
 }
 
 
+_FORECAST_DAYS_RE = re.compile(r"\b(?:next\s+)?(\d{1,3})(?:\s*-\s*|\s+)days?\b", re.IGNORECASE)
+
+
+def weather_forecast_days(query: str) -> int:
+    match = _FORECAST_DAYS_RE.search(query)
+    return max(1, min(16, int(match.group(1)))) if match else 3
+
+
 def extract_weather_location(query: str) -> str | None:
     """Pull the place name out of a weather question. Three strategies, in order:
     (1) a US state abbreviation or name found anywhere in the query, anchored on — the
@@ -249,6 +257,7 @@ def extract_weather_location(query: str) -> str | None:
     feature quietly do nothing on real-world phrasing, not just fail to be exact). None
     if nothing topical survives — guessing a location is worse than falling through to
     the general search path."""
+    query = _FORECAST_DAYS_RE.sub(" ", query)
     tokens = re.findall(r"[A-Za-z']+", query)
     lowered = [t.lower() for t in tokens]
 
@@ -341,8 +350,8 @@ def _geocode(location: str, timeout: float = 8.0) -> dict | None:
         return None
 
 
-def fetch_weather(location: str) -> str | None:
-    """Live conditions + 3-day forecast via Open-Meteo (free, no API key — consistent
+def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
+    """Live conditions and a daily forecast via Open-Meteo (free, no API key — consistent
     with this app's no-cloud-API-keys rule; same reason ddgs was picked for search).
     Two-step: _geocode() resolves the place name, then their forecast API returns
     actual numbers. Returns a formatted context block, or None on any failure (fail-soft,
@@ -365,7 +374,7 @@ def fetch_weather(location: str) -> str | None:
                 "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
                 "temperature_unit": "fahrenheit",
                 "wind_speed_unit": "mph",
-                "forecast_days": 3,
+                "forecast_days": forecast_days,
                 "forecast_hours": 12,
                 "timezone": "auto",
             },
@@ -405,7 +414,7 @@ def fetch_weather(location: str) -> str | None:
         else:
             lines.append("- No meaningful precipitation chance (≥30%) in the next 12 hours.")
         for i, day in enumerate(daily.get("time") or []):
-            day_cond = _WMO_WEATHER_CODES.get((daily.get("weather_code") or [None] * 3)[i], "")
+            day_cond = _WMO_WEATHER_CODES.get((daily.get("weather_code") or [None] * len(daily["time"]))[i], "")
             lines.append(
                 f'- {day}: high {daily["temperature_2m_max"][i]}°F / low {daily["temperature_2m_min"][i]}°F'
                 + (f", {day_cond}" if day_cond else "")

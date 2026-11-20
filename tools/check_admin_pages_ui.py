@@ -80,13 +80,31 @@ with contextlib.ExitStack() as stack:
             '/agents': ('What are you working on?', '.agent-nav'),
             '/agents/new': ('What should your agent do?', '[name="title"]'),
             '/agents/schedules': ('Schedules', '.agent-nav'),
+            '/agents/skills': ('Agent skills', '#agent-skill-list'),
             '/dmv': ('DMV Practice Test', '#dmv-start-btn'),
         }
-        for route, (heading, selector) in checks.items():
-            response = page.goto(base + route)
-            assert response and response.status == 200, f'{route} returned {response.status if response else None}'
-            expect(page.get_by_role('heading', name=heading).first).to_be_visible()
-            expect(page.locator(selector).first).to_be_visible()
+        failures = []
+        for layout, viewport in (
+            ("desktop", {"width": 1440, "height": 1000}),
+            ("mobile", {"width": 390, "height": 844}),
+        ):
+            page.set_viewport_size(viewport)
+            for route, (heading, selector) in checks.items():
+                case = f"{layout} renders {route}"
+                try:
+                    response = page.goto(base + route)
+                    assert response and response.status == 200, f"Unexpected response for {route}"
+                    expect(page.get_by_role("heading", name=heading).first).to_be_visible()
+                    expect(page.locator(selector).first).to_be_visible()
+                    if route.startswith("/agents"):
+                        expect(page.locator(f'.agent-nav a.active[href="{route}"]')).to_be_visible()
+                except Exception as exc:
+                    failures.append(f"{case}: {exc}")
+                    print(f"CASE FAIL {case}")
+                else:
+                    print(f"CASE PASS {case}")
+        assert not failures, "\n".join(failures)
+        page.set_viewport_size({"width": 1440, "height": 1000})
 
         def check_table_dom(route, viewport_label):
             issues = page.evaluate("""() => {
@@ -270,7 +288,9 @@ with contextlib.ExitStack() as stack:
                       '/browse-history', '/quizzes', '/metrics', '/live-logs'):
             response = context.request.get(base + route, max_redirects=0)
             assert response.status in (302, 303, 403), f'{route} was not admin protected: {response.status}'
+            print(f'CASE PASS regular account denied {route}')
         assert context.request.get(base + '/api/metrics/live').status in (302, 403)
+        print('CASE PASS regular account denied live metrics API')
 
         assert not errors, errors
         browser.close()

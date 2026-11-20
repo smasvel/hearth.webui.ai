@@ -2,6 +2,7 @@
   const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
+  let preferredChatModel = modelSelectEl.dataset.preferredModel || "";
   const refreshBtn = document.getElementById("refresh-models");
   const messagesEl = document.getElementById("messages");
   const chatForm = document.getElementById("chat-form");
@@ -481,11 +482,14 @@
     // (Whisper/Kokoro need to stay loaded for voice input/output to work), but never in
     // this chat picker. Non-admins never see them at all (filtered server-side already).
     const loaded = models.filter((m) => m.state === "loaded" && !NON_CHAT_TYPES.includes(m.type));
-    const previous = modelSelectEl.value;
+    const previous = preferredChatModel || modelSelectEl.value;
     modelSelectEl.innerHTML = "";
-    if (loaded.length === 0) {
-      modelSelectEl.innerHTML = `<option value="">No model loaded</option>`;
-      return;
+    if (preferredChatModel && !loaded.some((m) => m.id === preferredChatModel)) {
+      const unavailable = new Option(`${preferredChatModel} · unavailable`, "", true, true);
+      unavailable.disabled = true;
+      modelSelectEl.add(unavailable);
+    } else if (!loaded.length) {
+      modelSelectEl.add(new Option("No model loaded", ""));
     }
     for (const m of loaded) {
       const opt = document.createElement("option");
@@ -504,6 +508,24 @@
     // name on hover so nothing is lost.
     modelSelectEl.title = modelSelectEl.selectedOptions[0]?.textContent || "";
   }
+
+  modelSelectEl.addEventListener("change", async () => {
+    const selected = modelSelectEl.value;
+    if (!selected) return;
+    preferredChatModel = selected;
+    modelSelectEl.title = modelSelectEl.selectedOptions[0]?.textContent || "";
+    try {
+      const response = await fetch("/api/chat/model-preference", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({model: selected}),
+        keepalive: true,
+      });
+      if (!response.ok) throw new Error("Could not save the chat model preference.");
+    } catch {
+      if (preferredChatModel === selected) addSystemMessage("Could not save the chat model preference.", true);
+    }
+  });
 
   async function loadModel(modelKey) {
     // The server keeps one chat/reasoning model loaded across all backends. Small
@@ -702,7 +724,7 @@
       activeReplyEl = null;
       generationErrorShown = false;
       messagesEl.innerHTML = "";
-      for (const m of saved) {
+      for (const [index, m] of saved.entries()) {
         const el = addBubble(m.role, m.content, {
           timestamp: new Date(m.created_at * 1000), duration: m.duration,
           model: m.model, backend: m.backend, totalTokens: m.total_tokens,
@@ -711,7 +733,26 @@
         }, m.reasoning);
         msgWraps.push(el._wrapEl);
         if (m.role === "user") addUserControls(el._wrapEl);
-        else if (m.role === "assistant") addAssistantControls(el._wrapEl);
+        else if (m.role === "assistant") {
+          addAssistantControls(el._wrapEl);
+          const agentButton = document.getElementById("chat-create-agent-btn");
+          if (agentButton && m.backend === "hearth-agent-draft") {
+            const origin = saved.slice(0, index).reverse().find(message => message.role === "user");
+            const action = document.createElement("button");
+            action.type = "button";
+            action.className = "panel-btn";
+            action.textContent = "Open assignment draft";
+            action.addEventListener("click", () => openAgentDraft(origin?.content || "", agentButton.dataset.draftUrl));
+            el.append(action);
+          }
+          if (agentButton && m.backend === "hearth-agent-schedule") {
+            const action = document.createElement("a");
+            action.className = "panel-btn";
+            action.href = agentButton.dataset.schedulesUrl;
+            action.textContent = "Open Agent schedules";
+            el.append(action);
+          }
+        }
       }
     }
     // The persisted assistant wins as soon as it is saved; never append it twice.
@@ -722,7 +763,10 @@
       }
       if (generation.content || generation.reasoning) {
         clearWaitingIndicator(activeReplyEl);
-        activeReplyEl._answerEl.innerHTML = renderMarkdown(generation.content || "");
+        if (activeReplyEl._renderedContent !== generation.content) {
+          activeReplyEl._answerEl.innerHTML = renderMarkdown(generation.content || "", true);
+          activeReplyEl._renderedContent = generation.content;
+        }
       }
       activeReplyEl._thinkingContentEl.textContent = generation.reasoning || "";
       activeReplyEl._thinkingEl.classList.toggle("hidden", !generation.reasoning);
@@ -738,9 +782,110 @@
       generationErrorShown = true;
     }
     setChatBusy(running, !!generation?.stop_requested && running);
+    renderLinkedAgents(data.agents || []);
     if (stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
     else messagesEl.scrollTop = scrollTop;
     updateGenerationPlayback(data);
+  }
+
+  const agentReportAttempts = new Map();
+
+  function renderLinkedAgents(agents) {
+    let panel = document.getElementById("chat-linked-agents");
+    if (!agents.length) {
+      panel?.remove();
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "chat-linked-agents";
+      panel.className = "chat-linked-agents";
+      panel.setAttribute("aria-label", "Agent results");
+      messagesEl.append(panel);
+    }
+    const model = modelSelectEl.value;
+    const signature = JSON.stringify([agents, model, busy, [...agentReportAttempts]]);
+    if (panel.dataset.signature === signature) return;
+    panel.dataset.signature = signature;
+    panel.replaceChildren();
+    for (const agent of agents) {
+      const card = document.createElement("article");
+      card.className = "msg assistant";
+      const heading = document.createElement("strong");
+      heading.textContent = `${agent.title} · ${(agent.status || "").replaceAll("_", " ")}`;
+      const result = document.createElement("div");
+      result.className = "agent-chat-report";
+      result.innerHTML = renderMarkdown(agent.formatted_summary || agent.summary || "");
+      const note = document.createElement("div");
+      note.className = "hint";
+      note.textContent = [agent.completion, agent.error].filter(Boolean).join("\n");
+      const schedules = document.createElement("div");
+      schedules.className = "hint";
+      schedules.textContent = (agent.schedules || []).map(schedule => {
+        const time = schedule.run_time ? ` at ${schedule.run_time} ${schedule.timezone}` : "";
+        const next = schedule.enabled && schedule.next_run_at
+          ? ` · next ${new Date(schedule.next_run_at * 1000).toLocaleString()}` : "";
+        return `${schedule.enabled ? "Scheduled" : "Schedule paused"} · every ${schedule.interval_value} ${schedule.interval_unit}${time}${next}`;
+      }).join("\n") || "No recurring schedule saved.";
+      const link = document.createElement("a");
+      link.href = `/agents/${encodeURIComponent(agent.id)}`;
+      link.textContent = "Open assignment and full result";
+      const scheduleLink = document.createElement("a");
+      scheduleLink.href = agent.schedules?.length ? "/agents/schedules" :
+        `/agents/schedules?task=${encodeURIComponent(agent.id)}`;
+      scheduleLink.textContent = agent.schedules?.length ? "Manage schedules" : "Set up a schedule";
+      card.append(heading, schedules, result);
+      if (agent.formatted_summary && agent.summary) {
+        const original = document.createElement("details");
+        const label = document.createElement("summary");
+        label.textContent = "Original agent result";
+        const raw = document.createElement("div");
+        raw.textContent = agent.summary;
+        original.append(label, raw);
+        card.append(original);
+      } else if (agent.status === "completed" && agent.summary) {
+        const key = `${agent.id}:${agent.run_count}:${model}`;
+        const state = agentReportAttempts.get(key);
+        const formattingStatus = document.createElement("div");
+        formattingStatus.className = "hint";
+        formattingStatus.setAttribute("role", "status");
+        if (!model) formattingStatus.textContent = "Select a chat model to format this result.";
+        else if (state === "failed") {
+          formattingStatus.textContent = "The selected model couldn’t format this result. The original is shown.";
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "panel-btn";
+          retry.textContent = "Retry formatting";
+          retry.addEventListener("click", () => {
+            agentReportAttempts.delete(key);
+            renderLinkedAgents(agents);
+          });
+          card.append(retry);
+        } else if (state || !busy) {
+          formattingStatus.textContent = "Formatting result with the chat model…";
+          if (!state && !busy) void formatLinkedAgent(agent, model, key);
+        }
+        card.append(formattingStatus);
+      }
+      card.append(note, link, scheduleLink);
+      panel.append(card);
+    }
+  }
+
+  async function formatLinkedAgent(agent, model, key) {
+    agentReportAttempts.set(key, "pending");
+    try {
+      const response = await fetch(`/api/agent-tasks/${encodeURIComponent(agent.id)}/chat-report`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({model}),
+      });
+      if (!response.ok) throw new Error("Formatting failed.");
+      if (response.status === 202) agentReportAttempts.delete(key);
+      else agentReportAttempts.set(key, "done");
+    } catch {
+      agentReportAttempts.set(key, "failed");
+    }
   }
 
   function updateGenerationPlayback(data) {
@@ -790,15 +935,13 @@
       if (!res.ok) throw new Error(data.error || "failed to load chat");
       sessionStorage.setItem("hearth-current-chat", id);
       renderConversationSnapshot(data);
-      if (data.model && [...modelSelectEl.options].some((o) => o.value === data.model)) {
-        modelSelectEl.value = data.model;
-      }
       renderConversationList();
       if (!refresh) {
         closeSidebar();
         if (window.Quiz?.resumeInConversation) window.Quiz.resumeInConversation(data.id);
       }
       if (data.generation?.status === "running") scheduleChatRefresh(id, version);
+      else if (data.agents?.length) scheduleChatRefresh(id, version, 3000);
       return true;
     } catch (err) {
       if (currentConversationId !== id || conversationViewVersion !== version || requestNumber !== latestConversationRequest) return false;
@@ -945,14 +1088,16 @@
     return html;
   }
 
-  function renderParagraph(text) {
+  function renderParagraphText(text) {
     if (!text) return "";
     let html = escapeHtml(text);
-    // Restricted to this app's own generated-image path (not arbitrary URLs) — there's no
-    // use case for embedding external images in chat text, and this keeps it simple/safe.
     html = html.replace(
       /!\[video:\s*([^\]]*)\]\((\/api\/videos\/[a-zA-Z0-9_.-]+)\)/g,
       '<div class="generated-media" data-media-type="video"><video src="$2" class="chat-video" controls playsinline preload="metadata" aria-label="$1"></video><div class="generated-media-actions"><button type="button" class="media-copy-btn">Copy link</button><button type="button" class="media-share-btn">Share</button><a class="video-download" href="$2" download>Download video</a></div></div>'
+    );
+    html = html.replace(
+      /!\[([^\]]*)\]\((\/api\/conversations\/[a-zA-Z0-9_-]+\/charts\/\d+\.svg)\)/g,
+      '<figure class="chat-static-preview chat-chart"><img src="$2" alt="$1" class="chat-image chat-chart-image" /><a class="video-download" href="$2" target="_blank" rel="noopener">Open chart full size</a></figure>'
     );
     html = html.replace(
       /!\[([^\]]*)\]\((\/api\/images\/[a-zA-Z0-9_.-]+)\)/g,
@@ -962,6 +1107,27 @@
     html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
     return html;
+  }
+
+  function renderParagraph(text) {
+    const imagePattern = /!\[([^\]\n]*)\]\((https:\/\/[^\s<>()]+)\)/g;
+    let html = "";
+    let cursor = 0;
+    for (const match of text.matchAll(imagePattern)) {
+      let url;
+      try {
+        url = new URL(match[2]);
+      } catch {
+        continue;
+      }
+      if (url.protocol !== "https:" || url.username || url.password ||
+          text.slice(cursor, match.index).split("`").length % 2 === 0) continue;
+      html += renderParagraphText(text.slice(cursor, match.index));
+      const alt = escapeHtml(match[1]);
+      html += `<button type="button" class="code-btn chat-load-image" data-url="${escapeHtml(url.href)}" data-alt="${alt}">Load image${alt ? `: ${alt}` : ""}</button>`;
+      cursor = match.index + match[0].length;
+    }
+    return html + renderParagraphText(text.slice(cursor));
   }
 
   // Generated media stays on Hearth. Copy places image pixels on the clipboard;
@@ -1137,9 +1303,120 @@
     return html;
   }
 
-  function renderMarkdown(text) {
+  const previewTags = new Set(("a article aside b blockquote br caption code col colgroup dd div dl dt em " +
+    "figcaption figure footer h1 h2 h3 h4 h5 h6 header hr i img li main ol p pre section small span " +
+    "strong sub sup table tbody td th thead tfoot tr ul svg g path rect circle ellipse line polyline " +
+    "polygon text tspan title desc").split(" "));
+  const previewAttributes = new Set(("alt aria-label class colspan rowspan scope style title width height " +
+    "viewbox preserveaspectratio role d x y x1 x2 y1 y2 cx cy r rx ry points transform fill " +
+    "fill-opacity stroke stroke-width stroke-dasharray stroke-linecap opacity text-anchor font-size font-weight").split(" "));
+  const chartTags = new Set(("svg g path rect circle ellipse line polyline polygon text tspan title desc").split(" "));
+
+  function renderStaticPreview(code, lang) {
+    const template = document.createElement("template");
+    template.innerHTML = code;
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    if (lang === "svg") {
+      const chart = template.content.firstElementChild;
+      if (!chart || chart.localName !== "svg" || chart.namespaceURI !== svgNamespace) {
+        return renderCodeBlock(code, lang);
+      }
+      for (const element of [chart, ...chart.querySelectorAll("*")]) {
+        if (element.namespaceURI !== svgNamespace || !chartTags.has(element.localName)) {
+          element.remove();
+          continue;
+        }
+        for (const attribute of [...element.attributes]) {
+          const name = attribute.name.toLowerCase();
+          if (attribute.namespaceURI || name === "style" || name === "class" ||
+              !previewAttributes.has(name) || /url\s*\(/i.test(attribute.value)) {
+            element.removeAttribute(attribute.name);
+          }
+        }
+      }
+      return `<figure class="chat-static-preview chat-chart">${chart.outerHTML}` +
+        `<details><summary>View SVG source</summary>${renderCodeBlock(code, lang)}</details></figure>`;
+    }
+    for (const element of template.content.querySelectorAll("*")) {
+      if (!previewTags.has(element.localName.toLowerCase())) {
+        element.remove();
+        continue;
+      }
+      for (const attribute of [...element.attributes]) {
+        const inlineImage = element.localName === "img" && attribute.name === "src" &&
+          /^data:image\/(?:png|jpeg|gif|webp|avif);base64,[a-z0-9+/=]+$/i.test(attribute.value);
+        if (!inlineImage && !previewAttributes.has(attribute.name.toLowerCase())) {
+          element.removeAttribute(attribute.name);
+        }
+      }
+    }
+    const policy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+    const documentHtml = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><style>
+      body{margin:12px;font:15px system-ui;color:#16202a;background:#fff;overflow-wrap:anywhere}
+      img,svg{max-width:100%;height:auto} table{border-collapse:collapse} td,th{border:1px solid #b7c3ce;padding:6px}
+      </style>${template.innerHTML}`;
+    return `<figure class="chat-static-preview"><iframe title="Chat reply preview" sandbox srcdoc="${escapeHtml(documentHtml)}"></iframe>` +
+      `<details><summary>View ${lang.toUpperCase()} source</summary>${renderCodeBlock(code, lang)}</details></figure>`;
+  }
+
+  function renderDataChart(code) {
+    let spec;
+    try {
+      spec = JSON.parse(code);
+    } catch {
+      return renderCodeBlock(code, "chart");
+    }
+    if (!spec || !["line", "bar"].includes(spec.type) || !Array.isArray(spec.values) ||
+        !Array.isArray(spec.labels) || spec.values.length !== spec.labels.length ||
+        spec.values.length < 2 || spec.values.length > 500 ||
+        !spec.values.every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1e15) ||
+        !spec.labels.every(label => typeof label === "string")) {
+      return renderCodeBlock(code, "chart");
+    }
+    const bar = spec.type === "bar";
+    const minimum = Math.min(...spec.values, ...(bar ? [0] : []));
+    const maximum = Math.max(...spec.values, ...(bar ? [0] : []));
+    const range = maximum - minimum || 1;
+    const left = 86, top = 30, width = 590, height = 215;
+    const x = (index) => left + width * (bar ? (index + 0.5) / spec.values.length : index / (spec.values.length - 1));
+    const y = (value) => top + height * (maximum - value) / range;
+    const title = escapeHtml(typeof spec.title === "string" ? spec.title.slice(0, 100) : "Chart");
+    let marks = "";
+    for (let tick = 0; tick <= 4; tick++) {
+      const value = maximum - range * tick / 4;
+      const row = y(value);
+      marks += `<line x1="${left}" x2="${left + width}" y1="${row}" y2="${row}" stroke="#dce4eb"/>`;
+      marks += `<text x="${left - 8}" y="${row + 4}" text-anchor="end" font-size="12">${escapeHtml(Number(value.toPrecision(5)).toLocaleString())}</text>`;
+    }
+    const stride = Math.max(1, Math.ceil((spec.labels.length - 1) / 5));
+    for (let index = 0; index < spec.labels.length; index++) {
+      if (index % stride && index !== spec.labels.length - 1) continue;
+      const anchor = index === 0 ? "start" : index === spec.labels.length - 1 ? "end" : "middle";
+      marks += `<text x="${x(index)}" y="268" text-anchor="${anchor}" font-size="11">${escapeHtml(spec.labels[index].slice(0, 18))}</text>`;
+    }
+    if (bar) {
+      const barWidth = Math.min(56, width / spec.values.length * 0.7);
+      spec.values.forEach((value, index) => {
+        marks += `<rect x="${x(index) - barWidth / 2}" y="${Math.min(y(0), y(value))}" width="${barWidth}" height="${Math.abs(y(0) - y(value))}" fill="#1665a8"><title>${escapeHtml(spec.labels[index].slice(0, 100))}: ${value}</title></rect>`;
+      });
+    } else {
+      const points = spec.values.map((value, index) => `${x(index)},${y(value)}`).join(" ");
+      marks += `<polyline points="${points}" fill="none" stroke="#1665a8" stroke-width="2"/>`;
+    }
+    return `<figure class="chat-static-preview chat-chart"><figcaption>${title}</figcaption><svg viewBox="0 0 700 282" role="img" aria-label="${title}">${marks}</svg>` +
+      `<details><summary>View chart data</summary>${renderCodeBlock(code, "json")}</details></figure>`;
+  }
+
+  function renderMarkdown(text, allowPreview = false) {
     if (!text) return "";
-    const fenceRe = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)(?:```|$)/g;
+    const trimmed = text.trim();
+    if (allowPreview && /^<svg(?:\s|>)[\s\S]*<\/svg>$/i.test(trimmed)) {
+      return renderStaticPreview(trimmed, "svg");
+    }
+    if (allowPreview && /^(?:<!doctype html>\s*)?<html(?:\s|>)[\s\S]*<\/html>$/i.test(trimmed)) {
+      return renderStaticPreview(trimmed, "html");
+    }
+    const fenceRe = /```([a-zA-Z0-9_+-]*)\r?\n([\s\S]*?)(?:```|$)/g;
     let html = "";
     let lastIndex = 0;
     let match;
@@ -1147,7 +1424,15 @@
       html += renderProse(text.slice(lastIndex, match.index));
       const lang = match[1];
       const code = match[2].replace(/\n$/, "");
-      html += renderCodeBlock(code, lang);
+      const previewLang = lang.toLowerCase();
+      const closed = match[0].endsWith("```");
+      if (allowPreview && closed && previewLang === "chart") {
+        html += renderDataChart(code);
+      } else if (allowPreview && closed && ["html", "svg"].includes(previewLang)) {
+        html += renderStaticPreview(code, previewLang);
+      } else {
+        html += renderCodeBlock(code, lang);
+      }
       lastIndex = fenceRe.lastIndex;
     }
     html += renderProse(text.slice(lastIndex));
@@ -1165,6 +1450,21 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
+
+  messagesEl.addEventListener("click", (event) => {
+    const button = event.target.closest(".chat-load-image");
+    if (!button) return;
+    const image = document.createElement("img");
+    image.className = "chat-image";
+    image.alt = button.dataset.alt || "Image from chat reply";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      button.textContent = "Image unavailable. Retry";
+      image.replaceWith(button);
+    });
+    image.src = button.dataset.url;
+    button.replaceWith(image);
+  });
 
   messagesEl.addEventListener("click", (e) => {
     const tableCopyBtn = e.target.closest(".table-copy");
@@ -1318,7 +1618,7 @@
         thinkingContent.textContent = reasoning;
         thinking.classList.remove("hidden");
       }
-      answer.innerHTML = renderMarkdown(text);
+      answer.innerHTML = renderMarkdown(text, true);
 
       // A freshly-created, still-empty assistant bubble means we're between "user hit
       // send" and "first token arrived" — anywhere from instant to tens of seconds on a
@@ -1406,6 +1706,34 @@
   });
 
   if (refreshBtn) refreshBtn.addEventListener("click", fetchModels);
+  document.getElementById("chat-create-agent-btn")?.addEventListener("click", (event) => {
+    const latest = [...history].reverse().find(message => message.role === "user")?.content;
+    const goal = chatInput.value.trim() || (typeof latest === "string" ? latest.trim() : "");
+    openAgentDraft(goal, event.currentTarget.dataset.draftUrl);
+  });
+
+  function openAgentDraft(goal, url) {
+    if (!goal) {
+      window.location.assign(url);
+      return;
+    }
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = url;
+    for (const [name, value] of [
+      ["csrf_token", document.querySelector('meta[name="csrf-token"]').content],
+      ["chat_goal", goal.slice(0, 20000)],
+      ["origin_conversation_id", currentConversationId || ""],
+    ]) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.requestSubmit();
+  }
   if (securityScanBtn) {
     securityScanBtn.addEventListener("click", () => {
       chatInput.value = "/security-scan";
@@ -1449,7 +1777,7 @@
     }
     const isSecurityScan = ["/security-scan", "/security scan"].includes(text.toLowerCase());
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
-    if (!modelSelectEl.value && !isSecurityScan && !isVideoRequest) {
+    if (!modelSelectEl.value && !isSecurityScan && !isVideoRequest && !isAgentChatRequest(text)) {
       addSystemMessage("Load a model first.", true);
       return;
     }
@@ -1490,11 +1818,15 @@
   }
 
   // Start a server-owned turn. Polling can stop with the tab; generation cannot.
+  function isAgentChatRequest(text) {
+    return /^(?:(?:please|can you|could you|would you)\s+)*(?:create|start|set up|schedule)\b[^\n]{0,100}\b(?:agent(?:ic)?|assignment)\b/i.test(text);
+  }
+
   async function runChatTurn(text, preservedReply = "", regenerationFallback = null, documents = []) {
     const isSecurityScan = ["/security-scan", "/security scan"].includes(text.toLowerCase());
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
     const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "gemini-omni-1.1-flash" : ""));
-    if (!model) { addSystemMessage("Load a model first.", true); return; }
+    if (!model && !isAgentChatRequest(text)) { addSystemMessage("Load a model first.", true); return; }
     if (!currentConversationId) currentConversationId = crypto.randomUUID();
     const id = currentConversationId;
     const version = conversationViewVersion;
@@ -1716,7 +2048,7 @@
     bubble.className = "msg assistant preserved-reply";
     const answer = document.createElement("div");
     answer.className = "answer-content";
-    answer.innerHTML = renderMarkdown(oldReply);
+    answer.innerHTML = renderMarkdown(oldReply, true);
     bubble.appendChild(answer);
     wrap.appendChild(bubble);
     const bar = document.createElement("div");
@@ -2077,36 +2409,47 @@
   // before the first chunk was even requested. Speaking completed sentences as they
   // arrive means the first sentence can be playing while the model is still generating
   // the rest of the reply.
-  let speechQueue = [];
+  const speechQueue = [];
   let speechQueueRunning = false;
+  let playingSpeech = false;
   let speechQueueDrainResolvers = [];
+
+  function prefetchNextSpeech() {
+    if (playingSpeech && speechQueue.length && !speechQueue[0].audio) {
+      const next = speechQueue[0];
+      next.audio = fetchSpeechAudio(next.text);
+    }
+  }
 
   function enqueueSpeech(text) {
     const cleaned = stripMarkdownForSpeech(text);
     if (!cleaned) return;
-    speechQueue.push(cleaned);
+    speechQueue.push({text: cleaned, audio: null});
     if (!speechQueueRunning) runSpeechQueue();
+    else prefetchNextSpeech();
   }
 
   async function runSpeechQueue() {
     speechQueueRunning = true;
-    let nextAudio = null;
-    while (speechQueue.length > 0) {
-      const text = speechQueue.shift();
-      const audioPromise = nextAudio || fetchSpeechAudio(text);
-      const blob = await audioPromise;
-      // Prefetch whatever's next in the queue *now*, so it's ready by the time this
-      // one finishes playing - if the queue is empty at this instant (the model hasn't
-      // streamed the next sentence yet), there's nothing to prefetch; a subsequent
-      // enqueueSpeech() call will just kick runSpeechQueue() off again since this loop
-      // will have exited and cleared speechQueueRunning by then.
-      nextAudio = speechQueue.length > 0 ? fetchSpeechAudio(speechQueue[0]) : null;
-      if (blob) await playAudioBlob(blob);
+    try {
+      while (speechQueue.length > 0) {
+        const item = speechQueue.shift();
+        const blob = await (item.audio || fetchSpeechAudio(item.text));
+        if (!blob) continue;
+        playingSpeech = true;
+        prefetchNextSpeech();
+        try {
+          await playAudioBlob(blob);
+        } finally {
+          playingSpeech = false;
+        }
+      }
+    } finally {
+      speechQueueRunning = false;
+      const resolvers = speechQueueDrainResolvers;
+      speechQueueDrainResolvers = [];
+      resolvers.forEach((resolve) => resolve());
     }
-    speechQueueRunning = false;
-    const resolvers = speechQueueDrainResolvers;
-    speechQueueDrainResolvers = [];
-    resolvers.forEach((r) => r());
   }
 
   // Resolves once the queue is fully drained (nothing left queued or playing) -
@@ -2139,6 +2482,17 @@
       const candidateEnd = spokenUpTo + m.index + m[0].length;
       if (isInsideCodeFence(fullText.slice(0, candidateEnd))) break;
       consumed = m.index + m[0].length;
+    }
+    if (consumed === 0 && tail.length >= 160) {
+      // Start speaking a long answer before its first full stop. Prefer a clause
+      // boundary and fall back to a word boundary without reading code aloud.
+      const prefix = tail.slice(0, 160);
+      const clauseEnd = Math.max(prefix.lastIndexOf(", "), prefix.lastIndexOf("; "),
+                                 prefix.lastIndexOf(": "));
+      const boundary = clauseEnd >= 60 ? clauseEnd + 1 : prefix.lastIndexOf(" ");
+      if (boundary >= 60 && !isInsideCodeFence(fullText.slice(0, spokenUpTo + boundary))) {
+        consumed = boundary;
+      }
     }
     if (consumed > 0) {
       enqueueSpeech(tail.slice(0, consumed));
@@ -2319,6 +2673,12 @@
 
   fetchModels();
   fetchConversations();
-  const previousChat = sessionStorage.getItem("hearth-current-chat");
+  const chatUrl = new URL(location.href);
+  const linkedChat = chatUrl.searchParams.get("conversation");
+  if (linkedChat) {
+    chatUrl.searchParams.delete("conversation");
+    window.history.replaceState(null, "", chatUrl);
+  }
+  const previousChat = linkedChat || sessionStorage.getItem("hearth-current-chat");
   if (previousChat) loadConversation(previousChat);
 })();

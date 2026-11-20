@@ -481,6 +481,7 @@ def list_models() -> list[dict]:
             {
                 "id": model_id,
                 "state": "loaded" if loaded_entry else "not-loaded",
+                "recipe": m.get("recipe"),
                 "publisher": publisher,
                 "quantization": _device_label(loaded_entry, m.get("recipe") or ""),
                 "type": entry_type,
@@ -544,6 +545,17 @@ def owns_model(model_id: str) -> bool:
     to the right backend by model id alone, without hardcoding names — unlike
     Colibri, which was exactly one fixed model id, Lemonade can hold many."""
     return any(m["id"] == model_id for m in list_models())
+
+
+def loaded_device(model_id: str) -> str | None:
+    """Read the device serving this model from Lemonade's live inventory."""
+    try:
+        resp = requests.get(f"{base_url()}/v1/health", headers=_auth_headers(), timeout=2)
+        resp.raise_for_status()
+        return next((entry.get("device") for entry in resp.json().get("all_models_loaded", [])
+                     if entry.get("model_name") == model_id and entry.get("loaded")), None)
+    except requests.RequestException:
+        return None
 
 
 def is_model_loaded(model_id: str) -> bool:
@@ -720,10 +732,13 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     # (an unknown model key / RAM-refusal / bad payload fails identically every attempt) — fail
     # fast on those rather than burning the whole backoff budget and surfacing a misleading error.
     last_error = ""
+    # Lemonade may download and verify missing FLM weights inside the load call.
+    # Match the Docker request window so a large first load isn't retried mid-pull.
+    load_timeout = 3600 if (inventory_entry or {}).get("recipe") == "flm" else 600
     for attempt in range(1, _LOAD_RETRIES + 1):
         try:
             resp = requests.post(
-                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=600
+                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=load_timeout
             )
             if resp.status_code < 500:
                 break
@@ -1530,7 +1545,7 @@ def embed(texts: list[str]) -> list[list[float]]:
 # ("transcription" and "tts", separate from "llm"/"embedding" per /v1/health's
 # max_models), so loading either one never evicts whatever chat model is currently
 # loaded - confirmed live, same coexistence guarantee embed() already relies on above.
-STT_MODEL_ID = os.environ.get("LEMONADE_STT_MODEL_ID", "Whisper-Tiny")
+STT_MODEL_ID = os.environ.get("LEMONADE_STT_MODEL_ID", "Whisper-Small")
 TTS_MODEL_ID = os.environ.get("LEMONADE_TTS_MODEL_ID", "kokoro-v1")
 IMAGE_MODEL_ID = os.environ.get("LEMONADE_IMAGE_MODEL_ID", "Anima-Turbo")
 DEFAULT_TTS_VOICE = os.environ.get("LEMONADE_TTS_VOICE", "af_heart")
@@ -1543,7 +1558,7 @@ def _ensure_voice_model_loaded(model_id: str) -> None:
     its default backend on this machine is ROCm, which - like the llama.cpp
     GPU crashes documented elsewhere in this README - doesn't actually work here (the
     whisper-server process crashes immediately, exit code 134, confirmed live). The CPU
-    backend works correctly and is plenty fast for Whisper-Tiny/Base-sized models, so
+    backend works correctly and is plenty fast for Whisper models, so
     it's forced explicitly on every load call - confirmed live this must be a top-level
     field on the /v1/load payload (`{"whispercpp_backend": "cpu"}`), not nested under
     `recipe_options` as every other per-recipe option in this file is passed - Lemonade

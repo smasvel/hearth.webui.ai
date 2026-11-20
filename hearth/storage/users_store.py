@@ -49,6 +49,7 @@ def init_db() -> None:
         conn.execute(SCHEMA)
         # Idempotent upgrade for accounts created before personal Caddy tokens.
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS caddy_token TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_model TEXT")
         conn.execute("ALTER TABLE auth_events ADD COLUMN IF NOT EXISTS actor_username TEXT")
         has_agent_permission = conn.execute(
             "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
@@ -162,6 +163,17 @@ def get_user_by_id(user_id: str) -> dict | None:
             (user_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def get_chat_model(user_id: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT chat_model FROM users WHERE id = %s", (user_id,)).fetchone()
+        return row["chat_model"] if row else None
+
+
+def set_chat_model(user_id: str, model: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE users SET chat_model = %s WHERE id = %s", (model, user_id))
 
 
 def username_exists(username: str) -> bool:

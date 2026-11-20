@@ -95,6 +95,16 @@ def find_near_duplicate(user_id: str, role: str, embedding: list[float], thresho
     return bool(np.max(similarities) >= threshold)
 
 
+def has_exact_user_chunk(user_id: str, content: str, embedding_backend: str) -> bool:
+    """Deduplicate repeated text without discarding a changed user fact."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM memory_chunks WHERE user_id = %s AND role = 'user' "
+            "AND embedding_backend = %s AND content = %s LIMIT 1",
+            (user_id, embedding_backend, content),
+        ).fetchone() is not None
+
+
 def add_chunk(user_id: str, conversation_id: str, role: str, content: str, embedding: list[float],
               embedding_backend: str = "lemonade") -> None:
     vector = np.asarray(embedding, dtype=np.float32).tobytes()
@@ -234,6 +244,8 @@ def search(
     top_k: int = 8,
     min_similarity: float = 0.35,
     embedding_backend: str = "lemonade",
+    *,
+    role: str | None = None,
 ) -> list[dict]:
     """Search stored chunks by cosine similarity, scoped to the current user.
 
@@ -246,7 +258,8 @@ def search(
             (user_id, embedding_backend),
         ).fetchall()
 
-    candidates = [r for r in rows if r["conversation_id"] != exclude_conversation_id]
+    candidates = [r for r in rows if r["conversation_id"] != exclude_conversation_id
+                  and (role is None or r["role"] == role)]
     if not candidates:
         return []
 
@@ -268,7 +281,8 @@ def search(
     norms[norms == 0] = 1e-9
     similarities = (vectors @ query) / (norms * query_norm)
 
-    ranked = sorted(zip(similarities, candidates), key=lambda p: p[0], reverse=True)
+    ranked = sorted(zip(similarities, candidates),
+                    key=lambda pair: (pair[0], pair[1]["created_at"]), reverse=True)
     results = []
     for similarity, row in ranked[:top_k]:
         if similarity < min_similarity:

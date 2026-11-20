@@ -170,6 +170,13 @@
       }
     }
     if(el('agent-goal'))el('agent-goal').textContent = task.goal + (task.criteria ? '\nAcceptance criteria: '+task.criteria : '');
+    const originChat = el('agent-origin-chat');
+    if (originChat) {
+      originChat.hidden = !task.origin_conversation_id;
+      if (task.origin_conversation_id) {
+        originChat.href = `/?conversation=${encodeURIComponent(task.origin_conversation_id)}`;
+      }
+    }
     if(el('agent-error'))el('agent-error').textContent = task.error || '';
     if(el('agent-pause'))el('agent-pause').disabled = !active.has(task.status);
     if(el('agent-resume'))el('agent-resume').disabled = !['paused','blocked','interrupted'].includes(task.status);
@@ -485,6 +492,14 @@
       for(const task of eligible) {
         const option=document.createElement('option'); option.value=task.id; option.textContent=`${task.title} · ${friendlyStatus(task.status)}`; select.append(option);
       }
+      const requestedTask = new URLSearchParams(location.search).get('task');
+      if (requestedTask && eligible.some(item => item.id === requestedTask)) {
+        select.value = requestedTask;
+        const form = el('agent-schedule-form');
+        const details = form.closest('details');
+        if (details) details.open = true;
+        form.elements.run_time.value = eligible.find(item => item.id === requestedTask)?.suggested_daily_time || '';
+      }
       if(!eligible.length) {
         const option=document.createElement('option'); option.value=''; option.textContent='Create an assignment first'; option.disabled=true; select.append(option);
       }
@@ -541,9 +556,46 @@
     if(archive instanceof File && archive.size)payload.append('project_archive',archive,archive.name);
     el('agent-assign').disabled=true;
     if(archive instanceof File && archive.size)el('agent-create-status').textContent='Uploading the project ZIP to PostgreSQL; large archives may take a while…';
-    try { const created=await api('/api/agent-tasks',payload);window.location.assign(`/agents/${created.id}`); }
+    try {
+      const created=await api('/api/agent-tasks',payload);
+      if (created.origin_conversation_id) {
+        sessionStorage.setItem('hearth-current-chat', created.origin_conversation_id);
+      }
+      window.location.assign(`/agents/${created.id}`);
+    }
     catch(error){el('agent-create-status').textContent=error.message;}
     finally{if(el('agent-assign'))el('agent-assign').disabled=false;}
+  });
+  el('agent-link-chat')?.addEventListener('toggle', async event => {
+    if (!event.currentTarget.open) return;
+    const select = el('agent-link-chat-form').elements.conversation_id;
+    const status = el('agent-link-chat-status');
+    try {
+      const {conversations} = await api('/api/conversations');
+      select.replaceChildren(new Option('Choose a chat', ''));
+      for (const chat of conversations) {
+        select.add(new Option(chat.title, chat.id, false, chat.id === task?.origin_conversation_id));
+      }
+      status.textContent = conversations.length ? '' : 'Create a conversation in Chat first.';
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  });
+  el('agent-link-chat-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!task) return;
+    const id = task.id;
+    const conversationId = event.currentTarget.elements.conversation_id.value;
+    const status = el('agent-link-chat-status');
+    try {
+      await api(`/api/agent-tasks/${encodeURIComponent(id)}/chat`, {conversation_id: conversationId}, 'PATCH');
+      const link = el('agent-origin-chat');
+      link.href = `/?conversation=${encodeURIComponent(conversationId)}`;
+      link.hidden = false;
+      status.textContent = 'Linked. The assignment result is available in Chat.';
+    } catch (error) {
+      status.textContent = error.message;
+    }
   });
   if(page==='new' && new URLSearchParams(window.location.search).has('clone')) {
     try {

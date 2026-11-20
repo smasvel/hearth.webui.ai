@@ -60,6 +60,9 @@ class BackendInstallerTests(unittest.TestCase):
         commands = [c.args[0] for c in run.call_args_list]
         self.assertEqual(commands[0], ['docker', 'pull', 'ghcr.io/lemonade-sdk/lemonade-server:latest'])
         self.assertIn('docker', commands[-1])
+        timeout_index = commands[-1].index('-e')
+        self.assertEqual(commands[-1][timeout_index:timeout_index + 2],
+                         ['-e', 'LEMONADE_GLOBAL_TIMEOUT=3600'])
 
     @patch.object(installer.platform, 'system', return_value='Windows')
     @patch.object(installer.Path, 'is_file', side_effect=[False, True])

@@ -51,5 +51,18 @@ class ChatMCPRoutingTests(unittest.TestCase):
         start.assert_called_once_with()
 
 
+class ChatToolSelectionTests(unittest.TestCase):
+    def test_research_evidence_omits_redundant_tools_but_keeps_explicit_actions(self):
+        from hearth.integrations.mcp_tools_client import select_chat_tools
+        tools = [{"function": {"name": name}} for name in (
+            "playwright__browser_navigate", "playwright__browser_click",
+            "python_repl__execute_python",
+        )]
+        self.assertEqual(select_chat_tools(tools, "Say hello"), [])
+        self.assertEqual(select_chat_tools(tools, "Inspect this website", web_evidence_ready=True), [])
+        self.assertEqual(select_chat_tools(tools, "Click the button", web_evidence_ready=True), tools[:2])
+        self.assertEqual(select_chat_tools(tools, "Run Python"), tools[2:])
+
+
 if __name__ == '__main__':
     unittest.main()

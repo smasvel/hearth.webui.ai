@@ -15,7 +15,7 @@ agent records; model weights and generated media remain in configured local stor
 
 | Area | Capabilities |
 |---|---|
-| Chat | Streamed responses and supported reasoning, saved conversations, model selection, file attachments, and Markdown |
+| Chat | Streamed responses and supported reasoning, saved conversations, model selection, file attachments, Markdown, and request-specific browser/Python tools |
 | Model management | Search supported catalogs and Hugging Face, download and upload supported models, load or unload local models, and configure per-model context and reasoning preferences |
 | Model evaluation | Compatibility and tool-use checks, reasoning and safety evaluations, saved reports, and user-managed test scenarios |
 | Coding agents | OpenCode project tasks, live activity, project checkpoints, verification commands, schedules, and reusable agent skills |
@@ -30,6 +30,20 @@ agent records; model weights and generated media remain in configured local stor
 Feature availability depends on the configured runtime, installed models, and host
 hardware. See the [installation guide](deploy/FIRST_TIME_INSTALL.md) for prerequisites
 and operational details.
+
+Live logs retain request starts and finished traces for two days. If Hearth restarts
+during a request, the log marks it as interrupted instead of dropping it. Resetting
+Live logs preserves active request checkpoints.
+Hearth adds browser or Python tool schemas only when a chat message explicitly requests
+that work, keeping ordinary local-model prompts smaller and faster to prefill.
+Lemonade NPU chat reuses the loaded context when no per-model context is set.
+Empty model replies appear as chat errors and in Live logs.
+For CPU models served by Lemonade, automatic web lookups use search snippets.
+Explicit web searches, direct URLs, and screenshot requests can still fetch full pages.
+Hearth limits the web research text added to each chat prompt to reduce the wait
+before the model starts replying. When Hearth already retrieved web evidence, it skips
+redundant browser tools unless the message requests a page interaction. Browse history
+and captured screenshots remain available.
 
 ## Architecture
 
@@ -53,9 +67,19 @@ runtime or optional hosted provider.
 | q38rocm | Qwen 3.8 local inference | Optional Radeon Vulkan backend; see the setup guide |
 | [opencode.ai](https://opencode.ai) | Optional hosted chat and coding models | Account and plan access are managed by the provider |
 
+For Ryzen AI NPU chat, select a Lemonade FLM model such as `qwen3.5-2b-FLM`.
+An FLM first load can download and verify weights. Hearth allows up to an hour for each load request.
+Lemonade's GGUF models use CPU or GPU inference.
+The Linux installer configures Docker's locked memory limit and persistent FLM storage
+when it detects an AMD NPU.
+
 On AMD systems with a shared GPU memory pool below 32 GiB, Lemonade automatically
 uses CPU inference for models whose weights exceed half that pool, to avoid Vulkan
 memory exhaustion. Replies may be slower.
+
+Lemonade's request timeout is set to one hour for long-context OpenCode requests, which
+can take many minutes to prefill on CPU. Existing Docker installs can persist this with
+`docker exec lemonade-server /opt/lemonade/lemonade config set global_timeout=3600`.
 
 ### Observed local model speeds
 
@@ -197,5 +221,68 @@ To include browser coverage:
 .venv/bin/python tools/run_tests.py --browser
 ```
 
+The browser runner discovers `tools/check_*_ui.py` suites and lists named checks
+for desktop and mobile pages, route permissions, and sign-in flows.
+
 For environment setup and deployment options, see the
 [installation guide](deploy/FIRST_TIME_INSTALL.md).
+
+Hearth weather lookups can request up to 16 forecast days from Open-Meteo. For a
+weather question without a city, Hearth can use your saved location. Live forecast prompts use current weather data and exclude past assistant replies. Web search settings still apply.
+
+Cross-chat recall uses past user statements as background. Earlier assistant replies
+are excluded so old refusals and stale answers do not steer a new request. Hearth
+can index a user message even when the assistant reply fails or cannot be embedded.
+It preserves distinct user statements even when they are phrased similarly.
+
+Chat remembers the last model you select for your account after refresh or sign-in.
+If that model is unavailable, the picker keeps it visible until you load it or
+select another model.
+
+Chat reviews one Playwright research read at a time and stops after six reads
+or a repeated navigation without new evidence. It then asks the model to answer
+from verified evidence and identify any gaps.
+
+Chat replies can display local images and preview completed `html` and `svg` code
+blocks inline, including tables and static charts. SVG charts render directly in
+the chat bubble after filtering unsupported markup and external resources. HTML
+previews run in a sandbox with scripts and network access disabled. Use **View source** to copy the original markup.
+HTTPS Markdown images have a **Load image** button that fetches them on demand.
+
+With web research enabled, a Chat request with an explicit US equity symbol, a
+one to five year range, and a daily interval draws an inline closing-price chart
+from Nasdaq historical quotes. Saved charts display as private inline images with an **Open chart full size** link.
+If the source cannot provide prices, Chat reports
+that instead of plotting estimates. A daily chart follow-up can reuse the last explicitly requested symbol in the same chat.
+No browser automation or API key is required.
+
+For other chart requests, the chat model can render line and bar charts from
+provided or verified numeric data. Hearth draws the chart and lets you inspect
+its values. Ask for the chart in plain language.
+
+When an enabled web lookup finds no verified evidence, supported chat models can
+use MCP browser tools for a focused follow-up if browser research is enabled.
+
+Voice transcription defaults to Whisper Small on Lemonade. Spoken replies can
+start during long sentences and fetch the next clip while the current one plays.
+
+In Chat, users with agent access can select **Create agent task**. Hearth opens
+an editable assignment draft using the composer text or the latest user message.
+Review the goal, model, and tools, then submit the assignment when ready.
+
+An explicit agent request in Chat offers an assignment draft or opens Agent
+schedules. Tasks and schedules appear in Agents only after you submit their
+forms. Chat identifies drafts and unsaved schedules as such.
+
+Assignments created from Chat link back to the source conversation. Chat shows
+the assignment status and latest result, including after a scheduled run. To
+attach an existing assignment, open it in Agents and use **Link result to Chat**.
+
+Linked assignments in Chat show saved schedules and the next run time. **Set up
+a schedule** opens the schedule form with that assignment selected. Review and
+save the schedule there.
+
+When a completed linked result is opened in Chat, Hearth can use the selected
+chat model to turn it into a Markdown report. The model receives a bounded
+excerpt of the result, and the formatted report is saved per run. The original
+result remains available, including when no model is selected or formatting fails.

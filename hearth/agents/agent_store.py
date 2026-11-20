@@ -73,6 +73,14 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner ON agent_tasks(owner_id)")
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_chat_reports (
+                task_id TEXT NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
+                run_count INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY (task_id, run_count)
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_project_archives (
                 task_id TEXT PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
                 owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -217,6 +225,38 @@ def get_task(task_id):
     with database.connect() as conn:
         row = conn.execute("SELECT payload FROM agent_tasks WHERE id = %s", (task_id,)).fetchone()
     return json.loads(row['payload']) if row else None
+
+
+def list_chat_tasks(owner: str, conversation_id: str) -> list[dict]:
+    """Return only display fields for assignments attached to this owner's chat."""
+    with database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, payload::jsonb->>'title' AS title,
+                   payload::jsonb->>'status' AS status,
+                   COALESCE((payload::jsonb->>'run_count')::integer, 1) AS run_count,
+                   reports.content AS formatted_summary,
+                   LEFT(payload::jsonb->>'summary', 16000) AS summary,
+                   payload::jsonb->>'completion' AS completion,
+                   payload::jsonb->>'error' AS error
+            FROM agent_tasks
+            LEFT JOIN agent_chat_reports reports ON reports.task_id = agent_tasks.id
+                AND reports.run_count = COALESCE((payload::jsonb->>'run_count')::integer, 1)
+            WHERE owner_id = %s AND payload::jsonb->>'origin_conversation_id' = %s
+            ORDER BY updated_at DESC LIMIT 30
+            """,
+            (owner, conversation_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_chat_report(task_id: str, run_count: int, content: str) -> None:
+    with database.connect() as conn:
+        conn.execute(
+            "INSERT INTO agent_chat_reports (task_id, run_count, content) VALUES (%s, %s, %s) "
+            "ON CONFLICT (task_id, run_count) DO NOTHING",
+            (task_id, run_count, content),
+        )
 
 
 def validate_project_archive(stream):

@@ -40,6 +40,38 @@ class TraceStorageTests(unittest.TestCase):
         self.assertEqual(live_requests._recent[-1]['response_content'], 'saved')
         self.assert_connections_closed()
 
+    def test_unfinished_trace_is_recovered_as_interrupted(self):
+        live_requests._init_trace_store()
+        live_requests._persist_started({
+            "id": 7, "status": "streaming", "started_at": time.time() - 2,
+            "request_content": "saved request", "tokens": 0,
+        })
+        self.assertEqual(live_requests._init_trace_store(), 8)
+        self.assertEqual(live_requests._recent, [])
+        self.assertEqual(live_requests._init_trace_store(recover_interrupted=True), 8)
+        entry = live_requests._recent[-1]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("restarted", entry["error_detail"])
+        self.assertEqual(entry["request_content"], "saved request")
+        self.assertIsNotNone(entry["finished_at"])
+        self.assert_connections_closed()
+
+    def test_reset_preserves_active_checkpoint_and_removes_finished_trace(self):
+        live_requests._init_trace_store()
+        now = time.monotonic()
+        live_requests._persist_finished({
+            "id": 6, "started": now, "updated": now, "finished_at": time.time(),
+        })
+        live_requests._persist_started({
+            "id": 7, "status": "streaming", "started_at": time.time(),
+        })
+        with patch.object(live_requests, "_active", {7: {"id": 7}}):
+            live_requests.clear_all()
+
+        self.assertEqual(live_requests._init_trace_store(recover_interrupted=True), 8)
+        self.assertEqual([row["id"] for row in live_requests._recent], [7])
+        self.assert_connections_closed()
+
     def test_failed_persistence_closes_connection(self):
         live_requests._init_trace_store()
         now = time.monotonic()

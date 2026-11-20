@@ -10,6 +10,22 @@ from pathlib import Path
 from urllib.request import urlopen
 
 
+def _migrate_lemonade_flm():
+    """Copy existing FLM models into the persistent volume before replacing Docker."""
+    source = 'lemonade-server:/opt/lemonade/.config/flm/.'
+    if subprocess.run(['docker', 'exec', 'lemonade-server', 'test', '-d',
+                       '/opt/lemonade/.config/flm']).returncode:
+        return
+    with subprocess.Popen(['docker', 'cp', source, '-'], stdout=subprocess.PIPE) as archive:
+        subprocess.run([
+            'docker', 'run', '--rm', '-i', '--user', '0',
+            '-v', 'lemonade-flm:/destination', '--entrypoint', 'tar',
+            'ghcr.io/lemonade-sdk/lemonade-server:latest', '-xf', '-', '-C', '/destination',
+        ], stdin=archive.stdout, check=True)
+        if archive.wait():
+            raise RuntimeError('Could not copy Lemonade FLM models into persistent storage.')
+
+
 def add_arguments(parser, *, require_lemonade=False):
     parser.add_argument('--install-backends', nargs='+', choices=('lmstudio', 'lemonade'),
                         help='Install local runtimes: lmstudio (headless), lemonade (Ubuntu), or both')
@@ -103,6 +119,7 @@ def install_backends(backends):
             docker_args = [
                 'docker', 'run', '-d', '--name', 'lemonade-server',
                 '--restart', 'unless-stopped',
+                '-e', 'LEMONADE_GLOBAL_TIMEOUT=3600',
                 '-v', 'lemonade-llama:/opt/lemonade/llama',
                 '-v', 'lemonade-data:/opt/lemonade/.cache/lemonade',
                 '-v', 'lemonade-config:/opt/lemonade/.config/lemonade',
@@ -127,6 +144,8 @@ def install_backends(backends):
                 # node and its owning group; Docker volumes keep model data when
                 # the container is recreated to apply this device mapping.
                 docker_args += ['--device', str(npu_device), '--group-add', str(os.stat(npu_device).st_gid)]
+                docker_args += ['--ulimit', 'memlock=-1:-1',
+                                '-v', 'lemonade-flm:/opt/lemonade/.config/flm']
                 print(f'Passing AMD NPU device {npu_device} into Lemonade Docker.')
             else:
                 print(f'AMD NPU device {npu_device} is unavailable; Lemonade will use the model recipe’s available backend.')
@@ -140,7 +159,7 @@ def install_backends(backends):
                 print('Passing host GPU devices and owning groups into Lemonade Docker for Vulkan/ROCm models.')
 
             inspect = subprocess.run(
-                ['docker', 'inspect', '-f', '{{.State.Running}}|{{.HostConfig.NetworkMode}}|{{json .HostConfig.Devices}} {{json .HostConfig.GroupAdd}} {{json .Mounts}}', 'lemonade-server'],
+                ['docker', 'inspect', '-f', '{{.State.Running}}|{{.HostConfig.NetworkMode}}|{{json .HostConfig.Devices}} {{json .HostConfig.GroupAdd}} {{json .Mounts}} {{json .HostConfig.Ulimits}}', 'lemonade-server'],
                 capture_output=True, text=True,
             )
             expected_network = 'host' if system == 'Linux' else 'bridge'
@@ -150,7 +169,9 @@ def install_backends(backends):
                 and inspect_parts[0].strip() == 'true'
                 and inspect_parts[1].strip() == expected_network
             ) and (
-                not npu_device.exists() or str(npu_device) in inspect.stdout
+                not npu_device.exists() or (str(npu_device) in inspect.stdout
+                    and "/opt/lemonade/.config/flm" in inspect.stdout
+                    and '"Name":"memlock","Hard":-1,"Soft":-1' in inspect.stdout)
             ) and all(str(device) in inspect.stdout for device in gpu_devices) and all(
                 str(os.stat(device).st_gid) in inspect.stdout for device in gpu_devices
             ) and (not use_migrated_cache or str(migrated_cache) in inspect.stdout)
@@ -158,13 +179,17 @@ def install_backends(backends):
                 if system == 'Linux':
                     with socket.socket() as port_probe:
                         port_in_use = port_probe.connect_ex(('127.0.0.1', 13305)) == 0
-                    if port_in_use:
+                    if port_in_use and not (len(inspect_parts) == 3 and
+                                            inspect_parts[0].strip() == 'true' and
+                                            inspect_parts[1].strip() == 'host'):
                         raise RuntimeError(
                             'Cannot switch Lemonade Docker to host networking because port 13305 is already in use. '
                             'Stop the older Lemonade service that owns the port, then rerun '
                             '`bash deploy/install-first-time.sh --install-backends lemonade`.'
                         )
                 if inspect.returncode == 0:
+                    if npu_device.exists() and '/opt/lemonade/.config/flm' not in inspect.stdout:
+                        _migrate_lemonade_flm()
                     subprocess.run(['docker', 'rm', '-f', 'lemonade-server'], check=True)
                 subprocess.run(docker_args + ['ghcr.io/lemonade-sdk/lemonade-server:latest'], check=True)
             print('Lemonade Docker container started at http://localhost:13305.')

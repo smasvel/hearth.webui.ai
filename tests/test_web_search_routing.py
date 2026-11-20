@@ -49,3 +49,13 @@ class WebSearchRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeatherHorizonTests(unittest.TestCase):
+    def test_forecast_horizon_is_not_treated_as_a_location(self):
+        from hearth.integrations import web_search_client as weather
+        self.assertIsNone(weather.extract_weather_location("10-day forecast"))
+        self.assertEqual(weather.extract_weather_location("Forecast for the next 10 days in Durham, NC"),
+                         "Durham NC")
+        self.assertEqual(weather.weather_forecast_days("10-day forecast"), 10)
+        self.assertEqual(weather.weather_forecast_days("30-day forecast"), 16)

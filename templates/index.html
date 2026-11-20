@@ -39,7 +39,7 @@
     <main class="chat">
       <header class="chat-header">
         <button id="menu-toggle" class="icon-btn menu-toggle" title="Menu" aria-label="Menu">&#9776;</button>
-        <select id="model-select">
+        <select id="model-select" data-preferred-model="{{ chat_model or '' }}">
           <option value="">No model loaded</option>
         </select>
         {% if is_admin %}
@@ -53,6 +53,9 @@
         <div class="chat-header-actions">
           {% if agentic_workflow_enabled %}
           <a href="{{ url_for('agents_page') }}" class="icon-btn text-icon-btn" title="Assign persistent project work">Agents</a>
+          <button id="chat-create-agent-btn" type="button" class="icon-btn text-icon-btn"
+                  data-draft-url="{{ url_for('agents_new_page') }}"
+                  data-schedules-url="{{ url_for('agents_schedules_page') }}">Create agent task</button>
           {% endif %}
           {% if is_admin %}
           <a href="{{ url_for('models_page') }}" class="icon-btn text-icon-btn" title="Manage models">Models</a>

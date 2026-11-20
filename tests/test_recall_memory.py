@@ -49,16 +49,14 @@ class RecallMemoryTests(unittest.TestCase):
         self.assertIn("the user's name is Maya Patel", note)
         self.assertIn("do not claim that the name cannot be remembered", note)
 
-    def test_recall_list_carries_directive_framing(self):
-        with patch.object(app, "_ensure_embedding_model_loaded"), \
-             patch.object(app.lemonade, "embed", return_value=[[1.0]]), \
-             patch.object(memory_store, "search", return_value=[
-                 {"role": "user", "content": "My name is Maya Patel", "created_at": 0.0},
-             ]):
-            note = app._recall_memory("u", "current", "what's my name?")
+    def test_recall_keeps_user_facts_and_excludes_old_assistant_refusals(self):
+        memory_store.add_chunk("u", "past", "user", "I prefer short replies", [1.0])
+        memory_store.add_chunk("u", "past", "assistant", "I cannot do that.", [1.0])
+        with patch.object(app, "_embed_rag_texts", return_value=("lemonade", [[1.0]])):
+            note = app._recall_memory("u", "current", "Write a short reply")
 
-        self.assertIn("My name is Maya Patel", note)
-        self.assertIn("Never claim you were never told", note)
+        self.assertIn("I prefer short replies", note)
+        self.assertNotIn("I cannot do that.", note)
 
     def test_non_name_query_returns_no_name_directive(self):
         memory_store.add_chunk("u", "past", "user", "My name is Maya Patel", [1.0])
@@ -116,7 +114,7 @@ class RecallMemoryTests(unittest.TestCase):
 
         self.assertIsNone(note)
 
-    def test_weather_recall_keeps_other_relevant_memory_snippets(self):
+    def test_weather_recall_keeps_preferences_without_injecting_a_city(self):
         memory_store.add_chunk("u", "past", "user", "My city is Exampleville ZZ", [1.0])
         with patch.object(app, "_ensure_embedding_model_loaded"), \
                 patch.object(app.lemonade, "embed", return_value=[[1.0]]), \
@@ -125,7 +123,7 @@ class RecallMemoryTests(unittest.TestCase):
                 }]) as search:
             note = app._recall_memory("u", "current", "What's the weather tomorrow?")
 
-        self.assertIn("Exampleville ZZ", note)
+        self.assertNotIn("Exampleville ZZ", note)
         self.assertIn("I prefer Celsius forecasts", note)
         self.assertEqual(search.call_args.kwargs["embedding_backend"], "lemonade")
 
@@ -155,6 +153,8 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
         }))
         for backend in [app.lemonade, app.vllm, app.kobold, app.fastflowlm, app.q38rocm, app.zen]:
             self.stack.enter_context(patch.object(backend, "owns_model", return_value=False))
+        self.recall_memory = app._recall_memory
+        self.remember_exchange = app._remember_exchange
         self.stack.enter_context(patch.object(app, "_recall_memory", return_value=(
             "Known personal fact explicitly saved from a past conversation: "
             "the user's name is Maya Patel."
@@ -191,13 +191,50 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
         sent = self.captured["messages"]
         self.assertIn("Hearth cross-chat memory", sent[-1]["content"])
         self.assertIn("Maya Patel", sent[-1]["content"])
-        self.assertTrue(sent[-1]["content"].endswith("recalled memory above.]"))
+        self.assertTrue(sent[-1]["content"].endswith("what's my name?"))
         # The system channel must not carry the note (weak models ignore it there).
         system = next((m for m in sent if m.get("role") == "system"), None)
         self.assertTrue(system is None or "Maya Patel" not in system["content"])
         # Saved history keeps the clean user text, not the injected note.
         saved = chat_store.get_conversation("conv", "u")["messages"]
         self.assertEqual(saved[0]["content"], "what's my name?")
+
+
+    def test_chat_sends_updated_fact_first_without_copying_it_to_history(self):
+        from hearth.storage import chat_store
+
+        old = "Project Atlas uses the blue staging cluster."
+        new = "Project Atlas uses the green staging cluster."
+        ask = "Which staging cluster does Project Atlas use?"
+
+        def send(conversation_id, text):
+            with self.client.post(
+                "/api/chat",
+                json={"model": "test-model", "conversation_id": conversation_id,
+                      "messages": [{"role": "user", "content": text}], "max_tokens": 32},
+                headers={"X-CSRF-Token": "test-csrf"},
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                response.get_data()
+
+        with (
+            patch.object(app, "_recall_memory", self.recall_memory),
+            patch.object(app, "_remember_exchange", self.remember_exchange),
+            patch.object(app, "_embed_rag_texts", side_effect=lambda texts, provider: (
+                provider, [[1.0, 0.0] for _ in texts],
+            )),
+        ):
+            send("first-chat", old)
+            send("updated-chat", new)
+            send("duplicate-chat", new)
+            send("lookup-chat", ask)
+
+        prompt = self.captured["messages"][-1]["content"]
+        self.assertLess(prompt.index(new), prompt.index(old))
+        self.assertEqual(prompt.count(new), 1)
+        self.assertTrue(prompt.endswith(ask))
+        saved = chat_store.get_conversation("lookup-chat", "u")["messages"]
+        self.assertEqual(saved[0]["content"], ask)
 
 
 if __name__ == "__main__":

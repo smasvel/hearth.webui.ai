@@ -41,7 +41,7 @@ def _completed_rate(tokens, duration):
 
 
 
-def _init_trace_store() -> int:
+def _init_trace_store(*, recover_interrupted: bool = False) -> int:
     with database.connect() as conn:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS developer_traces (
@@ -56,11 +56,29 @@ def _init_trace_store() -> int:
         conn.execute("DELETE FROM developer_traces WHERE finished_at < %s", (time.time() - _RECENT_KEEP_SECONDS,))
         maximum = conn.execute("SELECT COALESCE(MAX(id), 0) FROM developer_traces").fetchone()[0]
         for row in conn.execute(
-            "SELECT payload FROM developer_traces ORDER BY id DESC LIMIT %s", (_RECENT_MAX,)
+            "SELECT id, finished_at, payload FROM developer_traces ORDER BY id DESC LIMIT %s", (_RECENT_MAX,)
         ):
             try:
                 entry = json.loads(row["payload"])
                 elapsed = float(entry.pop("_elapsed_s", 0))
+                if entry.get("status") == "streaming":
+                    if not recover_interrupted:
+                        continue
+                    # Active rows are checkpointed when they start. If Hearth stopped
+                    # before finish() ran, retain that trace as an interrupted request
+                    # instead of silently losing it from the live log on restart.
+                    started_at = entry.get("started_at") or row["finished_at"]
+                    elapsed = max(0.0, time.time() - float(started_at))
+                    entry["status"] = "error"
+                    entry["error_detail"] = "Hearth restarted before this request finished."
+                    entry["finished_at"] = time.time()
+                    entry["tokens_per_sec"] = None
+                    payload = dict(entry)
+                    payload["_elapsed_s"] = elapsed
+                    conn.execute(
+                        "UPDATE developer_traces SET finished_at=%s, payload=%s WHERE id=%s",
+                        (entry["finished_at"], json.dumps(payload), row["id"]),
+                    )
                 entry["started"] = time.monotonic() - elapsed
                 entry["updated"] = time.monotonic()
                 # Older saved rows do not contain a frozen rate. Reconstruct it once
@@ -74,6 +92,14 @@ def _init_trace_store() -> int:
 
 
 _counter = itertools.count(_init_trace_store())
+
+
+def recover_interrupted_requests() -> None:
+    """Recover checkpoints only when the web service starts."""
+    global _counter
+    with _lock:
+        _recent.clear()
+        _counter = itertools.count(_init_trace_store(recover_interrupted=True))
 
 
 def record_provider_availability(*, provider: str, model: str | None, status: int,
@@ -127,7 +153,8 @@ def clear_all() -> None:
     """Clear finished live-log entries and saved traces without hiding active work."""
     with _lock:
         with database.connect() as conn:
-            conn.execute("TRUNCATE TABLE developer_traces")
+            conn.execute("DELETE FROM developer_traces WHERE NOT (id = ANY(%s))",
+                         (list(_active),))
         _recent.clear()
 
 
@@ -136,6 +163,7 @@ def _persist_finished(entry: dict) -> None:
     payload["_elapsed_s"] = max(0, entry["updated"] - entry["started"])
     payload.pop("started", None)
     payload.pop("updated", None)
+    payload.pop("cancel_callback", None)
     try:
         with database.connect() as conn:
             conn.execute(
@@ -155,6 +183,23 @@ def _persist_finished(entry: dict) -> None:
         pass
 
 
+def _persist_started(entry: dict) -> None:
+    """Checkpoint a request's initial state so a restart can report it as interrupted."""
+    payload = dict(entry)
+    payload["_elapsed_s"] = 0
+    payload.pop("started", None)
+    payload.pop("updated", None)
+    try:
+        with database.connect() as conn:
+            conn.execute(
+                "INSERT INTO developer_traces(id, finished_at, payload) VALUES (%s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET finished_at=EXCLUDED.finished_at, payload=EXCLUDED.payload",
+                (entry["id"], entry["started_at"], json.dumps(payload)),
+            )
+    except (OSError, database.Error, TypeError, ValueError):
+        pass
+
+
 def start(
     *, source: str, backend: str, model: str, max_tokens: int | None = None,
     is_npu: bool = False, request_content: str | None = None, task_id: str | None = None,
@@ -163,7 +208,7 @@ def start(
     wall_now = time.time()
     with _lock:
         req_id = next(_counter)
-        _active[req_id] = {
+        entry = {
             "id": req_id,
             "source": source,
             "task_id": task_id,
@@ -183,7 +228,9 @@ def start(
             "response_content": "",
             "response_truncated": False,
         }
+        _active[req_id] = entry
         _cancel_events[req_id] = threading.Event()
+        _persist_started(entry)
     return req_id
 
 

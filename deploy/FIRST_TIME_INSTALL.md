@@ -45,7 +45,7 @@ downloads the supported media models.
 Open **Downloads** with backend search fields empty. Catalogs and suggestions that support
 browsing load automatically; search for a model to narrow results or search backends that
 require a query. Choose Download to install a model. Fresh Ubuntu setup automatically
-downloads required media models: Whisper-Tiny, kokoro-v1, Anima-Turbo, and Wan 2.2.
+downloads required media models: Whisper-Small, kokoro-v1, Anima-Turbo, and Wan 2.2.
 Reserve about 13 GB of cache space plus temporary download headroom. Setup stops if any
 required model cannot be downloaded or verified. The separate `Ornith-1.5-9B-GGUF`
 chat model remains optional; `--skip-model-download` skips only that download. On
@@ -145,6 +145,11 @@ supporting at least that maximum, and 8,192 tokens otherwise. The Models page's 
 loading ctx-size is a separate load setting.
 Loaded models show a separate **loaded ctx-size** line with the runtime's active context;
 unloaded models do not show this line.
+Large OpenCode prompts can take many minutes to prefill on CPU. Lemonade is configured
+with a one-hour request timeout to prevent its internal HTTP client from aborting those
+requests. New backend installs set this automatically. For an existing Docker install,
+run `docker exec lemonade-server /opt/lemonade/lemonade config set global_timeout=3600`;
+the setting is saved in Lemonade's config volume and takes effect immediately.
 Hearth retries a failed compaction in one fresh session per assignment. If compaction fails
 again, the assignment stops for review; load a larger supported context or model before continuing.
 
@@ -198,7 +203,7 @@ the [login screenshot](../docs/screenshots/login.png).
 
 Run these commands from the Hearth project directory. This installs the web app,
 PostgreSQL, and isolated agent build image. The installer installs the required
-Lemonade runtime and automatically downloads Whisper-Tiny,
+Lemonade runtime and automatically downloads Whisper-Small,
 kokoro-v1, Anima-Turbo, and Wan 2.2 before starting Hearth. It loads Anima-Turbo after
 download, and Hearth restores it at startup and after Lemonade evicts it for inactivity.
 Reserve about 13 GB of
@@ -439,16 +444,17 @@ the assignment before the provider's stated time.
 
 Hearth chat exposes the configured Playwright browser and persistent Python MCP
 tools on KoboldCPP, FastFlowLM, opencode.ai, Lemonade, and LM Studio. The MCP servers
-start the first time chat needs them. Tool-enabled requests use Hearth's local
-backend compatibility shims; keep the `lemonade-guard-shim`, `lmstudio-shim`, and
+start the first time chat needs them. Ordinary chat turns omit tool schemas; a turn
+that explicitly asks for browser or Python work receives only the relevant compact
+tool set, reducing local-model prompt prefill time. Tool-enabled requests use Hearth's
+local backend compatibility shims; keep the `lemonade-guard-shim`, `lmstudio-shim`, and
 `flm-tool-shim` user services running for those backends. Ask the model to use the
 browser for a specific page or task when you want a Playwright action. Hearth chat
-offers a compact browser tool set and trims oversized FastFlowLM browser results so
-they fit more reliably within smaller model context windows. After navigation and
-page-changing actions, Hearth waits for content, lists and visits each open tab
-(including popups), captures snapshots, and returns an explicit confirmation to the
-model. The chat browser tools support navigation and inspection; they omit page clicks
-and form submission so research cannot trigger page actions. Online research settings
+trims oversized FastFlowLM browser results so they fit more reliably within smaller
+model context windows. After navigation and requested page interactions, Hearth waits
+for content, lists and visits each open tab (including popups), captures snapshots, and
+returns an explicit confirmation to the model. The chat browser tools support navigation,
+inspection, and explicitly requested page interactions. Online research settings
 allow up to 500 relevant pages per request. Organic results are relevance-filtered and
 domain-diversified before navigation, while ad and tracker requests are blocked. Set
 the limit to 0 for snippets only; pasted URLs still follow the separate direct-URL setting.
@@ -1008,9 +1014,12 @@ journalctl --user -u ai-webui.service -f
 .venv/bin/python tools/run_tests.py --browser
 ```
 
+The browser runner discovers `tools/check_*_ui.py` suites and lists named checks
+for desktop and mobile pages, route permissions, and sign-in flows.
+
 The test runner uses an isolated PostgreSQL schema. Run it instead of invoking
 browser test scripts directly against application tables. With `--browser`, it runs
-the unit tests and all seven Playwright suites concurrently, each against its own temporary
+the unit tests and all discovered Playwright suites concurrently, each against its own temporary
 schema and a private agent runtime directory, so test startup cannot remove containers
 owned by the running application. The admin browser coverage visits every standalone page,
 checks rendered table column counts and alignment at desktop and phone widths, exercises
@@ -1018,6 +1027,15 @@ key page actions, opens a Live logs request trace, checks Browse history search 
 and verifies that ordinary users cannot open admin-only pages or APIs.
 The unit discovery includes RAG provider routing for every chat backend, KoboldCpp
 embedding endpoint handling, fail-soft behavior, and separate-vector-space retrieval checks.
+
+Lemonade NPU chat uses the runtime context when no per-model context is configured.
+Empty model replies appear as chat errors and in Live logs.
+For CPU models served by Lemonade, automatic web lookups use search snippets.
+Explicit web searches, direct URLs, and screenshot requests can still fetch full pages.
+Hearth limits the web research text added to each chat prompt to reduce the wait
+before the model starts replying. When Hearth already retrieved web evidence, it skips
+redundant browser tools unless the message requests a page interaction. Browse history
+and captured screenshots remain available.
 
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
@@ -1030,11 +1048,14 @@ and elapsed time. They hide rates that round to zero; completed rows keep all th
 fixed at finish.
 Completed rows remain available for two days. Project-agent model requests appear with
 the task's agent name through Hearth's model relay. No additional setup is required.
+Request starts are checkpointed as they begin. If Hearth restarts before a request
+finishes, Live logs marks that entry as interrupted so the request does not disappear.
 Administrators can use **Reset all metrics** to erase saved request history and coding
 reviews after two confirmation warnings; subsequent requests are recorded normally.
 The **Live logs** page also has **Reset live logs**, which clears completed history and
 captured request/response traces after two confirmation warnings. In-flight rows remain
-visible and their completed entries are recorded after they finish.
+visible, keep their saved checkpoints, and are recorded after they finish. Interrupted entries
+are retained if Hearth restarts before a request completes.
 Live logs also include text search across request metadata and opened traces. Admins
 can kill active Hearth chat and agent relay requests from their rows. Requests handled
 entirely by an external backend cannot be stopped from Hearth.
@@ -1142,7 +1163,7 @@ Hearth uses each Lemonade image model's configured size
 and step defaults. Load an image model from the Models page before generating images.
 Generated image cards include **Copy image**, **Share**, and **Download image** controls.
 
-Microphone transcription and hands-free recording use Lemonade's Whisper-Tiny speech
+Microphone transcription and hands-free recording use Lemonade's Whisper-Small speech
 model; spoken replies use kokoro-v1. Hearth loads both at startup and restores them if
 Lemonade evicts them for inactivity. FFmpeg is required for audio processing.
 
@@ -1187,7 +1208,7 @@ terminal-style layout while completed HTML results remain available in the previ
 ### Required first-install media models and optional runtimes
 
 The Ubuntu first-time installer installs Lemonade by default and requires it for the
-initial media model downloads: Whisper-Tiny for speech recognition, kokoro-v1 for speech
+initial media model downloads: Whisper-Small for speech recognition, kokoro-v1 for speech
 synthesis, Anima-Turbo for image generation, and Wan 2.2 TI2V-5B for video generation.
 First-time setup loads Anima-Turbo after download. Hearth restores it at app startup and
 periodically if Lemonade evicts it for inactivity, so image generation stays ready without
@@ -1236,10 +1257,19 @@ Deleting a Lemonade model removes its Hearth inventory entry even if another var
 still uses shared cache files. Download it again to restore the entry.
 On Linux hosts with AMD Ryzen AI NPU support, the installer passes
 `/dev/accel/accel0` and its owning group into the container when that device exists.
+It also sets `--ulimit memlock=-1:-1` and mounts `lemonade-flm` at
+`/opt/lemonade/.config/flm`, preserving existing FLM downloads during migration.
 The host NPU driver must be installed. Only Lemonade models that use the FLM/NPU
 recipe run on the NPU; GGUF models continue to use their configured CPU or GPU
 recipe. On Linux hosts exposing `/dev/kfd` or `/dev/dri`, Hearth also passes available
 GPU device nodes and their owning groups into Docker for Vulkan/ROCm GGUF recipes.
+If Lemonade detects the NPU but lists the FLM backend as installable, run
+`docker exec lemonade-server /opt/lemonade/lemonade backends install flm:npu`.
+Download an FLM model from **Downloads**. When the download completes, load it
+from **Models** and select it in Chat. If Lemonade needs to download weights during
+Load, Hearth allows up to an hour for each FLM load request. To restore the model
+on Hearth startup, select it as the default LAN model in
+**Settings**.
 To apply network, NPU, or GPU settings to an existing Lemonade container, run
 `bash deploy/install-first-time.sh --install-backends lemonade`; Hearth recreates
 the container with its existing model cache, preserving downloaded models.
@@ -1488,3 +1518,65 @@ An active rerun leaves the prior completed score visible; after completion, Metr
 recalculates from the effective result of each check, excluding rolled-back repair
 attempts. Restart Hearth after updating to serve the new JavaScript and styles;
 refresh Metrics to see the revised score.
+
+Hearth weather lookups can request up to 16 forecast days from Open-Meteo. For a
+weather question without a city, Hearth can use your saved location. Live forecast prompts use current weather data and exclude past assistant replies. Web search settings still apply.
+
+Cross-chat recall uses past user statements as background. Earlier assistant replies
+are excluded so old refusals and stale answers do not steer a new request. Hearth
+can index a user message even when the assistant reply fails or cannot be embedded.
+It preserves distinct user statements even when they are phrased similarly.
+
+Chat remembers the last model you select for your account after refresh or sign-in.
+If that model is unavailable, the picker keeps it visible until you load it or
+select another model.
+
+Chat reviews one Playwright research read at a time and stops after six reads
+or a repeated navigation without new evidence. It then asks the model to answer
+from verified evidence and identify any gaps.
+
+Chat replies can display local images and preview completed `html` and `svg` code
+blocks inline, including tables and static charts. SVG charts render directly in
+the chat bubble after filtering unsupported markup and external resources. HTML
+previews run in a sandbox with scripts and network access disabled. Use **View source** to copy the original markup.
+HTTPS Markdown images have a **Load image** button that fetches them on demand.
+
+With web research enabled, a Chat request with an explicit US equity symbol, a
+one to five year range, and a daily interval draws an inline closing-price chart
+from Nasdaq historical quotes. Saved charts display as private inline images with an **Open chart full size** link.
+If the source cannot provide prices, Chat reports
+that instead of plotting estimates. A daily chart follow-up can reuse the last explicitly requested symbol in the same chat.
+No browser automation or API key is required.
+
+For other chart requests, the chat model can render line and bar charts from
+provided or verified numeric data. Hearth draws the chart and lets you inspect
+its values. Ask for the chart in plain language.
+
+When an enabled web lookup finds no verified evidence, supported chat models can
+use MCP browser tools for a focused follow-up if browser research is enabled.
+
+Spoken replies can start at a clause or word boundary in long sentences. Hearth
+fetches the next clip while it plays the current one. Existing installs can pull
+`Whisper-Small` in Lemonade before restarting Hearth. Set `LEMONADE_STT_MODEL_ID`
+to use a different transcription model.
+
+In Chat, users with agent access can select **Create agent task**. Hearth opens
+an editable assignment draft using the composer text or the latest user message.
+Review the goal, model, and tools, then submit the assignment when ready.
+
+An explicit agent request in Chat offers an assignment draft or opens Agent
+schedules. Tasks and schedules appear in Agents only after you submit their
+forms. Chat identifies drafts and unsaved schedules as such.
+
+Assignments created from Chat link back to the source conversation. Chat shows
+the assignment status and latest result, including after a scheduled run. To
+attach an existing assignment, open it in Agents and use **Link result to Chat**.
+
+Linked assignments in Chat show saved schedules and the next run time. **Set up
+a schedule** opens the schedule form with that assignment selected. Review and
+save the schedule there.
+
+When a completed linked result is opened in Chat, Hearth can use the selected
+chat model to turn it into a Markdown report. The model receives a bounded
+excerpt of the result, and the formatted report is saved per run. The original
+result remains available, including when no model is selected or formatting fails.

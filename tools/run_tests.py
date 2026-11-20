@@ -15,11 +15,7 @@ def main():
     parser.add_argument('--browser', action='store_true', help='Run all Playwright suites concurrently with unit tests')
     args = parser.parse_args()
     with database.temporary_schema():
-        scripts = (
-            'check_first_admin_ui.py', 'check_admin_ui.py', 'check_model_tests_ui.py',
-            'check_agents_ui.py', 'check_model_resource_warnings_ui.py',
-            'check_agent_model_default_ui.py', 'check_admin_pages_ui.py',
-        )
+        scripts = sorted(path.name for path in (database.ROOT / "tools").glob("check_*_ui.py"))
         browser_pool = ThreadPoolExecutor(max_workers=len(scripts)) if args.browser else None
         futures = {}
         if browser_pool:
@@ -32,6 +28,7 @@ def main():
         suite = unittest.defaultTestLoader.discover(str(database.ROOT / 'tests'))
         result = unittest.TextTestRunner(verbosity=1).run(suite)
         browser_ok = True
+        suites_passed = named_passes = named_failures = 0
         for future in as_completed(futures):
             script = futures[future]
             completed = future.result()
@@ -40,9 +37,15 @@ def main():
                 print(completed.stdout, end='')
             if completed.stderr:
                 print(completed.stderr, end='', file=sys.stderr)
+            suites_passed += completed.returncode == 0
             browser_ok &= completed.returncode == 0
+            for line in completed.stdout.splitlines():
+                named_passes += line.startswith("CASE PASS ")
+                named_failures += line.startswith("CASE FAIL ")
         if browser_pool:
             browser_pool.shutdown(wait=True)
+            print(f"Playwright: {suites_passed}/{len(scripts)} suites passed, {named_passes} named checks passed, "
+                  f"{named_failures} named checks failed. Suites also run workflow assertions.")
     return 0 if result.wasSuccessful() and browser_ok else 1
 
 

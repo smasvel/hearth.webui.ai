@@ -715,6 +715,14 @@ html, body {
 
 .msg-wrap.user { align-self: flex-end; align-items: flex-end; }
 .msg-wrap.assistant { align-self: flex-start; align-items: flex-start; max-width: 85ch; }
+.chat-linked-agents {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 85ch);
+}
+.chat-linked-agents article { display: grid; gap: 6px; }
+.agent-chat-report { overflow-wrap: anywhere; }
+.agent-chat-report :is(ul, ol, p) { margin: 0.5em 0; }
 .msg-wrap.system { align-self: center; align-items: center; }
 .msg-wrap.error { align-self: flex-start; align-items: flex-start; }
 
@@ -919,6 +927,48 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   margin: 8px 0 0;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.chat-static-preview {
+  margin: 12px 0;
+  max-width: 100%;
+}
+
+.chat-static-preview iframe {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: clamp(220px, 50vh, 450px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.chat-chart > svg {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  min-height: 140px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: #16202a;
+}
+
+.chat-chart > svg text {
+  fill: #16202a;
+}
+
+.chat-chart-image {
+  box-sizing: border-box;
+  width: min(730px, calc(100vw - 66px));
+  background: #fff;
+}
+
+.chat-static-preview summary {
+  margin-top: 6px;
+  cursor: pointer;
 }
 
 .generated-media {

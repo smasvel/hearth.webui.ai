@@ -5,6 +5,22 @@ import app
 
 
 class StartupModelTests(unittest.TestCase):
+    def test_lemonade_npu_reuses_warm_model_without_context_override(self):
+        model = "qwen-test-FLM"
+        with (
+            patch.object(app.npu_request_lock, "acquire") as acquire,
+            patch.object(app, "_free_npu_except"),
+            patch.object(app, "_saved_model_context", return_value=None),
+            patch.object(app.lemonade, "is_npu_model", return_value=True),
+            patch.object(app.lemonade, "list_models", return_value=[
+                {"id": model, "state": "loaded", "loaded_context_length": 57343},
+            ]),
+            patch.object(app.lemonade, "load_model") as load,
+        ):
+            handle = app._claim_selected_npu(app.lemonade, model)
+        self.assertIs(handle, acquire.return_value)
+        load.assert_not_called()
+
     def test_startup_does_not_restore_kobold_default(self):
         with patch.object(app.settings_store, "get", return_value="kobold/koboldcpp/example.gguf"), \
              patch.object(app.kobold, "owns_model") as owns, \
