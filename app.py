@@ -6747,7 +6747,11 @@ def api_chat():
             )
         )
         browser_requested = web_search.looks_like_browse_request(last_user_message)
-        live_lookup_requested = bool(mcp_tools_client.chat_tool_mode(last_user_message))
+        live_lookup_requested = (
+            web_enabled
+            and (settings_store.get("web_search_browser_enabled") or "true") == "true"
+            and "browser" in (mcp_tools_client.chat_tool_mode(last_user_message) or "")
+        )
         prior_chat_matches = []
         if live_lookup_requested:
             try:
@@ -7022,7 +7026,9 @@ def api_chat():
                     try:
                         all_mcp_tools = mcp_tools_client.ensure_started()
                         tools_list = mcp_tools_client.select_chat_tools(
-                            all_mcp_tools, last_user_message,
+                            [tool for tool in all_mcp_tools
+                             if tool.get("function", {}).get("name", "").startswith("playwright__")],
+                            last_user_message,
                             # Explicit live lookups must retain the MCP read tools
                             # so the model can verify changing values directly.
                             web_evidence_ready=False,
@@ -7189,6 +7195,7 @@ def api_chat():
                         tool_round_limited = True
                         break
                     tool_round += 1
+                    offered_names = {tool["function"]["name"] for tool in extra_kwargs.get("tools", [])}
                     tool_calls_list = [round_tool_calls[i] for i in sorted(round_tool_calls)]
                     _normalize_question_tool_calls(tool_calls_list, tools_list, loop_messages)
                     loop_messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls_list})
@@ -7199,6 +7206,10 @@ def api_chat():
                             break
                         tc_name = tc["function"]["name"]
                         arguments = tc["function"]["arguments"]
+                        if tc_name not in offered_names:
+                            loop_messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                                  "content": "This tool is unavailable for this request."})
+                            continue
                         browser_action = tc_name.removeprefix("playwright__")
                         browser_read = tc_name.startswith("playwright__") and browser_action in {
                             "browser_navigate", "navigate", "browser_find", "find",

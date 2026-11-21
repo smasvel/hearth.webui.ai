@@ -5,6 +5,7 @@ Hearth instance, so each side is exercised one by one with the same code path.""
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,7 +47,6 @@ def main() -> None:
     vllm.load_model(model, max_model_len=2048)
     report("served after load", vllm._current_served_model())
     report("context window", vllm._served_max_model_len())
-    report("service.env", vllm._SERVICE_ENV_FILE.read_text().replace("\n", " | "))
 
     print()
     print("== KoboldCPP load / unload ==")

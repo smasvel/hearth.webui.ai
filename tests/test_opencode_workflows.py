@@ -96,7 +96,9 @@ class WorkflowTests(unittest.TestCase):
             return response_for(step, stream, len(requests_seen))
         observed = []
         with patch('tools.test_flm_model.requests.post', side_effect=post):
-            results = run_suite('fixture', 'http://local', suite='opencode', on_result=observed.append)
+            results = run_suite('fixture', 'http://local', suite='opencode', on_result=observed.append,
+                                only={(f"opencode-{workflow}-{step['name']}", stream)
+                                      for stream, workflow, step in fixtures})
         self.assertEqual(results, observed)
         self.assertEqual(len(results), len(fixtures))
         self.assertTrue(all(r['passed'] for r in results))
