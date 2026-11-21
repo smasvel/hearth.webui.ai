@@ -6135,11 +6135,17 @@ def api_voice_speak():
     text = (body.get("text") or "").strip()
     if not text:
         return jsonify({"error": "'text' is required"}), 400
+    started = time.monotonic()
     try:
         audio_bytes = lemonade.synthesize_speech(text, voice=body.get("voice") or lemonade.DEFAULT_TTS_VOICE)
     except lemonade.LemonadeError as exc:
         return jsonify({"error": str(exc)}), 502
-    return Response(audio_bytes, mimetype="audio/mpeg")
+    elapsed = time.monotonic() - started
+    if elapsed >= 2:
+        app.logger.warning("Slow speech synthesis took %.2fs for %d characters.", elapsed, min(len(text), 2000))
+    return Response(audio_bytes, mimetype="audio/mpeg", headers={
+        "Server-Timing": f"tts;dur={elapsed * 1000:.0f}", "Cache-Control": "no-store",
+    })
 
 
 @app.get("/api/images/<filename>")

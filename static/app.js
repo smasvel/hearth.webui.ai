@@ -671,6 +671,7 @@
   }
 
   function newChat() {
+    cancelChatSpeech();
     clearTimeout(generationPollTimer);
     conversationViewVersion++;
     renderedMessagesKey = null;
@@ -895,14 +896,12 @@
     const reply = generation.status === "running" ? generation.content :
       (data.messages.at(-1)?.role === "assistant" ? data.messages.at(-1).content : generation.content);
     const spokenText = (reply || "").split("**Pages browsed (screenshots):**")[0];
-    if (playback.shouldSpeak) {
-      playback.spokenUpTo = enqueueSentencesFromStream(spokenText, playback.spokenUpTo);
+    const finished = generation.status !== "running";
+    if (playback.shouldSpeak && (generation.status === "running" || generation.status === "completed")) {
+      queueStreamingSpeech(spokenText, playback, finished);
     }
-    if (generation.status !== "running") {
+    if (finished) {
       playback.finished = true;
-      if (playback.shouldSpeak && spokenText.slice(playback.spokenUpTo).trim()) {
-        enqueueSpeech(spokenText.slice(playback.spokenUpTo));
-      }
       if (conversationMode) {
         showVoiceStatus("Speaking…");
         waitForSpeechQueueDrain().then(() => {
@@ -917,6 +916,7 @@
 
   async function loadConversation(id, { refresh = false } = {}) {
     if (!refresh) {
+      cancelChatSpeech();
       clearTimeout(generationPollTimer);
       conversationViewVersion++;
       currentConversationId = id;
@@ -1827,6 +1827,7 @@
     const isVideoRequest = /\b(?:generate|create|make|render|produce)\b[^.!?\n]{0,50}\b(?:video|movie|clip|animation)\b|\b(?:video|movie|clip|animation)\s+(?:of|showing|depicting|featuring)\b/i.test(text);
     const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "gemini-omni-1.1-flash" : ""));
     if (!model && !isAgentChatRequest(text)) { addSystemMessage("Load a model first.", true); return; }
+    cancelChatSpeech();
     if (!currentConversationId) currentConversationId = crypto.randomUUID();
     const id = currentConversationId;
     const version = conversationViewVersion;
@@ -1858,7 +1859,7 @@
       const data = await res.json();
       if (currentConversationId !== id || conversationViewVersion !== version) return;
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      generationPlayback = { id: data.generation.id, spokenUpTo: 0,
+      generationPlayback = { id: data.generation.id, spokenUpTo: 0, firstChunk: true, pendingSince: null,
         shouldSpeak: conversationMode || speakMode, finished: false };
       await loadConversation(id, { refresh: true });
       await fetchConversations();
@@ -2341,92 +2342,103 @@
     addSystemMessage(`Voice playback issue (${context}): ${detail}. Check the browser console for details.`, true);
   }
 
-  async function fetchSpeechAudio(text) {
+  async function fetchSpeechAudio(text, signal) {
     try {
       const res = await fetch("/api/voice/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
+        signal,
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        reportVoiceError("synthesis request failed", data.error || `HTTP ${res.status}`);
+        if (!signal?.aborted) reportVoiceError("synthesis request failed", data.error || `HTTP ${res.status}`);
         return null;
       }
       return await res.blob();
     } catch (err) {
-      reportVoiceError("synthesis request failed", err.message);
+      if (!signal?.aborted) reportVoiceError("synthesis request failed", err.message);
       return null; // best-effort - a dropped chunk just gets skipped, not a hard failure
     }
   }
 
-  function playAudioBlob(blob) {
+  function playAudioBlob(blob, signal) {
+    if (signal?.aborted) return Promise.resolve();
     if (voicePlaybackContext && voicePlaybackContext.state === "running") {
       return blob.arrayBuffer()
         .then((bytes) => voicePlaybackContext.decodeAudioData(bytes))
         .then((buffer) => new Promise((resolve) => {
+          if (signal?.aborted) { resolve(); return; }
           const source = voicePlaybackContext.createBufferSource();
           source.buffer = buffer;
           source.connect(voicePlaybackContext.destination);
-          source.addEventListener("ended", resolve, { once: true });
+          const stop = () => { source.stop(); finish(); };
+          const finish = () => {
+            signal?.removeEventListener("abort", stop);
+            resolve();
+          };
+          source.addEventListener("ended", finish, { once: true });
+          signal?.addEventListener("abort", stop, { once: true });
           source.start(0);
         }))
         .catch((err) => {
-          reportVoiceError("audio playback failed", err.message || "iPhone could not decode the speech audio");
+          if (!signal?.aborted) reportVoiceError("audio playback failed", err.message || "iPhone could not decode the speech audio");
         });
     }
     return new Promise((resolve) => {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.playsInline = true;
-      audio.addEventListener("ended", () => {
+      const stop = () => { audio.pause(); finish(); };
+      const finish = () => {
+        signal?.removeEventListener("abort", stop);
         URL.revokeObjectURL(url);
         resolve();
-      });
+      };
+      audio.addEventListener("ended", finish, { once: true });
+      signal?.addEventListener("abort", stop, { once: true });
       audio.addEventListener("error", () => {
-        reportVoiceError("audio playback failed", audio.error?.message || "unknown decode/playback error");
-        URL.revokeObjectURL(url);
-        resolve();
+        if (!signal?.aborted) reportVoiceError("audio playback failed", audio.error?.message || "unknown decode/playback error");
+        finish();
       });
       audio.play().catch((err) => {
         // The most likely real-world cause here: browser autoplay policy blocking
         // programmatic playback (err.name === "NotAllowedError") if this fires far
         // enough removed from the original click that the browser no longer considers
         // it user-initiated.
-        reportVoiceError("playback blocked", err.name === "NotAllowedError" ? "browser blocked autoplay" : err.message);
-        URL.revokeObjectURL(url);
-        resolve();
+        if (!signal?.aborted) reportVoiceError("playback blocked", err.name === "NotAllowedError" ? "browser blocked autoplay" : err.message);
+        finish();
       });
     });
   }
 
-  // --- Speech queue: sentences are pushed in as they stream in from the LLM (see
-  // enqueueSentencesFromStream() below, called from inside the SSE loop), not only
-  // once the full reply is done. Fixed a real, measured problem: even with the
-  // chunked/pipelined synthesis added earlier, speech only ever started *after* the
-  // full reply had finished generating - for a slower model or a long response, that
-  // "thinking" time alone (independent of TTS) could be 10s of seconds of silence
-  // before the first chunk was even requested. Speaking completed sentences as they
-  // arrive means the first sentence can be playing while the model is still generating
-  // the rest of the reply.
+  // Synthesize queued phrases in order and prefetch while the current clip plays.
   const speechQueue = [];
+  let chatSpeechController = new AbortController();
   let speechQueueRunning = false;
   let playingSpeech = false;
   let speechQueueDrainResolvers = [];
 
+  function cancelChatSpeech() {
+    speechQueue.length = 0;
+    chatSpeechController.abort();
+    chatSpeechController = new AbortController();
+  }
+
   function prefetchNextSpeech() {
     if (playingSpeech && speechQueue.length && !speechQueue[0].audio) {
       const next = speechQueue[0];
-      next.audio = fetchSpeechAudio(next.text);
+      next.audio = fetchSpeechAudio(next.text, next.signal);
     }
   }
 
   function enqueueSpeech(text) {
     const cleaned = stripMarkdownForSpeech(text);
-    if (!cleaned) return;
-    speechQueue.push({text: cleaned, audio: null});
+    if (!cleaned) return false;
+    speechQueue.push({text: cleaned, audio: null, signal: chatSpeechController.signal});
     if (!speechQueueRunning) runSpeechQueue();
     else prefetchNextSpeech();
+    return true;
   }
 
   async function runSpeechQueue() {
@@ -2434,12 +2446,12 @@
     try {
       while (speechQueue.length > 0) {
         const item = speechQueue.shift();
-        const blob = await (item.audio || fetchSpeechAudio(item.text));
-        if (!blob) continue;
+        const blob = await (item.audio || fetchSpeechAudio(item.text, item.signal));
+        if (!blob || item.signal.aborted) continue;
         playingSpeech = true;
         prefetchNextSpeech();
         try {
-          await playAudioBlob(blob);
+          await playAudioBlob(blob, item.signal);
         } finally {
           playingSpeech = false;
         }
@@ -2462,43 +2474,38 @@
     });
   }
 
-  function isInsideCodeFence(text) {
-    return (text.match(/```/g) || []).length % 2 === 1;
-  }
-
-  // Call this after every delta appended to assistantText (only while voice output is
-  // active - see the two call sites below). Finds newly-completed sentences beyond
-  // `spokenUpTo` and queues each one individually the moment it's complete, advancing
-  // spokenUpTo past what's been queued. Stops at (doesn't queue past) an unclosed
-  // ``` code fence - stripMarkdownForSpeech only knows how to strip a *complete*
-  // ```...``` block; queuing a sentence that happens to fall mid-block, before the
-  // closing fence has even streamed in yet, would read raw code/symbols aloud. Returns
-  // the updated spokenUpTo for the caller to store.
-  function enqueueSentencesFromStream(fullText, spokenUpTo) {
-    const tail = fullText.slice(spokenUpTo);
-    const matches = [...tail.matchAll(/[^.!?\n]+[.!?\n]+/g)];
-    let consumed = 0;
-    for (const m of matches) {
-      const candidateEnd = spokenUpTo + m.index + m[0].length;
-      if (isInsideCodeFence(fullText.slice(0, candidateEnd))) break;
-      consumed = m.index + m[0].length;
-    }
-    if (consumed === 0 && tail.length >= 160) {
-      // Start speaking a long answer before its first full stop. Prefer a clause
-      // boundary and fall back to a word boundary without reading code aloud.
-      const prefix = tail.slice(0, 160);
-      const clauseEnd = Math.max(prefix.lastIndexOf(", "), prefix.lastIndexOf("; "),
-                                 prefix.lastIndexOf(": "));
-      const boundary = clauseEnd >= 60 ? clauseEnd + 1 : prefix.lastIndexOf(" ");
-      if (boundary >= 60 && !isInsideCodeFence(fullText.slice(0, spokenUpTo + boundary))) {
-        consumed = boundary;
+  function queueStreamingSpeech(fullText, playback, finished) {
+    const now = performance.now();
+    while (playback.spokenUpTo < fullText.length) {
+      const tail = fullText.slice(playback.spokenUpTo);
+      const fence = tail.indexOf("```");
+      if (fence === 0) {
+        const closing = tail.indexOf("```", 3);
+        if (closing < 0) return;
+        playback.spokenUpTo += closing + 3;
+        playback.pendingSince = null;
+        continue;
       }
+      const prose = fence > 0 ? tail.slice(0, fence) : tail;
+      if (!prose.trim() && fence < 0) return;
+      playback.pendingSince ??= now;
+      const limit = playback.firstChunk ? 52 : 120;
+      const prefix = prose.slice(0, limit);
+      const sentence = /[.!?](?=\s|$)|\n/.exec(prefix);
+      const clause = /[,;:](?=\s)/.exec(prefix);
+      let end = sentence ? sentence.index + 1 : 0;
+      if (!end && clause && clause.index >= 18) end = clause.index + 1;
+      if (!end && (prose.length >= limit || now - playback.pendingSince >= (playback.firstChunk ? 500 : 900))) {
+        const words = [...prefix.matchAll(/\S+(?=\s)/g)];
+        const last = words.at(-1);
+        if (last && words.length >= 3) end = last.index + last[0].length;
+      }
+      if (!end && (finished || fence > 0)) end = Math.min(prose.length, 2000);
+      if (!end) return;
+      if (enqueueSpeech(prose.slice(0, end))) playback.firstChunk = false;
+      playback.spokenUpTo += end;
+      playback.pendingSince = null;
     }
-    if (consumed > 0) {
-      enqueueSpeech(tail.slice(0, consumed));
-      return spokenUpTo + consumed;
-    }
-    return spokenUpTo;
   }
 
   // --- Hands-free voice conversation mode: automatic voice-activity detection (VAD)

@@ -1555,8 +1555,10 @@ its values. Ask for the chart in plain language.
 When an enabled web lookup finds no verified evidence, supported chat models can
 use MCP browser tools for a focused follow-up if browser research is enabled.
 
-Spoken replies can start at a clause or word boundary in long sentences. Hearth
-fetches the next clip while it plays the current one. Existing installs can pull
+With spoken responses enabled, Hearth sends the first short phrase to Lemonade
+while the reply is still streaming and fetches the next clip during playback.
+Starting another turn or switching conversations clears the previous speech queue.
+Existing installs can pull
 `Whisper-Small` in Lemonade before restarting Hearth. Set `LEMONADE_STT_MODEL_ID`
 to use a different transcription model.
 
