@@ -1,5 +1,5 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", llamacpp: "llama.cpp", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", llamacpp: "llama.cpp", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM", q38rocm: "q38rocm", wan22: "Video generation" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
   let preferredChatModel = modelSelectEl.dataset.preferredModel || "";
@@ -300,15 +300,78 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "failed to list models");
       models = data.models || [];
+      renderHelpModelInventory(models);
       setStatus(true, `${models.length} model(s) on disk`);
       renderModelList();
       renderModelSelect();
       refreshHelp();
     } catch (err) {
       setStatus(false, err.message);
+      renderHelpModelInventory(null, err.message);
       if (modelListEl) {
         modelListEl.innerHTML = `<p class="hint">Could not reach LM Studio.<br>${escapeHtml(err.message)}</p>`;
       }
+    }
+  }
+
+  function renderHelpModelInventory(items, error = "") {
+    const inventory = document.getElementById("help-model-inventory");
+    if (!inventory) return;
+    const curlModel = document.getElementById("help-curl-model");
+    const lemonadeChat = (items || []).find((model) => model.backend === "lemonade"
+      && model.type === "llm" && model.state === "loaded")
+      || (items || []).find((model) => model.backend === "lemonade" && model.type === "llm");
+    if (curlModel) {
+      const modelId = lemonadeChat?.id || "MODEL_ID_FROM_CURRENT_INVENTORY";
+      curlModel.textContent = JSON.stringify(modelId).slice(1, -1).replaceAll("'", "\\u0027");
+    }
+    inventory.replaceChildren();
+    if (items === null) {
+      const message = document.createElement("p");
+      message.className = "hint";
+      message.textContent = `Could not load current models: ${error || "request failed"}`;
+      inventory.appendChild(message);
+      return;
+    }
+    if (!items.length) {
+      const message = document.createElement("p");
+      message.className = "hint";
+      message.textContent = "No models are currently available.";
+      inventory.appendChild(message);
+      return;
+    }
+    const sorted = [...items].sort((a, b) => Number(b.state === "loaded") - Number(a.state === "loaded"));
+    for (const model of sorted) {
+      const row = document.createElement("div");
+      row.className = `help-model-row${model.state === "loaded" ? " loaded" : ""}`;
+      const name = document.createElement("strong");
+      name.className = "help-model-name";
+      name.textContent = model.id || "Unnamed model";
+      const backend = BACKEND_LABELS[model.backend] || model.backend || "Other";
+      const status = model.state === "loaded" ? "loaded" : "available";
+      const parts = [backend, status, model.type].filter(Boolean);
+      const maxContext = Number(model.max_context_length);
+      const activeContext = Number(model.loaded_context_length);
+      const shownContext = Number(model.context_window_tokens || model.configured_context_length);
+      const formatTokens = (value) => Number.isSafeInteger(value) && value > 0
+        ? `${new Intl.NumberFormat().format(value)} tokens` : "";
+      if (maxContext > 0) {
+        parts.push(`Max context: ${formatTokens(maxContext)}`);
+        if (activeContext > 0) parts.push(`loaded: ${formatTokens(activeContext)}`);
+      } else if (shownContext > 0) {
+        const contextLabel = model.context_window_source === "loaded_runtime" ? "Loaded context"
+          : model.context_window_source === "configured" ? "Configured context" : "Context";
+        parts.push(`${contextLabel}: ${formatTokens(shownContext)}`);
+      } else {
+        parts.push("Context: not reported");
+      }
+      const toolSupport = model.supports_tool_calling ?? model.capabilities?.tools;
+      parts.push(`Tool calls: ${toolSupport === true ? "supported" : toolSupport === false ? "not supported" : "unknown"}`);
+      const detail = document.createElement("span");
+      detail.className = "help-model-detail";
+      detail.textContent = parts.join(" · ");
+      row.append(name, detail);
+      inventory.appendChild(row);
     }
   }
 

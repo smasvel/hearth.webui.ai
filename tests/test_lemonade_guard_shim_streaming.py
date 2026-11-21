@@ -163,9 +163,9 @@ class StreamedResponseTests(unittest.TestCase):
         self.assertEqual([raw for kind, raw in events if kind == "out"],
                          [line + b"\n" for line in lines])
 
-    def test_tools_stream_reasoning_live_before_content_is_buffered(self):
-        lines = [sse({"reasoning_content": "think"}), sse({"content": "answer"}),
-                 sse({}, finish="stop"), b"data: [DONE]"]
+    def test_tools_stream_reasoning_and_answer_before_completion(self):
+        lines = [sse({"reasoning_content": "think"}), sse({"content": "answer"}), b"",
+                 sse({}, finish="stop"), b"", b"data: [DONE]"]
         body = {"model": "GLM-4.7-Flash-GGUF", "stream": True,
                 "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}]}
         events = self._collect(body, lines)
@@ -186,8 +186,8 @@ class StreamedResponseTests(unittest.TestCase):
         last_upstream = max(i for i, (kind, _) in enumerate(events) if kind == "up")
         answer_output = next(i for i, (kind, raw) in enumerate(events)
                              if kind == "out" and b"answer" in raw)
-        self.assertGreater(answer_output, last_upstream,
-                           "tool-enabled answer content must wait for validation")
+        self.assertLess(answer_output, last_upstream,
+                           "tool-enabled answer content was buffered until completion")
 
     def test_tagged_textual_tool_call_becomes_structured_stream_call(self):
         body = {"model": "fixture", "stream": True, "tools": [{"type": "function", "function": {

@@ -64,7 +64,7 @@ _LABELS = {"lmstudio": "LM Studio", "lemonade": "Ryzen AI NPU", "vllm": "vLLM", 
 _CTX = {"lmstudio": 32768, "lemonade": 65536, "vllm": 8192, "kobold": 8192, "q38rocm": 262144, "fastflowlm": 8192, "llamacpp": 8192}
 _OUT = {"lmstudio": 8192, "lemonade": 8192, "vllm": 4096, "kobold": 4096, "fastflowlm": 4096, "llamacpp": 4096}
 _BACKENDS = ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "llamacpp")
-_NON_CHAT = ("embeddings", "transcription", "tts")
+_NON_CHAT = ("embedding", "embeddings", "transcription", "tts", "image", "video")
 
 def compaction_for_window(window: int) -> dict:
     """keep/buffer for an OpenCode config, derived purely from a model's context window.
@@ -150,9 +150,9 @@ def opencode_context_settings() -> dict:
 
 
 def _advertised_context(be: str, model_id: str, ctx_by_model: dict, fallback: int | None) -> int:
-    """Context to advertise: the resolved loaded/configured window, admin fallback, or
-    backend default. FastFlowLM uses its live --ctx-len because Hearth cannot change it
-    per model."""
+    """Context to advertise: loaded/configured context, reported model maximum, admin
+    fallback, or backend default. FastFlowLM uses its live --ctx-len because Hearth cannot
+    change it per model."""
     if be == "fastflowlm":
         return flm_context.context_limit(model_id)
     detected = ctx_by_model.get((be, model_id))
@@ -696,6 +696,13 @@ def _build_uncached(app_port: int = 5443) -> dict:
     ctx_by_model = {}
     for m in models:
         context = _configured_or_loaded_context(m)
+        # An unloaded model can safely use its reported native maximum when no saved
+        # context exists. For a loaded model, never advertise the maximum in place of its
+        # active runtime window: doing so can make clients send requests the server rejects.
+        if not context and m.get("state") != "loaded":
+            reported_max = m.get("max_context_length")
+            if type(reported_max) is int and reported_max > 0:
+                context = reported_max
         if context:
             ctx_by_model[(m.get("backend"), m["id"])] = context
     embed_models = [

@@ -83,18 +83,25 @@
 
           <p class="hint">
             Connect an AI coding tool (Continue, OpenCode) running on another PC on this network to
-            a model served on this machine. None of LM Studio, Lemonade (Ryzen AI NPU), vLLM,
-            KoboldCPP, or FastFlowLM listen beyond this machine on their own — each goes through its
-            own Caddy reverse-proxy port instead (<code class="inline-code">/etc/caddy/Caddyfile</code>,
-            enforces a real bearer token, unlike any of the servers' own unenforced/absent API key):
+            a model served on this machine. LM Studio, Lemonade (Ryzen AI NPU), vLLM,
+            KoboldCPP, FastFlowLM, and llama.cpp use their own Caddy reverse-proxy ports for
+            authenticated remote access; q38rocm is local to this desktop. These services do not
+            expose unauthenticated model endpoints on the network. Each Caddy route in
+            <code class="inline-code">/etc/caddy/Caddyfile</code> enforces a bearer token:
             <strong>port {{ help.ports.lmstudio }}</strong> for LM Studio, <strong>port {{ help.ports.lemonade }}</strong> for Lemonade, <strong>port {{ help.ports.vllm }}</strong> for vLLM,
             <strong>port {{ help.ports.kobold }}</strong> for KoboldCPP, <strong>port {{ help.ports.fastflowlm }}</strong> for FastFlowLM (the Ryzen AI NPU
-            runtime run standalone). They all share the same CA cert below (Step 1), but
+            runtime run standalone), and <strong>port {{ help.ports.llamacpp }}</strong> for llama.cpp.
+            They all share the same CA cert below (Step 1), but
             OpenCode and Continue each get their own dedicated bearer token (not a shared
             secret) — baked into their respective auto-generated configs below (Step 2) — so
             traffic from each tool is identified by the credential it actually presents, not a
             self-reported (and spoofable) User-Agent string.
           </p>
+          <p class="help-heading">Current model inventory</p>
+          <p class="hint">This list is populated from Hearth's live model inventory and refreshes with the chat model list. Context shows the model's reported maximum when known, otherwise its active, configured, or backend-default context. Tool-call support is shown only when the backend reports it; unknown means the capability has not been reported.</p>
+          <div id="help-model-inventory" class="help-model-inventory" aria-live="polite">
+            <p class="hint">Loading current models…</p>
+          </div>
           <p class="help-heading">Client tracking with X-Hearth-Client</p>
           <p class="hint">
             <strong>LM Studio tool calls:</strong> the authenticated API supports
@@ -122,20 +129,11 @@
             not executed against your files, shell, or connected accounts.
           </p>
           <p class="hint">
-            FLM context limits are model-specific in the generated OpenCode and Continue
-            configurations. With the model-aware FLM service installed, MiniCPM-V-4.7:1b
-            uses 262,144 tokens; Gemma E4B and Llama 3.2 use 131,072. Gemma Flash has a
-            fixed 1,024-token single-turn window. Qwen3.8 uses its verified
-            8,192-token context with up to 4,096 output tokens. Qwen3 8B uses an
-            8,192-token context with up to 2,048 output tokens. Other FLM models
-            retain output caps of up to 2,048 tokens.
-            Input and output share the same context window.
-            For OpenCode, select <code class="inline-code">flm-small</code> to reduce tool
-            overhead. The agent reads project instructions and relevant source before editing,
-            allows file edits, and keeps shell commands subject to approval. It follows each
-            client's tool schema, including OpenCode 2's <code class="inline-code">path</code>
-            and older clients' <code class="inline-code">filePath</code>. Refresh Help and
-            re-copy your configuration after changing the service.
+            Generated client context limits follow each model's runtime or configured context,
+            with model-specific FastFlowLM limits where known. The inventory above shows the
+            current values reported by Hearth. Input and output share the context window. For
+            OpenCode, select <code class="inline-code">flm-small</code> to reduce tool overhead;
+            refresh Help and re-copy the generated configuration after changing available models.
           </p>
           <p class="hint">
             Add <code class="inline-code">X-Hearth-Client</code> to every OpenAI-compatible
@@ -154,7 +152,7 @@
   -H "Authorization: Bearer {{ help.lan_token }}" \
   -H "X-Hearth-Client: my_app" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.6-moe-35b-a3b","messages":[{"role":"user","content":"Hello"}],"max_tokens":256,"stream":true}'</pre>
+  -d '{"model":"<span id="help-curl-model">MODEL_ID_FROM_CURRENT_INVENTORY</span>","messages":[{"role":"user","content":"Hello"}],"max_tokens":256,"stream":true}'</pre>
           </div>
           <p class="hint">
             The generated Continue and OpenCode configurations below already include
@@ -303,13 +301,9 @@
               past conversations here, not indexing a codebase).
             </p>
             <p class="hint">
-              <strong>vLLM:</strong> CPU-only (no supported ROCm/CUDA path for this iGPU — see
-              vllm.service's description), so treat it as a connectivity/config smoke test rather
-              than a real coding model, same caveat as <code class="inline-code">QwenFLM06B</code>
-              below. <code class="inline-code">contextLength: 8192</code> matches
-              vllm.service's <code class="inline-code">--max-model-len 8192</code> exactly — like
-              the Ryzen AI entries, this must be kept in sync with whatever the server was actually
-              started with, not guessed.
+              <strong>vLLM:</strong> runs CPU-only on this machine. Its model and effective context
+              are populated from the current runtime and shown in the inventory above; the generated
+              Continue entry uses that model's current limit.
             </p>
             <p class="hint">
               <strong>Ryzen AI (NPU) entries:</strong> point at Lemonade's own model ids, not LM
@@ -320,39 +314,10 @@
               regardless of which backend answers chat, so there's no need to duplicate it.
             </p>
             <p class="hint">
-              <strong>Which Ryzen AI model to pick — benchmarked live, not guessed:</strong> for a
-              real ~470-token coding prompt, <code class="inline-code">qwen3.6-moe-35b-a3b</code>
-              (MoE, only ~3B active params per token) measured ~9.6 tok/s decode after a ~9.2s
-              time-to-first-token; the smaller dense <code class="inline-code">qwen3.5-9b-npu</code>
-              had a much faster ~2.5s time-to-first-token but a <em>slower</em> ~5.7 tok/s decode —
-              a dense model has to compute all 9B params per token, more than the 35B MoE model's
-              active 3B. Counterintuitively, that makes the "smaller" model the slower one overall
-              past ~90 completion tokens: at a 200-token reply the 35B finishes in ~30s vs the 9B's
-              ~38s. So for actual code generation (functions, refactors — usually 100+ tokens), the
-              35B is the faster real choice; the 9B only wins for short replies/quick edits under
-              ~90 tokens. <code class="inline-code">QwenFLM06B</code> (0.6B) is faster still at both
-              ends but noticeably weaker at following coding instructions — treat it as a
-              connectivity smoke-test model, not a coding one. Also confirmed live while
-              investigating this: the NPU wasn't throttled or in a low-power mode — forcing
-              <code class="inline-code">turbo</code> power mode (above the default
-              <code class="inline-code">performance</code>) made zero measurable difference: this
-              is the real hardware/kernel ceiling for each model, not a config issue.
-            </p>
-            <p class="hint">
-              <strong><code class="inline-code">defaultCompletionOptions.contextLength: 32768</code>
-              on every chat entry above</strong> — added after a real report of Ryzen AI responses
-              via Continue seeming shallow/not following the actual ask, root-caused directly:
-              confirmed via the live API (both plain and through this exact Caddy LAN path) that the
-              model reasons and follows multi-step instructions correctly when given a full prompt,
-              so the problem wasn't the model. It was that Continue's config schema supports
-              <code class="inline-code">defaultCompletionOptions.contextLength</code> to tell it how
-              much context budget it has to work with — this field was missing from every entry
-              here (LM Studio's too, not just Ryzen AI), so Continue likely fell back to a
-              conservative built-in default and pre-truncated the system prompt/history/codebase
-              context <em>before ever sending the request</em>, regardless of how capable the model
-              actually is once it receives a full prompt. 32768 matches what both Lemonade models
-              actually load with (confirmed live via <code class="inline-code">GET /v1/health</code>)
-              and what this app already loads LM Studio models with by default.
+              Each Continue model entry includes a generated context limit derived from the current
+              model inventory and saved context settings. The value can differ between models and
+              changes when the runtime is loaded with a different context; re-copy the generated
+              YAML after changing models or their context settings.
             </p>
           </details>
 
@@ -379,16 +344,11 @@
               <button id="copy-opencode-config" class="tiny-copy-btn" type="button" title="Copy">&#128203;</button>
             </div>
             <p class="hint">
-              <strong>Every <code class="inline-code">models</code> block above is generated at
-              runtime</strong> from what's actually downloaded — LM Studio's is empty only because
-              its chat models were deleted 2026-07-21 to free ~305GB of disk (see README "Retiring
-              LM Studio's chat models"); Ryzen AI NPU now covers day-to-day chat. If you
-              <code class="inline-code">lms get &lt;model&gt;</code> a new LM Studio model (or
-              download any model from this app's Downloads panel), it appears here automatically on
-              the next refresh.
-              <strong>Always re-copy this after adding/removing a model</strong> — an old config
-              whose default model no longer exists makes OpenCode silently hang on every chat, with
-              no error (see Troubleshooting below — this happened for real, on two machines).
+              <strong>Every <code class="inline-code">models</code> block above is generated from
+              the current model inventory.</strong> Models that are available to the backend are
+              added automatically; unavailable or deleted models drop out. Refresh Help and copy
+              the updated configuration after changing models or their saved context settings.
+              The inventory above also refreshes automatically while Chat is open.
             </p>
             <p class="hint">
               The local <code class="inline-code">q38rocm</code> model is available only to
@@ -396,50 +356,39 @@
               OpenCode config sync adds it to
               <code class="inline-code">~/.config/opencode/opencode.jsonc</code> when its GGUF is
               installed; load the model from Hearth's Models page before selecting it in OpenCode.
-              It is configured at the model's native 262K context; full-context runs need more
-              shared GPU memory and can take longer to prefill and generate.
+              Its context and loaded state are reported in the inventory above; larger contexts
+              use more shared GPU memory and can take longer to prefill and generate.
               It is not added to the LAN or Tailscale configs shown here.
             </p>
             <p class="hint">
-              The top-level <code class="inline-code">"model"</code> line pins the default to the
-              NPU daily driver so a fresh install doesn't default to something dead or slow —
-              without it, OpenCode just picks the first provider/model it finds.
+              The top-level <code class="inline-code">"model"</code> uses the saved default from
+              Settings when available; otherwise Hearth selects an available model, preferring one
+              that is already loaded so the first request can start without a model load.
             </p>
             <p class="hint">
               <strong><code class="inline-code">vllm</code></strong> runs CPU-only via
               <code class="inline-code">vllm.service</code> (a user-level systemd unit this app
               controls directly, always on like Lemonade's own service) — this iGPU has no
-              supported ROCm/CUDA path for vLLM, so it's a small model, mainly a connectivity/
-              config smoke test rather than a real coding option (same caveat as
-              <code class="inline-code">QwenFLM06B</code> above).
-              <code class="inline-code">limit.context: 8192</code> matches what it's currently
-              loaded with. To change the served model, use this app's own Models/Downloads panels
+              supported ROCm/CUDA path for vLLM on this machine, so it runs on CPU. The current
+              model and context are shown in the inventory above. To change the served model, use
+              this app's own Models/Downloads panels
               (Search, Download, Load — same as the Ryzen AI entries above; vLLM has no load API
               of its own, but this app builds one on top via that systemd unit), then check the
               new id via <code class="inline-code">GET https://{{ help.lan_ip }}:{{ help.ports.vllm }}/v1/models</code>
               and update the key here to match.
             </p>
             <p class="hint">
-              <code class="inline-code">limit.context</code> is capped at 32768 for the Ryzen AI
-              entries, not necessarily each model's real max — this app loads NPU models with
-              <code class="inline-code">ctx_size: 32768</code> by default (see Models panel),
-              confirmed via <code class="inline-code">GET /v1/health</code>'s
-              <code class="inline-code">recipe_options.ctx_size</code>. Advertising a higher number
-              than what a model was actually loaded with causes agent-mode tools to send oversized
-              requests, which gets rejected — and on weaker local models under that pressure, the
-              failure can also look like a client-side tool-call schema error (e.g. OpenCode's
-              <code class="inline-code">write</code> tool rejecting a call with a missing
-              <code class="inline-code">content</code> field), not just a plain context error,
-              because the model truncates or malforms the JSON before that limit is even hit
-              cleanly. Newly downloaded models are added automatically with these default limits
-              (32768 context for Ryzen AI / LM Studio, 8192 for vLLM); curated entries that were
-              already tuned keep their values. If a model was reloaded with a different context in
-              the Models panel, raise or lower its number here to match.
+              Context and output limits are generated per model. Hearth uses the active runtime
+              context for loaded models, then a saved model-specific context, a reported model
+              maximum, or the backend default where available. Input and output share the context
+              window; OpenCode's output limit is capped to leave room for the prompt. Reload a
+              model after changing its saved context before relying on the new value.
             </p>
             <p class="hint">
-              Run with <code class="inline-code">opencode -m lemonade/&lt;model-id&gt;</code> (e.g.
-              <code class="inline-code">opencode -m lemonade/qwen3.6-moe-35b-a3b</code>), or select
-              one from the model picker. If it still can't connect after Step 1's CA-trust command,
+              Run with <code class="inline-code">opencode -m &lt;backend&gt;/&lt;model-id&gt;</code>
+              using an entry from the generated configuration, or select one from the model picker.
+              Refresh Help and copy the configuration again after changing available models. If it
+              still can't connect after Step 1's CA-trust command,
               this is a Bun-based CLI too, so the same fetch/CA-trust quirk is the first thing to
               suspect — try restarting the terminal/shell session.
             </p>
@@ -590,30 +539,18 @@
               <code class="inline-code">8445/tcp</code>), needs a password.
             </p>
             <p class="hint">
-              If the port responds but chat still hangs: the config's selected model no longer
-              exists on the server it points at — most likely because your config predates the
-              2026-07-21 LM Studio chat-model deletion and still defaults to one of the deleted
-              models
-              (<code class="inline-code">gemma-4-e4b</code>,
-              <code class="inline-code">qwen/qwen3.5-9b</code>,
-              <code class="inline-code">qwen/qwen3.6-35b-a3b</code> via the
-              <code class="inline-code">lmstudio</code> provider / port 8443). The server is up
-              and reachable, so nothing fails at connect time — the request just asks for a model
-              that isn't there, and the chat sits with no reply and no error. Confirmed from both a local client and a remote LAN client.
+              If the port responds but chat does not, check that the model id in the client
+              configuration appears in the generated model list and in that backend's
+              <code class="inline-code">/v1/models</code> response. Re-copy the current Help
+              configuration after adding, deleting, or switching a model.
             </p>
             <p class="hint">
-              <strong>Fix:</strong> re-copy the current OpenCode config above (its default
-              <code class="inline-code">"model"</code> now pins
-              <code class="inline-code">lemonade/qwen3.6-moe-35b-a3b</code>, which is actually
-              served), or in the model picker switch to any
-              <code class="inline-code">lemonade/…</code> model.
-              <strong>Verify what a server actually has</strong> before blaming config/TLS:
+              <strong>Verify the backend's current model list</strong> before troubleshooting TLS:
               <code class="inline-code">curl -s https://{{ help.lan_ip }}:{{ help.ports.lemonade }}/v1/models -H
               "Authorization: Bearer &lt;token above&gt;" -H
-              "X-Hearth-Client: connectivity_test"</code> (8443 = LM Studio, currently
-              embedding-only; 8444 = Ryzen AI, the real chat models; 8445 = vLLM, one model at a
-              time). If the model you're selecting isn't in that list, no client-side setting can
-              make it respond.
+              "X-Hearth-Client: connectivity_test"</code>. If the selected model id isn't
+              available from that endpoint, re-copy the current generated config or select an
+              available model.
             </p>
           </details>
 
@@ -697,21 +634,15 @@
             <p class="hint" style="margin-top: 8px;">
               Agent-mode tool definitions plus whatever codebase context the tool includes (open
               files, etc.) can easily add up to more tokens than the model's currently *loaded*
-              context window. The Models panel's Load now defaults every load to a 32768 context
-              (and full GPU offload) automatically — LM Studio's own stock default is a much
-              smaller 8192 regardless of the model's actual max, which is what causes this. If you
-              still hit it with a very large agent preamble, unload the model and load it again
-              with an even bigger value in "Load options → Context length".
-              {% if is_admin %}From a terminal on this machine, the manual equivalent (which does
-              <em>not</em> get either default automatically) is
-              <code class="inline-code">lms load &lt;model-key&gt; -c 32768 --gpu max</code>.{% endif %}
+              context window. Check the model's loaded context in the inventory and Models page.
+              Set a supported context in Models → Load options, then reload the model to apply it.
               A bigger context window uses more RAM (mainly the KV cache, multiplied by the number
               of parallel request slots) — go bigger than you need, but not wildly so.
             </p>
           </details>
 
           <details class="advanced">
-            <summary>vLLM: a model Loads but never becomes ready (looks hung, RAM climbs)</summary>
+            <summary>vLLM: a model fails to become ready</summary>
             <p class="hint" style="margin-top: 8px;">
               Almost always a vision/multimodal model (an architecture with an image encoder, e.g.
               Qwen3.5-family checkpoints) — confirmed live (2026-07-23) that vLLM's CPU backend

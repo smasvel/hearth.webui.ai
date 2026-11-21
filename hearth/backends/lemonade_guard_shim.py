@@ -54,6 +54,7 @@ from hearth.backends import lemonade_templates
 from hearth.backends import lemonade_thinking
 from hearth.backends.flm_tool_shim import (
     _repair_streamed_textual_tool_calls, _repair_textual_tool_calls,
+    _streamable_text_prefix, _live_content_event, _remove_streamed_content_prefix,
 )
 
 LEMONADE_BASE = "http://127.0.0.1:13305"
@@ -739,13 +740,11 @@ def chat_completions():
         buffer_tool_output = any(
             (tool.get("function") or {}).get("name") for tool in body.get("tools") or []
         )
-        # Do not expose ordinary content while Lemonade is still validating a tool
-        # response. Tool-oriented models can emit transient code/arguments as content
-        # before the completed tool call is reconstructed; OpenCode briefly renders
-        # those fragments as assistant text. Explicit reasoning deltas remain live.
         def tee():
             usage = {}
             outgoing = []
+            held_text = ""
+            live_text = ""
             pending_chars = 0
             pending_content = []
             think_state = {"inside": False, "pending": ""}
@@ -868,6 +867,11 @@ def chat_completions():
                     else:
                         yield out_line
                     content_piece = delta.get("content") or ""
+                    if buffer_tool_output and isinstance(content_piece, str) and content_piece:
+                        visible, held_text = _streamable_text_prefix(held_text + content_piece)
+                        if visible:
+                            live_text += visible
+                            yield _live_content_event(obj, visible)
                     if content_piece:
                         pending_chars += len(content_piece)
                         pending_content.append(content_piece)
@@ -910,7 +914,8 @@ def chat_completions():
                     if textual_calls is not None:
                         repaired = textual_calls.splitlines(keepends=True)
                     repaired = exact_tool_contract.enforce_named_choice_sse(repaired, client_body)
-                    yield from generation_guard.guard_sse_bytes(repaired)
+                    replay = generation_guard.guard_sse_bytes(repaired)
+                    yield from _remove_streamed_content_prefix(replay, live_text)
                 reported_finish = True
             except GeneratorExit:
                 failure_status = 499

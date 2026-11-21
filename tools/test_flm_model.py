@@ -48,6 +48,31 @@ def _metric_tokens_per_second(usage, duration):
     return None
 
 
+def desktop_stream_events(response):
+    response.raise_for_status()
+    events = []
+    first_text = last_text = None
+    done = False
+    for line in response.iter_lines(chunk_size=1):
+        if not line.startswith(b'data:'):
+            continue
+        payload = line[5:].strip()
+        if payload == b'[DONE]':
+            done = True
+            break
+        event = json.loads(payload)
+        events.append(event)
+        if any((choice.get('delta') or {}).get('content') for choice in event.get('choices', [])):
+            last_text = time.monotonic()
+            if first_text is None:
+                first_text = last_text
+    assert done, 'Desktop stream ended without [DONE]'
+    assert first_text is not None, 'Desktop received no visible answer text'
+    # A multi-sentence answer replayed in one burst looks frozen in Desktop.
+    assert last_text - first_text >= 0.1, 'Visible answer arrived in one burst (under 100 ms)'
+    return events
+
+
 def decode(response, stream):
     response.raise_for_status()
     if stream:
@@ -60,6 +85,10 @@ def decode(response, stream):
                   if line.startswith('data: ') and line != 'data: [DONE]']
     else:
         events = [response.json()]
+    return decode_events(events)
+
+
+def decode_events(events):
     calls, text, finishes, usage = {}, [], [], {}
     for event in events:
         usage.update(event.get('usage') or {})
@@ -276,8 +305,13 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
             read_timeout = 900 if name == 'large-code-input' else 300
             perf_before = (kobold_client.performance_snapshot(perf_url)
                            if backend == 'kobold' else None)
-            response = requests.post(args.url, json=body, headers=headers, timeout=(10, read_timeout))
-            calls, text, finishes, usage = decode(response, stream)
+            if name == 'opencode-desktop-live-text':
+                with requests.post(args.url, json=body, headers=headers, timeout=(10, read_timeout),
+                                   stream=True) as response:
+                    calls, text, finishes, usage = decode_events(desktop_stream_events(response))
+            else:
+                response = requests.post(args.url, json=body, headers=headers, timeout=(10, read_timeout))
+                calls, text, finishes, usage = decode(response, stream)
             if show_response:
                 result['detail'] = text.strip()[:1200]
                 if expected_answer is not None:
@@ -536,6 +570,8 @@ def run_suite(model, url, *, output=None, suite='all', context=32768, headers=No
                       {'role': 'user', 'content': 'Read this Python module and return only the exact string returned '
                        'by sentinel_code.\n' + code}])
     if args.suite in ('opencode', 'all', 'complete'):
+        check('opencode-desktop-live-text', 'Explain how rain forms in five sentences. Answer directly without tools.',
+              True, tools=[function('read', {'path': {'type': 'string'}})], tool_choice='auto', expected=[])
         for stream in (False, True):
             run_workflows(check, stream, only)
     if args.suite in ('extra', 'all', 'complete', 'tools'):

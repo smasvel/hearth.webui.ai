@@ -162,9 +162,13 @@ repositories, including recent releases not yet listed in Lemonade's catalog. Du
 catalog/search hits for the same checkpoint are combined without hiding distinct
 quantizations. Cached checkpoints show as downloaded using Lemonade's required-file
 status and shared cache, even when its catalog download flag is stale.
-The Help page's generated OpenCode config uses a 65,536-token context limit for models
-supporting at least that maximum, and 8,192 tokens otherwise. The Models page's model
-loading ctx-size is a separate load setting.
+The Help page's Continue and OpenCode configs are generated from the current available
+model inventory. Context and output limits are model-specific: loaded models use their
+active runtime context, while unloaded models use their saved setting, reported model
+maximum, or backend default where available. The Help panel also auto-populates a live model inventory with
+loaded state, context information, and tool-call capability when the backend reports it.
+It refreshes alongside the chat model list; unknown tool-call support means no explicit
+capability was reported. Re-copy generated client configs after changing models or context.
 Loaded models show a separate **loaded ctx-size** line with the runtime's active context;
 unloaded models do not show this line.
 On the **Models** page, backend sections with loaded models appear first, and loaded
