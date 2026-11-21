@@ -830,7 +830,7 @@ class Manager:
                 assignment['goal'] += '\n\nScheduled occurrence (UTC): '+datetime.fromtimestamp(scheduled_at, timezone.utc).isoformat()
                 job = self.create(assignment, schedule['owner'])
                 credential_source = self.get(schedule.get('task_id'))
-                if credential_source:
+                if credential_source and credential_source.get('owner') == schedule['owner']:
                     agent_store.save_research_credentials(
                         job['id'], agent_store.get_research_credentials(credential_source['id']))
                 job['schedule_id'] = schedule['id']
@@ -1382,7 +1382,7 @@ class Manager:
                                         title=f'Agent research ({server_name})',
                                         query='Agent task online search',
                                         source=f'agent-{server_name}',
-                                        ok=not failed,
+                                        ok=not failed, owner_id=job["owner"],
                                         dedupe_key=f"{job['id']}:{message.get('id')}:{index}:{tool_name}:{result_url}",
                                     )
                     recent.append({'id': message['id'], 'type': message.get('type'),

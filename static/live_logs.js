@@ -58,7 +58,7 @@
       addText(line, "dev-route", `${row.backend || "unknown"} / ${row.model || "unknown"}`);
       if (row.is_npu) addText(line, "dev-npu", "NPU");
       addText(line, "dev-event", done ? (failed ? "request failed" : cancelled ? "client closed stream" : "generation completed") : "streaming");
-      if (!done) {
+      if (!done && row.can_cancel) {
         const stop = document.createElement("button");
         stop.className = "panel-btn danger";
         stop.type = "button";
@@ -152,7 +152,7 @@
   }
 
   document.getElementById("live-reset").addEventListener("click", async () => {
-    if (!confirm("Warning 1 of 2: This permanently deletes all saved and in-memory Live logs, including captured request and response text. Continue?")) return;
+    if (!confirm("Warning 1 of 2: This permanently deletes your completed Live Logs, including captured request and response text. Continue?")) return;
     if (!confirm("Warning 2 of 2: Clear completed history and saved traces now? In-flight requests will remain visible and their completed entries will be recorded after they finish.")) return;
     const button = document.getElementById("live-reset");
     const status = document.getElementById("live-reset-status");
@@ -166,7 +166,7 @@
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       traceCache.clear();
       traceOpenState.clear();
-      status.textContent = "Completed Live logs and saved traces were cleared. Active requests remain visible.";
+      status.textContent = "Your completed Live Logs and saved traces were cleared.";
     } catch (error) {
       status.textContent = `Could not reset Live logs: ${error.message}`;
     } finally {

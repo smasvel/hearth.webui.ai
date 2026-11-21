@@ -445,7 +445,8 @@ def replace_agent_project_memory(owner_id, task_id, chunks, embeddings):
     embeddings = embeddings if embeddings is not None else [None] * len(chunks)
     with database.connect() as conn:
         with conn.transaction():
-            conn.execute("DELETE FROM agent_project_memory WHERE source_task_id = %s", (task_id,))
+            conn.execute("DELETE FROM agent_project_memory WHERE owner_id = %s AND source_task_id = %s",
+                         (owner_id, task_id))
             now = time.time()
             for content, embedding in zip(chunks, embeddings):
                 vector = np.asarray(embedding, dtype=np.float32).tobytes() if embedding is not None else None

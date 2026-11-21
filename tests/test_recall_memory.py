@@ -155,6 +155,7 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
             self.stack.enter_context(patch.object(backend, "owns_model", return_value=False))
         self.recall_memory = app._recall_memory
         self.remember_exchange = app._remember_exchange
+        self.should_search_web = app.web_search.should_search_web
         self.stack.enter_context(patch.object(app, "_recall_memory", return_value=(
             "Known personal fact explicitly saved from a past conversation: "
             "the user's name is Maya Patel."
@@ -235,6 +236,193 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
         self.assertTrue(prompt.endswith(ask))
         saved = chat_store.get_conversation("lookup-chat", "u")["messages"]
         self.assertEqual(saved[0]["content"], ask)
+
+    def test_history_match_reaches_chat_when_vector_index_returns_only_a_stale_fact(self):
+        from hearth.storage import chat_store
+
+        old = "Project Juniper's codeword is violet compass."
+        fresh = "Project Juniper's codeword is silver lantern."
+        other = "Project Juniper's codeword is orange bicycle."
+        ask = "What is the codeword for Project Juniper?"
+        memory_store.add_chunk("u", "old-chat", "user", old, [1.0, 0.0])
+        for conversation, account, content in (("fresh-chat", "u", fresh), ("private-chat", "other", other)):
+            chat_store.ensure_conversation(conversation, account, None, content)
+            chat_store.add_message(conversation, "user", content)
+
+        with patch.object(app, "_recall_memory", self.recall_memory), \
+             patch.object(app, "_embed_rag_texts", return_value=("lemonade", [[1.0, 0.0]])):
+            response = self.client.post(
+                "/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                json={"model": "test-model", "conversation_id": "lookup-chat",
+                      "messages": [{"role": "user", "content": ask}], "max_tokens": 32},
+            )
+            self.assertEqual(response.status_code, 200)
+            response.get_data()
+            response.close()
+
+        prompt = self.captured["messages"][-1]["content"]
+        self.assertLess(prompt.index(fresh), prompt.index(old))
+        self.assertNotIn(other, prompt)
+        self.assertTrue(prompt.endswith(ask))
+        self.assertEqual(chat_store.get_conversation("lookup-chat", "u")["messages"][0]["content"], ask)
+
+    def test_profile_questions_use_old_saved_chats_without_model_or_embeddings(self):
+        from hearth.storage import chat_store
+
+        chat_store.ensure_conversation("old", "u", None, None)
+        chat_store.add_message("old", "user", "My name is Maya Patel and I live in Madison, Wisconsin.")
+        chat_store.ensure_conversation("unrelated", "other", None, None)
+        chat_store.add_message("unrelated", "user", "My name is Riley Singh and I live in Austin, Texas.")
+        with database.connect() as conn:
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, created_at) "
+                "SELECT 'old', 'user', 'Unrelated routine message', EXTRACT(EPOCH FROM NOW()) + n "
+                "FROM generate_series(1, 2001) AS messages(n)"
+            )
+        cases = {
+            "What's my name?": "Your saved name is Maya Patel.",
+            "What state do I live in?": "Your saved location is Madison, Wisconsin.",
+            "What is my name, city, and state?": "Your saved name is Maya Patel. Your saved location is Madison, Wisconsin.",
+        }
+        with patch.object(app, "_recall_memory") as recall, patch.object(app.lms, "chat_stream") as model:
+            for index, (question, expected) in enumerate(cases.items()):
+                with self.subTest(question=question):
+                    conversation = f"profile-{index}"
+                    with self.client.post("/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                                          json={"model": "test-model", "conversation_id": conversation,
+                                                "messages": [{"role": "user", "content": question}]}) as response:
+                        self.assertEqual(response.status_code, 200)
+                        payload = json.loads(response.get_data(as_text=True).splitlines()[0][6:])
+                    self.assertEqual(payload["choices"][0]["delta"]["content"], expected)
+                    saved = chat_store.get_conversation(conversation, "u")["messages"]
+                    self.assertEqual(saved[-1]["content"], expected)
+            recall.assert_not_called()
+            model.assert_not_called()
+
+    def test_weather_lookup_finishes_without_recall_or_model_even_when_provider_fails(self):
+        from hearth.storage import chat_store
+
+        chat_store.ensure_conversation("saved-place", "u", None, None)
+        chat_store.add_message("saved-place", "user", "My city and state are Boston, Massachusetts.")
+        for index, forecast in enumerate(("Live forecast fixture", None)):
+            with self.subTest(forecast=forecast), \
+                 patch.object(app.web_search, "fetch_weather", return_value=forecast) as fetch, \
+                 patch.object(app, "_recall_memory") as recall, \
+                 patch.object(app, "_web_search_context") as generic_search, \
+                 patch.object(app.lms, "chat_stream") as model, \
+                 patch.object(app.web_search, "should_search_web", return_value=True):
+                conversation = f"weather-{index}"
+                with self.client.post(
+                    "/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"model": "test-model", "conversation_id": conversation,
+                          "messages": [{"role": "user", "content": "10-day forecast here please?"}]},
+                ) as response:
+                    self.assertEqual(response.status_code, 200)
+                    text = response.get_data(as_text=True)
+                self.assertIn("data: [DONE]", text)
+                reply = chat_store.get_conversation(conversation, "u")["messages"][-1]["content"]
+                self.assertIn(forecast or "couldn't retrieve a live forecast", reply)
+                fetch.assert_called_once_with("Boston, Massachusetts", forecast_days=10)
+                recall.assert_not_called()
+                generic_search.assert_not_called()
+                model.assert_not_called()
+
+    def test_remember_location_then_recall_city_and_weather_across_chats(self):
+        cases = [
+            ("remember-location", ["Note my location the city of Madison, Wisconsin"], "remember your location as Madison"),
+            ("recall-city", ["What’s my city?"], "Your saved location is Madison, Wisconsin."),
+            ("check-location", ["Check for my location"], "Your saved location is Madison, Wisconsin."),
+            ("history-followup", ["How’s the weather today?", "Check my history of chats and find it"],
+             "Your saved location is Madison, Wisconsin."),
+            ("history-reference", ["Do you remember my location?", "Okay", "They are in the previous chat"],
+             "Your saved location is Madison, Wisconsin."),
+            ("where-followup", ["Do you remember my location?", "Where?"],
+             "Your saved location is Madison, Wisconsin."),
+            ("saved-city-weather", ["What is the weather in Boston, MA?", "How’s weather today for my city?"],
+             "Weather fixture for the saved city"),
+        ]
+        with patch.object(app.lms, "chat_stream") as model, \
+             patch.object(app, "_recall_memory") as recall, \
+             patch.object(app.web_search, "should_search_web", wraps=self.should_search_web), \
+             patch.object(app.web_search, "fetch_weather", return_value="Weather fixture for the saved city") as forecast:
+            for conversation, questions, expected in cases:
+                with self.subTest(conversation=conversation), self.client.post(
+                    "/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"model": "test-model", "conversation_id": conversation,
+                          "messages": [{"role": "user", "content": question} for question in questions]},
+                ) as response:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn(expected, response.get_data(as_text=True))
+            forecast.assert_called_once_with("Madison, Wisconsin", forecast_days=3)
+            model.assert_not_called()
+            recall.assert_not_called()
+
+    def test_background_chat_recalls_only_signed_in_users_memory_when_embeddings_are_offline(self):
+        import time
+        from hearth.core import chat_jobs
+        from hearth.storage import chat_store
+
+        fact = "Project Juniper uses the silver lantern codeword."
+        decoy = "Project Juniper uses the orange bicycle codeword."
+        for account, statement in (("u", fact), ("second-admin", decoy)):
+            old_chat = f"{account}-old"
+            chat_store.ensure_conversation(old_chat, account, None, statement)
+            chat_store.add_message(old_chat, "user", statement)
+        question = "Which codeword belongs to Project Juniper?"
+        for account, expected, other in (("u", fact, decoy), ("second-admin", decoy, fact)):
+            with self.subTest(account=account), \
+                 patch.object(app, "_recall_memory", self.recall_memory), \
+                 patch.object(app, "_embed_rag_texts", side_effect=app.lemonade.LemonadeError("down")):
+                with self.client.session_transaction() as session:
+                    session.update(user_id=account, last_activity=time.time())
+                conversation = f"{account}-question"
+                response = self.client.post(
+                    "/api/chat/start", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"model": "test-model", "conversation_id": conversation,
+                          "messages": [{"role": "user", "content": question}]},
+                )
+                self.assertEqual(response.status_code, 202)
+                response.close()
+                job = chat_jobs.registry.get(account, conversation)
+                deadline = time.monotonic() + 4
+                while job.snapshot()["status"] == "running" and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(job.snapshot()["status"], "completed", job.snapshot())
+                prompt = self.captured["messages"][-1]["content"]
+                self.assertIn(expected, prompt)
+                self.assertNotIn(other, prompt)
+                self.assertEqual(chat_store.get_conversation(conversation, account)["messages"][0]["content"],
+                                 question)
+
+    def test_explicit_memory_lookup_and_reasoning_only_reply_show_saved_evidence(self):
+        from hearth.storage import chat_store
+
+        fact = "Project Juniper uses the silver lantern codeword."
+        chat_store.ensure_conversation("old-lookup", "u", None, fact)
+        chat_store.add_message("old-lookup", "user", fact)
+        cases = (
+            ("What codeword did I save for Project Juniper?", False),
+            ("Which codeword belongs to Project Juniper?", True),
+        )
+        for index, (question, uses_model) in enumerate(cases):
+            with self.subTest(uses_model=uses_model), \
+                 patch.object(app, "_recall_memory", self.recall_memory), \
+                 patch.object(app, "_embed_rag_texts", side_effect=app.lemonade.LemonadeError("down")), \
+                 patch.object(app.lms, "chat_stream", return_value=iter([
+                     'data: {"choices":[{"delta":{"reasoning_content":"Thinking"},"finish_reason":"length"}]}',
+                     "data: [DONE]",
+                 ])) as model:
+                conversation = f"lookup-fallback-{index}"
+                with self.client.post(
+                    "/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"model": "test-model", "conversation_id": conversation,
+                          "messages": [{"role": "user", "content": question}]},
+                ) as response:
+                    self.assertEqual(response.status_code, 200)
+                    streamed = response.get_data(as_text=True)
+                    self.assertLess(streamed.index(fact), streamed.index("data: [DONE]"))
+                self.assertEqual(model.called, uses_model)
+                self.assertIn(fact, chat_store.get_conversation(conversation, "u")["messages"][-1]["content"])
 
 
 if __name__ == "__main__":

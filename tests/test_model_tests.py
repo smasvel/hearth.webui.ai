@@ -495,7 +495,7 @@ class ModelTestAPITests(unittest.TestCase):
 
     def fixture_job(self):
         with patch.object(model_tests, 'run_suite', return_value=[]):
-            job = self.registry.start([TARGET], False, Mock(), lambda t: ('http://local', t['id'], {}), lambda t: 8192, background=False)
+            job = self.registry.start([TARGET], False, Mock(), lambda t: ('http://local', t['id'], {}), lambda t: 8192, background=False, owner_id='admin')
         return job, None
 
     def test_model_management_is_blocked_during_validation(self):

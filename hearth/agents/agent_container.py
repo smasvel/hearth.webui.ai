@@ -214,7 +214,7 @@ class _ModelProxyHandler(BaseHTTPRequestHandler):
             if self.command == 'POST' and request_path.endswith('/chat/completions'):
                 live_id = live_requests.start(
                     source=source, backend=proxy.get('provider_id') or 'agent',
-                    task_id=proxy.get('task_id'),
+                    task_id=proxy.get('task_id'), owner_id=proxy.get('owner_id'),
                     model=proxy.get('model_id') or request_body.get('model') or 'unknown',
                     max_tokens=request_body.get('max_tokens') or request_body.get('max_completion_tokens'),
                     is_npu=proxy.get('provider_id') == 'fastflowlm',
@@ -938,6 +938,7 @@ class ContainerOpenCode(OpenCode):
         original, provider, proxy_info = self._host_provider(
             job['model']['providerID'], job['model']['id'], proxy_path,
             job.get('assignee') or 'Project agent')
+        proxy_info['owner_id'] = job['owner']
         skill_bundle = self._skill_bundle(job)
         proxy_info['skill_bundle_hash'] = hashlib.sha256(json.dumps(
             skill_bundle, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

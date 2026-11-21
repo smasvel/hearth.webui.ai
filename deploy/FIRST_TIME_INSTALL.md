@@ -107,6 +107,23 @@ symptoms are directed to emergency care. No backend-specific configuration is re
 Cross-chat memory can recall explicit facts from saved conversations and keeps unrelated
 retrieved notes out of simple personal-fact questions. No additional setup is required for
 Lemonade embeddings.
+For a direct question about your saved name, city, or state, Hearth can answer from
+your account's chat history without running the selected model. For example, save
+“My city and state are Madison, Wisconsin” in one chat, then ask “What city do I
+live in?” in another.
+“Remember my location Madison, Wisconsin” also saves a location in your chat history.
+Hearth can also recall a city you provide in response to a question about your
+personal location. Location suggestions written by the model are excluded.
+“Weather for my city” uses that saved place even if the conversation mentioned a
+different city earlier.
+When a follow-up points to a previous chat, Hearth can resolve it against the
+current conversation's recent name or location question.
+For an explicit saved-history question with clear keyword matches, Chat can show
+matching statements directly. Chat can also show retrieved statements when a
+model returns reasoning without a final answer.
+Hearth also checks saved chats for keyword matches when the embedding index returns
+results. To verify recall, save a distinctive fact in one chat and ask about it in a
+new chat under the same account.
 The local model proxies also preserve the blank-line delimiters required by streamed SSE
 responses, so OpenAI-compatible clients can receive tool and answer events reliably.
 No additional setup is required for Lemonade embeddings. To enable separate cross-chat
@@ -118,8 +135,9 @@ separate namespace, and every other backend continues using Lemonade embeddings.
 Previously indexed Lemonade vectors stay available to other backends. If the KoboldCpp
 embeddings endpoint is unavailable, Hearth falls back to Lemonade embeddings for that
 KoboldCpp conversation, preserving RAG while the optional sidecar is offline. Once the
-sidecar responds, KoboldCpp uses its own vector namespace. Start a new conversation when
-older context is essential.
+sidecar responds, KoboldCpp uses its own vector namespace. If the primary index and
+chat history yield no matches, Hearth can search vectors saved with the other
+provider when that embedding endpoint is available. Each index uses its own vectors.
 
 Generated OpenCode configurations enable automatic compaction by default so older turns
 are summarized before the loaded context fills. Settings can disable it or change retained
@@ -455,7 +473,7 @@ model context windows. After navigation and requested page interactions, Hearth 
 for content, lists and visits each open tab (including popups), captures snapshots, and
 returns an explicit confirmation to the model. The chat browser tools support navigation,
 inspection, and explicitly requested page interactions. Online research settings
-allow up to 500 relevant pages per request. Organic results are relevance-filtered and
+limit how many relevant pages Hearth can open per request. Organic results are relevance-filtered and
 domain-diversified before navigation, while ad and tracker requests are blocked. Set
 the limit to 0 for snippets only; pasted URLs still follow the separate direct-URL setting.
 For general online research, chat uses Hearth's supplied search evidence instead of making
@@ -598,7 +616,7 @@ before task details, controls, activity, and conversation logs.
 feed, which streams task progress, the agent container's tool inputs and outputs,
 and user-facing model responses as they become available, with timestamps on
 agent messages and completed container tools. The
-stream is scoped to tasks you own or that were explicitly shared with your account.
+stream is scoped to tasks you own. Shared assignments expose status and the completed result.
 If a reconnect briefly returns no live messages, the page keeps showing the
 transcript already saved with the assignment. The execution page continues
 refreshing saved activity and conversation logs after live updates stop, including
@@ -645,13 +663,10 @@ available, while still allowing another model from Hearth's current downloaded-m
 inventory to be selected. This includes unloaded models; Hearth loads the selected model
 before the agent starts. Task data
 remains in PostgreSQL if you close the browser.
-When an owner shares an assignment, shared users get the same task controls: they
-can send instructions, answer prompts, pause or continue work, change the model when
-resuming, rerun completed work, delete the assignment, and manage who else can access
-it. Anyone with assignment access can edit the share list; the owner retains ownership.
-Shared users can access the assignment's project files and download its completed
-project. They can also create, edit, pause, resume,
-and delete recurring schedules linked to assignments shared with them.
+When an owner shares an assignment, the recipients can view its status and completed
+result. The owner controls the assignment and its schedules, sharing, linked Chat,
+workspace downloads, and private activity and tool logs. An assignment is private
+unless its owner shares it.
 Completed and stopped assignments have a **Run again** action that queues a fresh
 execution from the latest saved project files while retaining the assignment's settings
 and activity history.
@@ -769,8 +784,7 @@ Schedules remain in PostgreSQL across restarts; if Hearth was stopped when a run
 became due, the worker starts one catch-up run after startup and skips the missed
 intervals. The standard systemd service starts this worker after reboot.
 On the **Schedules** page, edit an existing schedule to change its interval, local
-run time, or timezone. Shared users can manage schedules for assignments shared with
-them.
+run time, or timezone. Schedules are visible and editable by their owner.
 With `--no-service`, scheduled runs happen only while you manually run `.venv/bin/python app.py`.
 
 With `--no-service`, start the app manually using `.venv/bin/python app.py`.
@@ -1032,10 +1046,8 @@ Lemonade NPU chat uses the runtime context when no per-model context is configur
 Empty model replies appear as chat errors and in Live logs.
 For CPU models served by Lemonade, automatic web lookups use search snippets.
 Explicit web searches, direct URLs, and screenshot requests can still fetch full pages.
-Hearth limits the web research text added to each chat prompt to reduce the wait
-before the model starts replying. When Hearth already retrieved web evidence, it skips
-redundant browser tools unless the message requests a page interaction. Browse history
-and captured screenshots remain available.
+Hearth limits the web research text added to each chat prompt. Account-scoped
+browse history and captured screenshots are available.
 
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
@@ -1050,9 +1062,9 @@ Completed rows remain available for two days. Project-agent model requests appea
 the task's agent name through Hearth's model relay. No additional setup is required.
 Request starts are checkpointed as they begin. If Hearth restarts before a request
 finishes, Live logs marks that entry as interrupted so the request does not disappear.
-Administrators can use **Reset all metrics** to erase saved request history and coding
+Administrators can use **Reset my metrics** to erase saved request history and coding
 reviews after two confirmation warnings; subsequent requests are recorded normally.
-The **Live logs** page also has **Reset live logs**, which clears completed history and
+The **Live logs** page also has **Clear my live logs**, which clears completed history and
 captured request/response traces after two confirmation warnings. In-flight rows remain
 visible, keep their saved checkpoints, and are recorded after they finish. Interrupted entries
 are retained if Hearth restarts before a request completes.
@@ -1103,12 +1115,12 @@ PostgreSQL database, and each report keeps the scenario details and model respon
 for that run. Restart Hearth after updating so it initializes the scenario table and
 serves the updated Model tests page.
 
-Administrators can open **Browse history** to search and page through visits from chat
+Administrators can open **Browse history** to search their own visits from chat
 research and agent tasks, including URLs returned by configured agent research providers
 and agent browser navigation. Agent task text and provider credentials are not copied into
 history; agent searches use a generic task-search label. Repeated task snapshots do not
 create duplicate entries.
-Delete individual entries from their rows or clear the entire history with **Delete all
+Delete individual entries from their rows or clear your history with **Delete all
 history**; both actions ask for confirmation.
 
 For an application update, install requirements again, rebuild the agent image
@@ -1489,13 +1501,22 @@ installation follow this check. Rerunning the normal service installer restarts
 `ai-webui.service` so updated code and renewed certificates take effect; active
 assignments may be interrupted and can be resumed after restart. Use `--no-service`
 when preparing an installation without starting/restarting the service.
-### Login and password audit history
+### Account privacy
 
-The **Users** screen includes an admin-only history of successful and failed sign-ins,
-initial password creation, and administrator password resets. Each event includes the
-account, acting administrator for resets, local timestamp, and request address; passwords and password hashes are never
-stored in or displayed by the history. Existing installations create the audit table
-automatically when the Hearth service starts.
+Chat, generated media, browser history, request metrics, custom tests,
+saved test reports, and sign-in history are scoped to the account that owns them.
+Hearth administrators manage accounts and shared infrastructure. They can change
+their own passwords and LAN tokens. Assignment owners can explicitly share status
+and completed result text with selected accounts.
+
+Administrators can view system-wide Live Logs, including request and response traces.
+They can cancel only their own requests and clear only their own completed traces.
+
+After upgrading, legacy flat media files and records without an owner remain on
+disk or in PostgreSQL and are excluded from account views. Back up these files
+before any maintenance. New outputs are stored with their owner automatically.
+Chat web research uses a fresh browser for each lookup. Host-level shared MCP
+browser sessions and the persistent Python REPL are unavailable from Hearth Chat.
 
 # DFlash model loading
 
@@ -1520,7 +1541,10 @@ attempts. Restart Hearth after updating to serve the new JavaScript and styles;
 refresh Metrics to see the revised score.
 
 Hearth weather lookups can request up to 16 forecast days from Open-Meteo. For a
-weather question without a city, Hearth can use your saved location. Live forecast prompts use current weather data and exclude past assistant replies. Web search settings still apply.
+weather question without a city, Hearth checks earlier weather questions in the
+conversation and then your saved location. Forecasts are returned directly from
+Open-Meteo without waiting for a model. If the lookup fails, Chat reports the failure.
+Web search settings still apply.
 
 Cross-chat recall uses past user statements as background. Earlier assistant replies
 are excluded so old refusals and stale answers do not steer a new request. Hearth
@@ -1552,9 +1576,6 @@ For other chart requests, the chat model can render line and bar charts from
 provided or verified numeric data. Hearth draws the chart and lets you inspect
 its values. Ask for the chart in plain language.
 
-When an enabled web lookup finds no verified evidence, supported chat models can
-use MCP browser tools for a focused follow-up if browser research is enabled.
-
 With spoken responses enabled, Hearth sends the first short phrase to Lemonade
 while the reply is still streaming and fetches the next clip during playback.
 Starting another turn or switching conversations clears the previous speech queue.
@@ -1582,3 +1603,9 @@ When a completed linked result is opened in Chat, Hearth can use the selected
 chat model to turn it into a Markdown report. The model receives a bounded
 excerpt of the result, and the formatted report is saved per run. The original
 result remains available, including when no model is selected or formatting fails.
+
+Short research follow-ups reuse the last substantive user topic. Chat gives the
+model live evidence alongside the current request. If embedding recall returns
+no match, Hearth can look for related user statements in saved chats by text.
+The initial Chat lookup uses up to eight results and opens up to three pages,
+subject to lower limits in Settings.

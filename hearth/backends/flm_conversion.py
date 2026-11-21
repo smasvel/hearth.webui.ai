@@ -181,15 +181,16 @@ def _snapshot(job: dict) -> dict:
     return {key: value for key, value in job.items() if not key.startswith("_")}
 
 
-def list_jobs() -> list[dict]:
+def list_jobs(*, owner_id=None) -> list[dict]:
     with _lock:
-        return [_snapshot(job) for job in sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)]
+        return [_snapshot(job) for job in sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)
+                if owner_id is None or job.get("owner_id") == owner_id]
 
 
-def get_job(job_id: str) -> dict | None:
+def get_job(job_id: str, *, owner_id=None) -> dict | None:
     with _lock:
         job = _jobs.get(job_id)
-        return _snapshot(job) if job else None
+        return _snapshot(job) if job and (owner_id is None or job.get("owner_id") == owner_id) else None
 
 
 def _update(job_id: str, **fields) -> None:
@@ -279,7 +280,7 @@ def _run(job_id: str) -> None:
             _processes.pop(job_id, None)
 
 
-def start_job(raw_path: str, name: str, acknowledge_unrunnable: bool) -> dict:
+def start_job(raw_path: str, name: str, acknowledge_unrunnable: bool, *, owner_id=None) -> dict:
     if not _NAME_RE.fullmatch(name or ""):
         raise ConversionError("Output name must use 1-100 letters, numbers, dots, dashes, or underscores.")
     if not acknowledge_unrunnable:
@@ -308,7 +309,7 @@ def start_job(raw_path: str, name: str, acknowledge_unrunnable: bool) -> dict:
         staging_output = OUTPUT_ROOT / f".{name}.partial-{job_id}"
         now = time.time()
         _jobs[job_id] = {
-            "id": job_id, "name": name, "source": str(source), "output": str(output),
+            "id": job_id, "owner_id": owner_id, "name": name, "source": str(source), "output": str(output),
             "staging_output": str(staging_output),
             "profile": validation["profile"], "state": "queued", "progress": 1,
             "detail": "Validated; waiting for converter", "processed_tensors": 0,
@@ -321,10 +322,10 @@ def start_job(raw_path: str, name: str, acknowledge_unrunnable: bool) -> dict:
         return _snapshot(_jobs[job_id])
 
 
-def cancel_job(job_id: str) -> dict:
+def cancel_job(job_id: str, *, owner_id=None) -> dict:
     with _lock:
         job = _jobs.get(job_id)
-        if not job:
+        if not job or (owner_id is not None and job.get("owner_id") != owner_id):
             raise ConversionError("Conversion job not found.")
         if job["state"] not in {"queued", "running", "cancelling"}:
             return _snapshot(job)

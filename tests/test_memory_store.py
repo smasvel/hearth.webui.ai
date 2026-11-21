@@ -90,6 +90,28 @@ class MemoryStoreTests(unittest.TestCase):
 
         self.assertEqual(fact["location"], "Exampleville ZZ")
 
+    def test_location_save_commands_are_recalled_from_history_and_are_account_scoped(self):
+        chat_store.ensure_conversation("profile", "u", None, None)
+        chat_store.add_message("profile", "user", "Remember my location Madison, Wisconsin")
+        chat_store.add_message("profile", "user", "Remember my location from previous chats?")
+        chat_store.ensure_conversation("other", "admin-two", None, None)
+        chat_store.add_message("other", "user", "Note my location the city of Boston, Massachusetts")
+        self.assertEqual(memory_store.latest_location("u")["location"], "Madison, Wisconsin")
+        self.assertEqual(memory_store.latest_location("admin-two")["location"], "Boston, Massachusetts")
+        self.assertIsNone(memory_store.latest_location("unknown-account"))
+
+    def test_location_analysis_uses_user_answers_to_personal_questions_only(self):
+        chat_store.ensure_conversation("profile", "u", None, None)
+        chat_store.add_message("profile", "user", "Can you remember my city?")
+        chat_store.add_message("profile", "assistant", "Which city should I remember?")
+        chat_store.add_message("profile", "user", "Madison, Wisconsin")
+        chat_store.ensure_conversation("trip", "u", None, None)
+        chat_store.add_message("trip", "user", "What is the weather for my trip?")
+        chat_store.add_message("trip", "assistant", "Which city should I check?")
+        chat_store.add_message("trip", "user", "Boston, Massachusetts")
+        self.assertEqual(memory_store.latest_location("u")["location"], "Madison, Wisconsin")
+        self.assertIsNone(memory_store.latest_location("other-account"))
+
     def test_latest_name_prefers_explicit_personal_name(self):
         memory_store.add_chunk(
             "u", "old", "user", "My name is Maya Patel", [1.0],

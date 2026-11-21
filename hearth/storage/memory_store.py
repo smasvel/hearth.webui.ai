@@ -105,6 +105,15 @@ def has_exact_user_chunk(user_id: str, content: str, embedding_backend: str) -> 
         ).fetchone() is not None
 
 
+def has_user_embeddings(user_id: str, embedding_backend: str, exclude_conversation_id: str) -> bool:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM memory_chunks WHERE user_id = %s AND embedding_backend = %s "
+            "AND conversation_id <> %s AND role = 'user' LIMIT 1",
+            (user_id, embedding_backend, exclude_conversation_id),
+        ).fetchone() is not None
+
+
 def add_chunk(user_id: str, conversation_id: str, role: str, content: str, embedding: list[float],
               embedding_backend: str = "lemonade") -> None:
     vector = np.asarray(embedding, dtype=np.float32).tobytes()
@@ -132,12 +141,76 @@ def _decode_compatible_vector(blob: bytes, expected_size: int) -> np.ndarray | N
     return vector
 
 
+_REMEMBER_LOCATION = re.compile(
+    r"^(?:please\s+)?(?:remember|save|set|update|note|record|store)\s+my\s+(?:current\s+|home\s+)?"
+    r"(?:city\s+and\s+state|city|location)\b"
+    r"(?:\s+(?:as|to|is|are)\b)?[\s:,-]+(.+)",
+    re.I,
+)
+
+
 _LOCATION_PATTERNS = (
-    re.compile(r"\bset\s+my\s+(?:current\s+)?location\s+(?:as|to)\s+(.+)", re.I),
+    _REMEMBER_LOCATION,
     re.compile(r"\bmy\s+(?:current\s+)?(?:city|location)\s+is\s+(.+)", re.I),
+    re.compile(r"\bmy\s+city\s+and\s+state\s+(?:are|is)\s+(.+)", re.I),
     re.compile(r"\bi\s+(?:live|reside)\s+in\s+(.+)", re.I),
     re.compile(r"\bi(?:'m| am)\s+(?:currently\s+)?(?:located|based|living)\s+in\s+(.+)", re.I),
 )
+_STATE_PATTERN = re.compile(r"\bmy\s+(?:home\s+)?state\s+is\s+(.+)", re.I)
+_SAVED_LOCATION_PROMPT = re.compile(
+    r"^(?:which|what) (?:city|location) (?:should i|would you like me to) (?:check|use|remember)\?"
+    r"|^where do you live\?",
+    re.I,
+)
+
+
+def requested_saved_location(text: str) -> str | None:
+    """Extract the place from an explicit request to save a personal location."""
+    text = text.strip()
+    match = _REMEMBER_LOCATION.match(text)
+    if not match or text.endswith("?"):
+        return None
+    value = re.sub(r"^(?:the\s+)?city(?:\s+of)?\s+", "", match[1].strip(), flags=re.I)
+    value = value.rstrip(".! ")[:200]
+    if not value or re.match(r"^(?:not|unknown|none|from|for|when|as|to|is|are|here|again)\b", value, re.I):
+        return None
+    return value
+
+
+def _location_from_followup(user_id, exclude_conversation_id, newer_than):
+    """Find a place supplied by the owner after an explicit chat location question."""
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT conversation_id, content, created_at, previous_text, previous_question FROM (
+                SELECT m.conversation_id, m.content, m.created_at, m.role,
+                    lag(m.role) OVER turns AS previous_role,
+                    lag(m.content) OVER turns AS previous_text,
+                    lag(m.content, 2) OVER turns AS previous_question
+                FROM messages m JOIN conversations c ON c.id = m.conversation_id
+                WHERE c.user_id = %s AND c.id IS DISTINCT FROM %s
+                WINDOW turns AS (PARTITION BY m.conversation_id ORDER BY m.created_at, m.id)
+            ) history
+            WHERE role = 'user' AND previous_role = 'assistant' AND created_at > %s
+              AND (previous_text ILIKE 'which city %%' OR previous_text ILIKE 'what city %%'
+                   OR previous_text ILIKE 'which location %%' OR previous_text ILIKE 'what location %%'
+                   OR previous_text ILIKE 'where do you live?%%')
+            ORDER BY created_at DESC
+        """, (user_id, exclude_conversation_id, newer_than)).fetchall()
+    for row in rows:
+        place = row["content"].strip().rstrip(".! ")
+        prompt = row["previous_text"].strip()
+        personal = re.search(r"\b(?:remember|where do you live)\b", prompt, re.I) or re.search(
+            r"\b(?:my (?:current )?(?:city|location)|where i live)\b", row["previous_question"] or "", re.I,
+        )
+        # Bare city answers need a city and region, or a capitalized place name.
+        # A chat model's guess can provide the question, never the saved value.
+        if (personal and _SAVED_LOCATION_PROMPT.match(prompt)
+                and re.fullmatch(r"[^\W\d_][\w .’'-]{1,60}(?:,\s*[^\W\d_][\w .’'-]{1,60}){0,2}", place)
+                and ("," in place or place.istitle())
+                and place.casefold() not in {"thanks", "okay", "sure", "nope", "not sure", "unknown", "here", "yes", "no"}):
+            return {"conversation_id": row["conversation_id"], "content": row["content"],
+                    "created_at": row["created_at"], "location": place, "is_state": False}
+    return None
 
 
 _NAME_PATTERNS = (
@@ -152,7 +225,7 @@ _NAME_REJECT_VALUES = {
 }
 
 
-def _recent_user_messages(user_id: str) -> list[dict]:
+def _recent_user_messages(user_id: str, limit: int | None = 2000) -> list[dict]:
     """Read explicit user text from both the searchable memory index and chat history.
 
     Chat history is the source of truth for saved facts. A memory chunk may be absent
@@ -166,9 +239,42 @@ def _recent_user_messages(user_id: str) -> list[dict]:
             "SELECT m.conversation_id, m.content, m.created_at, m.id FROM messages m "
             "JOIN conversations c ON c.id = m.conversation_id "
             "WHERE c.user_id = %s AND m.role = 'user'"
-            ") AS user_messages ORDER BY created_at DESC, id DESC LIMIT 2000",
-            (user_id, user_id),
+            ") AS user_messages ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, user_id, limit),
         ).fetchall()
+
+
+_RECALL_COMMON_WORDS = {
+    "about", "again", "chat", "chats", "could", "from", "have", "information",
+    "last", "please", "previous", "recall", "remember", "said", "saved", "should",
+    "that", "their", "them", "this", "what", "when", "where", "which", "with", "would",
+}
+
+
+def search_user_text(user_id: str, query: str, conversation_id: str, limit: int = 4) -> list[dict]:
+    """Recover clearly related past user statements without an embedding service."""
+    def terms(text):
+        return set(re.findall(r"\b[\w-]{4,}\b", text.casefold())) - _RECALL_COMMON_WORDS
+
+    query_terms = terms(query)
+    if not query_terms:
+        return []
+    matches = []
+    seen = {query.strip().casefold()}
+    for row in _recent_user_messages(user_id):
+        if row["conversation_id"] == conversation_id:
+            continue
+        text = row["content"] or ""
+        normalized = text.strip().casefold()
+        if normalized in seen:
+            continue
+        overlap = query_terms & terms(text)
+        if len(overlap) < 2 and not any(len(word) >= 8 for word in overlap):
+            continue
+        seen.add(normalized)
+        matches.append((len(overlap), row["created_at"], row))
+    matches.sort(key=lambda match: match[:2], reverse=True)
+    return [row for _, _, row in matches[:limit]]
 
 
 def latest_name(user_id: str, exclude_conversation_id: str | None = None) -> dict | None:
@@ -183,14 +289,15 @@ def latest_name(user_id: str, exclude_conversation_id: str | None = None) -> dic
     Non-personal phrasings ("my username is", "the file name is",
     "my name is not important") intentionally do not match these patterns.
     """
-    for row in _recent_user_messages(user_id):
+    for row in _recent_user_messages(user_id, limit=None):
         if row["conversation_id"] == exclude_conversation_id:
             continue
         text = (row["content"] or "").strip()
         for pattern in _NAME_PATTERNS:
             match = pattern.search(text)
             if match:
-                value = match.group(1).strip().rstrip(".!? ").strip("'\"")[:60]
+                value = re.split(r"\s+and\s+(?:i\b|my\b)", match.group(1), maxsplit=1,
+                                 flags=re.I)[0].strip().rstrip(".!? ").strip("'\"")[:60]
                 first_word = value.lower().split(None, 1)[0] if value else ""
                 if value and first_word not in _NAME_REJECT_VALUES \
                         and not value.lower().startswith(("not ", "unknown")):
@@ -203,7 +310,7 @@ def latest_name(user_id: str, exclude_conversation_id: str | None = None) -> dic
     return None
 
 
-def latest_location(user_id: str, exclude_conversation_id: str | None = None) -> dict | None:
+def latest_location(user_id: str, exclude_conversation_id: str | None = None, *, state_only=False) -> dict | None:
     """Return the newest explicit user-stated home/current location.
 
     Personal facts are too important to leave entirely to embedding rank: generic
@@ -212,14 +319,18 @@ def latest_location(user_id: str, exclude_conversation_id: str | None = None) ->
     Store-specific addresses ("remember my Great Clips location") intentionally do
     not match these personal-location patterns.
     """
-    for row in _recent_user_messages(user_id):
+    patterns = (_STATE_PATTERN, *_LOCATION_PATTERNS) if state_only else _LOCATION_PATTERNS
+    for row in _recent_user_messages(user_id, limit=None):
         if row["conversation_id"] == exclude_conversation_id:
             continue
         text = (row["content"] or "").strip()
-        for pattern in _LOCATION_PATTERNS:
+        for pattern in patterns:
             match = pattern.search(text)
             if match:
-                value = match.group(1).strip().rstrip(".!? ")[:200]
+                value = (requested_saved_location(text) if pattern is _REMEMBER_LOCATION
+                         else match.group(1).strip().rstrip(".!? ")[:200])
+                if not value:
+                    continue
                 # Ignore copied prompt placeholders such as
                 # "[Clear, concise confirmation of your location]"; treating one
                 # as a real saved place makes the recall directive reinforce it.
@@ -227,14 +338,16 @@ def latest_location(user_id: str, exclude_conversation_id: str | None = None) ->
                     r"\b(?:clear|concise|confirmation|placeholder|your location)\b", value, re.I
                 ):
                     continue
-                if value:
-                    return {
+                if value and not re.match(r"^(?:not\b|unknown\b|none\b)", value, re.I):
+                    explicit = {
                         "location": value,
+                        "is_state": pattern is _STATE_PATTERN,
                         "content": text,
                         "conversation_id": row["conversation_id"],
                         "created_at": row["created_at"],
                     }
-    return None
+                    return _location_from_followup(user_id, exclude_conversation_id, row["created_at"]) or explicit
+    return _location_from_followup(user_id, exclude_conversation_id, 0)
 
 
 def search(

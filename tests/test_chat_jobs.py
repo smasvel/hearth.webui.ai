@@ -23,6 +23,7 @@ class BackgroundChatTests(unittest.TestCase):
         directory = self.stack.enter_context(tempfile.TemporaryDirectory())
         self.stack.enter_context(database.temporary_schema())
         chat_store.init_db()
+        app.agent_store.init_db()
         settings_store.init_db()
         self.registry = chat_jobs.JobRegistry()
         self.stack.enter_context(patch.object(chat_jobs, "registry", self.registry))
@@ -115,6 +116,22 @@ class BackgroundChatTests(unittest.TestCase):
         self.assertTrue(self.started.wait(2))
         self.wait_until(lambda: self.registry.get("owner", "conversation").snapshot()["content"] == "First ")
         return self.registry.get("owner", "conversation")
+
+    def test_chat_does_not_execute_unadvertised_host_tools(self):
+        tool_call = {
+            "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "fixture",
+                "function": {"name": "python_repl__execute_python", "arguments": "{}"}}]},
+                "finish_reason": "tool_calls"}],
+        }
+        with patch.object(app.lms, "chat_stream", return_value=iter([
+            "data: " + json.dumps(tool_call), "data: [DONE]",
+        ])) as backend, patch.object(app.mcp_tools_client, "call_tool") as run_tool:
+            body = {**self.body, "messages": [{"role": "user", "content": "Run Python"}]}
+            with self.client.post("/api/chat", json=body, headers={"X-CSRF-Token": "test-csrf"}) as response:
+                self.assertEqual(response.status_code, 200)
+                response.get_data()
+            run_tool.assert_not_called()
+            self.assertFalse(backend.call_args.kwargs.get("tools"))
 
     def wait_until(self, predicate):
         deadline = time.monotonic() + 3

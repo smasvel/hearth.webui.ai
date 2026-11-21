@@ -17,7 +17,13 @@
   async function api(path, body, method='POST') {
     const isForm=body instanceof FormData;
     const r = await fetch(path, body === undefined ? {} : isForm ? {method, body} : {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-    const data = await r.json(); if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`); return data;
+    const data = await r.json();
+    if (!r.ok) {
+      const error=new Error(data.error || `Request failed (${r.status})`);
+      error.status=r.status;
+      throw error;
+    }
+    return data;
   }
   function node(tag, text, parent) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (parent) parent.append(n); return n; }
   function structuredValue(value) {
@@ -103,8 +109,8 @@
       el('agent-rerun-status').textContent=task.status==='verifying'?'Rerun is checking its result.':'Rerun started. The agent is working.';
     }
     if(page==='execution') {
-      if(active.has(task.status) && agentLiveTaskId!==task.id) connectAgentLivePolling(task.id);
-      else if(!active.has(task.status) && agentLiveTaskId===task.id) {
+      if(!task.shared && active.has(task.status) && agentLiveTaskId!==task.id) connectAgentLivePolling(task.id);
+      else if((task.shared || !active.has(task.status)) && agentLiveTaskId===task.id) {
         clearTimeout(agentLiveTimer);agentLiveTimer=null;agentLiveTaskId=null;
       }
     }
@@ -169,7 +175,7 @@
       }).catch(e=>{if(el('agent-share-status'))el('agent-share-status').textContent=e.message;});
       }
     }
-    if(el('agent-goal'))el('agent-goal').textContent = task.goal + (task.criteria ? '\nAcceptance criteria: '+task.criteria : '');
+    if(el('agent-goal'))el('agent-goal').textContent = (task.goal || '') + (task.criteria ? '\nAcceptance criteria: '+task.criteria : '');
     const originChat = el('agent-origin-chat');
     if (originChat) {
       originChat.hidden = !task.origin_conversation_id;
@@ -184,13 +190,22 @@
     if(el('agent-stop'))el('agent-stop').disabled = ['stopped','completed'].includes(task.status);
     if(el('agent-delete'))el('agent-delete').disabled = active.has(task.status);
     if(el('agent-download'))el('agent-download').hidden = task.status !== 'completed';
+    for (const id of ['agent-chat-delivery','agent-steer','agent-private-activity','agent-goal']) {
+      if (el(id)) el(id).hidden=Boolean(task.shared);
+    }
+    if (task.shared) {
+      for (const id of [
+        'agent-sharing','agent-model-change','agent-pause','agent-resume','agent-stop','agent-delete',
+        'agent-rerun','agent-reset-cycles','agent-edit-panel','agent-edit-toggle','agent-prompts','agent-download',
+      ]) if (el(id)) el(id).hidden=true;
+    }
     const resultHeading=el('agent-result-heading');
     if(resultHeading)resultHeading.textContent=task.completion?'Completed result':task.summary?'Latest agent response':task.error?'No result returned':'Agent response';
     if(el('agent-result-meta'))el('agent-result-meta').textContent=[task.result_label,({web:'Web page · HTML',report:'JSON results · HTML view',document:'Document',general:'General result'})[task.result_platform||'general']].filter(Boolean).join(' · ');
     if(el('agent-result-view-heading'))el('agent-result-view-heading').textContent=task.result_label || 'Results';
     const previewWrap=el('agent-html-preview-wrap'), preview=el('agent-html-preview');
     if(previewWrap&&preview){
-      const showPreview=['web','report'].includes(task.result_platform) && task.status==='completed';
+      const showPreview=!task.shared && ['web','report'].includes(task.result_platform) && task.status==='completed';
       previewWrap.hidden=!showPreview;
       if(el('agent-result'))el('agent-result').hidden=showPreview && task.result_platform==='report';
       preview.title=`${task.result_label || 'Results'} HTML view`;
@@ -302,7 +317,7 @@
     if(replyInFlight)return;
     if (signature === pendingSignature) return; pendingSignature = signature;
     const container = el('agent-prompts'); container.replaceChildren();
-    if (task.status !== 'waiting_input') return;
+    if (task.shared || task.status !== 'waiting_input') return;
     let rendered = 0;
     for (const permission of permissions) {
       if (!permission || !permission.id) continue;
@@ -382,7 +397,7 @@
       const list=el('agent-list');
       if(page==='execution' && initialTaskId) {
         const detail=await api('/api/agent-tasks/'+initialTaskId);
-        if(task?.id===initialTaskId && task.event_streamed) {
+        if(!detail.shared && task?.id===initialTaskId && task.event_streamed) {
           if(active.has(detail.status) && Array.isArray(task.messages) && task.messages.length) {
             detail.messages=task.messages;
           } else if(!Array.isArray(detail.messages) || !detail.messages.length) {
@@ -411,12 +426,21 @@
           const availabilityText=availability ? (availability.next_available_at ? ` · OpenCode after ${displayTime(availability.next_available_at,{dateStyle:'medium',timeStyle:'short'})}` : ' · OpenCode quota exhausted; reset time not provided') : '';
           const taskStats=t.status==='completed' ? ` · ${durationLabel(t.completion_duration_s) || 'time unavailable'}${t.model_tokens_per_sec ? ` · ${Number(t.model_tokens_per_sec).toLocaleString()} model tokens/s` : ''}` : availabilityText;
           node('p',`${t.schedule_id ? 'Scheduled · ' : ''}${cycleText}${latest}${taskStats}`,link).className='agent-task-meta';
-          const clone=button('Clone',row,()=>cloneAgentTask(t.id)); clone.classList.add('agent-task-clone');
+          if (!t.shared) {
+            const clone=button('Clone',row,()=>cloneAgentTask(t.id));
+            clone.classList.add('agent-task-clone');
+          }
         }
         if(!tasks.length) { const empty=node('div',undefined,list);empty.className='agent-empty';node('strong','No assignments yet',empty);node('p','Create an agent and its progress will appear here.',empty);node('a','Create an agent',empty).href='/agents/new'; }
       }
       if(el('agent-network')?.textContent.endsWith('— reconnecting…')) el('agent-network').textContent='';
-    } catch(e) { if(el('agent-network'))el('agent-network').textContent=e.message+' — reconnecting…'; }
+    } catch(e) {
+      if(page==='execution' && e.status===404) {
+        window.location.replace('/agents');
+        return;
+      }
+      if(el('agent-network'))el('agent-network').textContent=e.message+' — reconnecting…';
+    }
     if(page==='execution')timer=setTimeout(refresh,2500);
     else if(el('agent-list'))timer=setTimeout(refresh,10000);
   }
@@ -488,7 +512,7 @@
     const select=el('agent-schedule-project'); if(!select)return;
     try {
       const {tasks}=await api('/api/agent-tasks');
-      const eligible=tasks.filter(item=>['queued','running','waiting_input','verifying','paused','blocked','interrupted','completed','stopped'].includes(item.status));
+      const eligible=tasks.filter(item=>!item.shared && ['queued','running','waiting_input','verifying','paused','blocked','interrupted','completed','stopped'].includes(item.status));
       for(const task of eligible) {
         const option=document.createElement('option'); option.value=task.id; option.textContent=`${task.title} · ${friendlyStatus(task.status)}`; select.append(option);
       }

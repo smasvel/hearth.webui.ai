@@ -245,7 +245,8 @@ CREATE TABLE IF NOT EXISTS browse_history (
     title TEXT,
     query TEXT,
     source TEXT,
-    ok INTEGER NOT NULL DEFAULT 1
+    ok INTEGER NOT NULL DEFAULT 1,
+    owner_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_browse_history_visited_at
     ON browse_history(visited_at DESC);

@@ -36,7 +36,6 @@ with contextlib.ExitStack() as stack:
         page = context.new_page()
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.on('dialog', lambda dialog: dialog.accept('reset-password-2'))
 
         page.goto(f'http://127.0.0.1:{server.server_port}/settings')
         expect(page.locator('#settings-save-btn')).to_be_visible()
@@ -66,15 +65,10 @@ with contextlib.ExitStack() as stack:
         with database.connect() as conn:
             password_hash = conn.execute('SELECT password_hash FROM users WHERE id=%s', (created_id,)).fetchone()['password_hash']
         assert password_hash != 'initial-password-1'
-        card.get_by_role('button', name='LAN token').click()
-        expect(page.locator('#caddy-snippet-card')).to_be_visible()
-        old_token = app.users_store.get_caddy_token(created_id)
-        card.get_by_role('button', name='Regenerate token').click()
-        expect(page.locator('#caddy-snippet-text')).not_to_contain_text(old_token, timeout=5000)
-        assert app.users_store.get_caddy_token(created_id) != old_token
-        card.get_by_role('button', name='Reset password').click()
-        expect(page.locator('.users-toast').filter(has_text='Password reset')).to_be_visible(timeout=5000)
-        assert app.users_store.verify_login('browser-created-user', 'reset-password-2')
+        expect(card.get_by_role('button', name='LAN token', exact=True)).to_have_count(0)
+        expect(card.get_by_role('button', name='Regenerate token')).to_have_count(0)
+        expect(card.get_by_role('button', name='Reset password')).to_have_count(0)
+        page.once('dialog', lambda dialog: dialog.accept())
         card.get_by_role('button', name='Disable agent workflow').click()
         expect(card).to_contain_text('Disabled', timeout=5000)
 
@@ -85,4 +79,4 @@ with contextlib.ExitStack() as stack:
         assert not errors, errors
         page.screenshot(path='/tmp/hearth-admin-ui.png', full_page=True)
         browser.close()
-        print('PASS browser Settings persistence and secret encryption, user create/reset/token/workflow controls, and admin route access')
+        print('PASS browser Settings persistence and secret encryption, user creation, credential isolation, and workflow controls, and admin route access')

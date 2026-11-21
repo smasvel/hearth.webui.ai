@@ -230,11 +230,11 @@ class Registry:
             self._refresh_from_disk()
             return copy.deepcopy(self.jobs.get(job_id))
 
-    def cancel(self, job_id):
+    def cancel(self, job_id, *, owner_id=None):
         with self.lock:
             self._refresh_from_disk()
             job = self.jobs.get(job_id)
-            if not job:
+            if not job or (owner_id is not None and job.get("owner_id") != owner_id):
                 raise KeyError(job_id)
             if job['status'] in ACTIVE:
                 if job_id not in self.cancels:
@@ -244,12 +244,12 @@ class Registry:
                 self.save(job)
             return copy.deepcopy(job)
 
-    def delete(self, job_id):
+    def delete(self, job_id, *, owner_id=None):
         """Delete one saved run; active runs must finish or be cancelled first."""
         with self.lock:
             self._refresh_from_disk()
             job = self.jobs.get(job_id)
-            if not job:
+            if not job or (owner_id is not None and job.get("owner_id") != owner_id):
                 raise KeyError(job_id)
             if job['status'] in ACTIVE:
                 raise ValueError('Cancel the active run and wait for it to finish before deleting its report.')
@@ -262,12 +262,12 @@ class Registry:
             return True
 
     def start(self, targets, repair, load, connection, context, *, suite='all', scenarios=None,
-              background=True):
+              background=True, owner_id=None):
         with self.lock:
             self._refresh_from_disk()
             if any(j['status'] in ACTIVE for j in self.jobs.values()):
                 raise ValueError('A model test run is already active. Wait or cancel it first.')
-            job = {'id': uuid.uuid4().hex, 'status': 'loading', 'owner_pid': os.getpid(), 'started_at': time.time(),
+            job = {'id': uuid.uuid4().hex, 'status': 'loading', 'owner_pid': os.getpid(), 'owner_id': owner_id, 'started_at': time.time(),
                    'finished_at': None, 'auto_repair': repair, 'suite': suite, 'targets': copy.deepcopy(targets),
                    'results': [], 'repairs': [], 'current_model': None, 'current_check': None, 'error': None}
             self.jobs[job['id']] = job

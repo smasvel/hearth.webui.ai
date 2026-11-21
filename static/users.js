@@ -86,7 +86,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "failed to list users");
       currentPage = data.page;
-      renderUsersList(data.users || []);
+      renderUsersList(data.users || [], data.current_user_id);
       renderPagination(data);
     } catch (err) {
       usersListEl.innerHTML = `<p class="hint">Could not load users.<br>${escapeHtml(err.message)}</p>`;
@@ -123,7 +123,7 @@
     } catch (err) { authEventsEl.innerHTML = `<tr><td colspan="6" class="hint">Could not load history.<br>${escapeHtml(err.message)}</td></tr>`; }
   }
 
-  function renderUsersList(users) {
+  function renderUsersList(users, currentUserId) {
     if (users.length === 0) {
       usersListEl.innerHTML = `<p class="hint">No users found.</p>`;
       return;
@@ -145,22 +145,24 @@
       `;
       const actions = card.querySelector(".model-card-actions");
 
-      const resetBtn = document.createElement("button");
-      resetBtn.textContent = "Reset password";
-      resetBtn.onclick = () => resetPassword(u.id, u.username);
-      actions.appendChild(resetBtn);
+      if (u.id === currentUserId) {
+        const resetBtn = document.createElement("button");
+        resetBtn.textContent = "Reset password";
+        resetBtn.onclick = () => resetPassword(u.id, u.username);
+        actions.appendChild(resetBtn);
 
-      const tokenBtn = document.createElement("button");
-      tokenBtn.textContent = "LAN token";
-      tokenBtn.title = "View this user's personal Caddy LAN token";
-      tokenBtn.onclick = () => viewCaddyToken(u.id, u.username);
-      actions.appendChild(tokenBtn);
+        const tokenBtn = document.createElement("button");
+        tokenBtn.textContent = "LAN token";
+        tokenBtn.title = "View this user's personal Caddy LAN token";
+        tokenBtn.onclick = () => viewCaddyToken(u.id, u.username);
+        actions.appendChild(tokenBtn);
 
-      const regenBtn = document.createElement("button");
-      regenBtn.textContent = "Regenerate token";
-      regenBtn.title = "Issue a new LAN token, invalidating the old one";
-      regenBtn.onclick = () => regenerateCaddyToken(u.id, u.username);
-      actions.appendChild(regenBtn);
+        const regenBtn = document.createElement("button");
+        regenBtn.textContent = "Regenerate token";
+        regenBtn.title = "Issue a new LAN token, invalidating the old one";
+        regenBtn.onclick = () => regenerateCaddyToken(u.id, u.username);
+        actions.appendChild(regenBtn);
+      }
 
       const agentBtn = document.createElement("button");
       agentBtn.textContent = u.agentic_workflow_enabled ? "Disable agent workflow" : "Enable agent workflow";
@@ -291,7 +293,6 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "failed to create user");
       addSystemMessage(`Added user ${username} (${role})`);
-      if (data.caddy_snippet) showCaddySnippet(username, data.caddy_snippet);
       newUsernameEl.value = "";
       newPasswordEl.value = "";
       newRoleEl.value = "user";

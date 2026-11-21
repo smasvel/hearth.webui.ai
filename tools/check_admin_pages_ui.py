@@ -36,16 +36,16 @@ with contextlib.ExitStack() as stack:
         session.update(logged_in=True, user_id=admin['id'], username=admin['username'], role='admin',
                        last_activity=time.time(), login_csrf_token='browser-pages-csrf')
 
-    # Seed visits so history covers search and both deletion controls.
-    # Clear first so repeated runs don't accumulate duplicate rows (the store is shared
-    # with the dev/production DB, so leftover fixture rows would break strict-mode lookups).
-    browse_history_store.clear_history()
-    browse_history_store.add_visit('https://example.test/admin-coverage', 'Admin coverage fixture',
-                                   'page smoke coverage', 'ui-test', True)
-    browse_history_store.add_visit('https://example.test/delete-row', 'Delete row fixture',
-                                   'row delete coverage', 'ui-test', True)
-    browse_history_store.add_visit('https://example.test/delete-all', 'Delete all fixture',
-                                   'clear history coverage', 'ui-test', True)
+    owner_token = browse_history_store.current_owner.set(admin['id'])
+    try:
+        browse_history_store.add_visit('https://example.test/admin-coverage', 'Admin coverage fixture',
+                                       'page smoke coverage', 'ui-test', True)
+        browse_history_store.add_visit('https://example.test/delete-row', 'Delete row fixture',
+                                       'row delete coverage', 'ui-test', True)
+        browse_history_store.add_visit('https://example.test/delete-all', 'Delete all fixture',
+                                       'clear history coverage', 'ui-test', True)
+    finally:
+        browse_history_store.current_owner.reset(owner_token)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=['--no-sandbox'])
@@ -213,7 +213,7 @@ with contextlib.ExitStack() as stack:
             ts=time.time(), source='ui-test', backend='fastflowlm', model='admin-coverage-fixture-model',
             request_type='chat_completion', ask_category='chat', status=200, duration_ms=1500,
             prompt_tokens=7, completion_tokens=5, total_tokens=12, tokens_per_sec=4.0, tops_used=None,
-            npu_percent=None, is_npu=True)
+            npu_percent=None, is_npu=True, user_id=admin['id'])
         # The model report has no per-model client filter (unlike the recent table), so mock
         # it to show only the seeded fixture row — keeps the empty-state assertion deterministic.
         stack.enter_context(patch.object(app.metrics_store, 'model_report',
@@ -241,7 +241,7 @@ with contextlib.ExitStack() as stack:
             expect(page.locator('#kpis')).to_contain_text('Requests')
         finally:
             if app.metrics_store.summary(hours=24)['totals']['requests'] > metrics_rows_before:
-                app.metrics_store.clear_all()
+                app.metrics_store.clear_all(user_id=admin['id'])
 
         # History search hits the seeded row and filters it out for a missing term.
         page.goto(base + '/browse-history')

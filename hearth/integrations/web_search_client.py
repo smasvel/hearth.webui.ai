@@ -42,7 +42,7 @@ class WebSearchError(RuntimeError):
 _SEARCH_STOP_WORDS = {
     "a", "an", "and", "are", "at", "be", "browse", "by", "can", "check", "find",
     "for", "from", "get", "give", "how", "i", "in", "is", "it", "latest", "live",
-    "look", "me", "of", "on", "online", "please", "search", "show", "the", "this",
+    "look", "me", "of", "on", "online", "please", "research", "search", "show", "the", "this",
     "to", "up", "use", "web", "what", "when", "where", "who", "with",
 }
 _AD_LABEL_RE = re.compile(r"^\s*(?:ad|ads|advertisement|sponsored)\s*[:\-|]", re.I)
@@ -51,7 +51,8 @@ _AD_LABEL_RE = re.compile(r"^\s*(?:ad|ads|advertisement|sponsored)\s*[:\-|]", re
 def _search_terms(text: str) -> set[str]:
     terms = set()
     for token in re.findall(r"[a-z0-9][a-z0-9.+_-]{1,}", text.lower()):
-        if token in _SEARCH_STOP_WORDS:
+        token = token.rstrip("._+-")
+        if not token or token in _SEARCH_STOP_WORDS:
             continue
         terms.add(token)
         if len(token) > 4 and token.endswith("s"):
@@ -203,6 +204,19 @@ def looks_like_weather_query(query: str) -> bool:
     return any(kw in q for kw in _WEATHER_KEYWORDS)
 
 
+def is_live_weather_request(query: str | None) -> bool:
+    """Recognize forecast requests suitable for a direct weather response."""
+    if not query or re.search(r"^\s*(?:explain|define|why|how (?:does|do|is .* measured))\b", query, re.I):
+        return False
+    return bool(re.search(
+        r"\b(?:weather|radar|raining|snowing|cloud cover|how (?:hot|cold)|"
+        r"(?:will|going to) (?:it )?(?:rain|snow))\b|"
+        r"\b(?:(?:day|hourly|daily)\s+forecast|forecast\s+(?:for|in)|temperature\s+(?:in|today|outside))\b"
+        r"|\bforecast\s*[?.!]*$",
+        query, re.I,
+    )) and not bool(re.search(r"\b(?:stock|sales|revenue|cpu|gpu|npu)\b", query, re.I))
+
+
 _US_STATE_ABBR = {
     "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id", "il", "in",
     "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv",
@@ -228,6 +242,7 @@ _WEATHER_FILLER = {
     "check", "radar", "see", "if", "or", "storm", "storms", "clouds", "cloud", "moving",
     "toward", "towards", "to", "coming", "approaching", "headed", "heading", "will",
     "there", "be", "any", "going", "gonna", "and", "of", "on", "near",
+    "here", "locally", "outside", "show", "search", "look", "up", "please", "next", "days", "my", "city",
 }
 
 
@@ -355,10 +370,9 @@ def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
     with this app's no-cloud-API-keys rule; same reason ddgs was picked for search).
     Two-step: _geocode() resolves the place name, then their forecast API returns
     actual numbers. Returns a formatted context block, or None on any failure (fail-soft,
-    same contract as everything else in this module) — callers should fall back to the
-    general search path rather than reporting an error."""
+    same contract as everything else in this module)."""
     try:
-        place = _geocode(location)
+        place = _geocode(location, timeout=3)
         if not place:
             return None
         resolved = ", ".join(
@@ -374,13 +388,16 @@ def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
                 "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
                 "temperature_unit": "fahrenheit",
                 "wind_speed_unit": "mph",
+                "precipitation_unit": "inch",
                 "forecast_days": forecast_days,
                 "forecast_hours": 12,
                 "timezone": "auto",
             },
-            timeout=8,
+            timeout=5,
         ).json()
         cur = w.get("current") or {}
+        if w.get("error") or cur.get("temperature_2m") is None:
+            return None
         hourly = w.get("hourly") or {}
         daily = w.get("daily") or {}
         cond = _WMO_WEATHER_CODES.get(cur.get("weather_code"), "unknown conditions")
@@ -389,7 +406,7 @@ def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
             f'Live weather for {resolved} (from Open-Meteo, fetched just now, local time {cur.get("time", "?")}):',
             f'- Now: {cur.get("temperature_2m")}°F ({cond}), feels like {cur.get("apparent_temperature")}°F, '
             f'humidity {cur.get("relative_humidity_2m")}%, wind {cur.get("wind_speed_10m")} mph, '
-            f'currently {("precipitating, " + str(cur_precip) + " in/hr") if cur_precip else "no precipitation"}',
+            f'currently {("precipitating, " + str(cur_precip) + " in") if cur_precip else "no precipitation"}',
         ]
         # Next-12-hours precipitation timing — the closest real substitute this app has
         # for "reading a live radar map": Open-Meteo has no radar imagery product, but its
@@ -401,7 +418,6 @@ def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
         notable_hours = []
         for i, t in enumerate(hourly_times):
             prob = (hourly.get("precipitation_probability") or [None] * len(hourly_times))[i]
-            amt = (hourly.get("precipitation") or [None] * len(hourly_times))[i]
             code = (hourly.get("weather_code") or [None] * len(hourly_times))[i]
             if prob is not None and prob >= 30:
                 hour_label = t.split("T")[-1] if "T" in t else t
@@ -420,16 +436,7 @@ def fetch_weather(location: str, *, forecast_days: int = 3) -> str | None:
                 + (f", {day_cond}" if day_cond else "")
                 + f', precipitation chance {daily["precipitation_probability_max"][i]}%'
             )
-        lines.append(
-            "You have live weather data above, fetched moments ago, including current conditions "
-            "and hour-by-hour precipitation timing for the next 12 hours - use that to answer "
-            "questions about incoming rain/storms. There is no live radar *imagery* available (no "
-            "visual map), so if the user specifically wants to see a radar map, say so and point "
-            "them to radar.weather.gov or a weather app - but still answer what you can (timing, "
-            "chance, current conditions) from the real data above rather than deflecting entirely. "
-            "Do not say you lack real-time access outright — answer directly from it, in both °F "
-            "and °C if helpful."
-        )
+        lines.append("\nSource: [Open-Meteo](https://open-meteo.com/).")
         return "\n".join(lines)
     except Exception:
         return None
@@ -885,11 +892,8 @@ def format_for_context(query: str, results: list[dict]) -> str | None:
         full_text = (r.get("full_text") or "").strip()
         if full_text:
             any_full_text = True
-            # 1500 → 2200 (2026-07-23, "improve the details" request). Balance point:
-            # Lemonade's daily-driver models load at 32k context where this is nothing,
-            # while the vLLM smoke-test model at 4096 gets tight with 4-5 results —
-            # worth it, since thin excerpts were producing thin answers.
-            text, cap = full_text, 2200
+            # Keep multiple sources within Hearth's chat evidence budget.
+            text, cap = full_text, 560
         else:
             text, cap = (r.get("body") or "").strip(), 300
         line = f"- {title} ({href}): {text[:cap]}"
@@ -1087,31 +1091,17 @@ def is_explicit_search_request(query: str | None) -> bool:
 
 
 def contextualize_search_query(query: str, messages: list[dict] | None) -> str:
-    """Resolve vague follow-ups such as "online search" from recent chat context.
-
-    Search commands contain almost no topical terms themselves. Searching the literal
-    command yields irrelevant results (correctly rejected by the relevance filter), so
-    carry forward the preceding user subject and a short assistant excerpt that may hold
-    a location/entity established earlier in the conversation.
-    """
+    """Resolve a short research follow-up using the last substantive user topic."""
     if _search_terms(query):
         return query
     prior = list(messages or [])
-    # Drop the current user message when it is present in the supplied chat history.
     if prior and prior[-1].get("role") == "user" and prior[-1].get("content") == query:
         prior.pop()
-    previous_user = next(
-        (str(m.get("content") or "").strip() for m in reversed(prior)
-         if m.get("role") == "user" and str(m.get("content") or "").strip()),
-        "",
-    )
-    previous_assistant = next(
-        (str(m.get("content") or "").strip() for m in reversed(prior)
-         if m.get("role") == "assistant" and str(m.get("content") or "").strip()),
-        "",
-    )
-    context = " ".join(part for part in (previous_user, previous_assistant[:500]) if part)
-    return f"{context} {query}".strip() if context else query
+    for message in reversed(prior):
+        text = message.get("content")
+        if message.get("role") == "user" and isinstance(text, str) and _search_terms(text):
+            return text.strip()[:800]
+    return query
 
 
 def should_search_web(query: str | None) -> bool:
@@ -1150,6 +1140,7 @@ def should_search_web(query: str | None) -> bool:
             return False
     if (
         looks_like_weather_query(query)
+        or is_live_weather_request(query)
         or looks_like_time_query(query)
         or looks_like_currency_query(query)
         or looks_like_news_query(query)

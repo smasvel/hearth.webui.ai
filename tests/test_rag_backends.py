@@ -64,6 +64,25 @@ class RagBackendRoutingTests(unittest.TestCase):
         hits = memory_store.search("user", [1.0, 0.0], embedding_backend="kobold")
         self.assertEqual([hit["content"] for hit in hits], ["question"])
 
+    def test_recall_survives_switching_embedding_providers_in_both_directions(self):
+        query = "Which tile should I pick?"
+        fact = "The answer is cobalt."
+        for current, old in (("kobold", "lemonade"), ("lemonade", "kobold")):
+            with self.subTest(current=current), \
+                 patch.object(app, "_rag_embedding_backend", return_value=current), \
+                 patch.object(app, "_ensure_embedding_model_loaded"), \
+                 patch.object(app.kobold, "embed", return_value=[[1.0, 0.0, 0.0]]) as kobold_embed, \
+                 patch.object(app.lemonade, "embed", return_value=[[1.0, 0.0]]) as lemonade_embed:
+                vector = [1.0, 0.0] if old == "lemonade" else [1.0, 0.0, 0.0]
+                memory_store.add_chunk(current, "older", "user", fact, vector, embedding_backend=old)
+                memory_store.add_chunk("unrelated", "private", "user", "Private red tile", vector,
+                                       embedding_backend=old)
+                note = app._recall_memory(current, "new", query)
+                self.assertIn(fact, note)
+                self.assertNotIn("Private red tile", note)
+                kobold_embed.assert_called_once_with([query])
+                lemonade_embed.assert_called_once_with([query])
+
     def test_kobold_exchange_falls_back_to_lemonade_storage(self):
         with patch.object(app.kobold, "owns_model", return_value=True), \
                 patch.object(app.kobold, "embed", side_effect=kobold_client.KoboldError("not enabled")), \

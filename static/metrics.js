@@ -444,8 +444,8 @@
 
   el("refresh").addEventListener("click", refreshAll);
   el("metrics-reset").addEventListener("click", async () => {
-    if (!confirm("Warning 1 of 2: This permanently deletes all saved Metrics request history and coding reviews for every source and model. Continue?")) return;
-    if (!confirm("Warning 2 of 2: Reset all performance metrics to zero now? New requests will start accumulating again immediately.")) return;
+    if (!confirm("Warning 1 of 2: This permanently deletes your saved Metrics request history and coding reviews. Continue?")) return;
+    if (!confirm("Warning 2 of 2: Reset your performance metrics now? New requests will still be recorded.")) return;
     const button = el("metrics-reset");
     button.disabled = true;
     try {
@@ -458,7 +458,7 @@
       page = 1;
       rangeSel.value = "0";
       fSource.value = ""; fBackend.value = ""; fType.value = ""; fStatus.value = ""; fModel.value = "";
-      el("metrics-reset-status").textContent = "All saved performance metrics were reset. New requests will be recorded from now on.";
+      el("metrics-reset-status").textContent = "Your saved performance metrics were reset.";
       refreshAll();
     } catch (err) {
       el("metrics-reset-status").textContent = `Could not reset metrics: ${err.message}`;

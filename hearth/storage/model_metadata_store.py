@@ -208,14 +208,18 @@ def get_test_run(job_id):
     return json.loads(row['payload']) if row else None
 
 
-def list_test_runs(limit=None):
+def list_test_runs(limit=None, *, owner_id=None):
+    query = "SELECT payload FROM model_test_runs"
+    params = []
+    if owner_id is not None:
+        query += " WHERE payload::jsonb->>'owner_id' = %s"
+        params.append(owner_id)
+    query += " ORDER BY started_at DESC"
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(max(0, int(limit)))
     with database.connect() as conn:
-        if limit is None:
-            rows = conn.execute("SELECT payload FROM model_test_runs ORDER BY started_at DESC").fetchall()
-        else:
-            rows = conn.execute("SELECT payload FROM model_test_runs ORDER BY started_at DESC LIMIT %s",
-                                (max(0, int(limit)),)).fetchall()
-    return [json.loads(row['payload']) for row in rows]
+        return [json.loads(row['payload']) for row in conn.execute(query, params).fetchall()]
 
 
 def delete_test_run(job_id):

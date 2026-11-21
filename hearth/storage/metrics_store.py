@@ -88,24 +88,32 @@ def record(**fields) -> None:
         pass  # never propagate a metrics failure into the request path
 
 
-def clear_all() -> None:
+def clear_all(*, user_id=None) -> None:
     """Remove all persisted request metrics and restart their row identifiers."""
     with _connect() as conn:
-        conn.execute("TRUNCATE TABLE request_metrics RESTART IDENTITY")
+        if user_id is None:
+            conn.execute("TRUNCATE TABLE request_metrics RESTART IDENTITY")
+        else:
+            conn.execute("DELETE FROM request_metrics WHERE user_id = %s", (user_id,))
 
 
-def _window_clause(hours: float | None) -> tuple[str, list]:
-    if not hours:
-        return "", []
-    return " WHERE ts >= %s", [time.time() - hours * 3600]
+def _window_clause(hours: float | None, user_id=None) -> tuple[str, list]:
+    conditions, params = [], []
+    if hours:
+        conditions.append("ts >= %s")
+        params.append(time.time() - hours * 3600)
+    if user_id is not None:
+        conditions.append("user_id = %s")
+        params.append(user_id)
+    return (" WHERE " + " AND ".join(conditions) if conditions else ""), params
 
 
-def summary(hours: float | None = 24) -> dict:
+def summary(hours: float | None = 24, *, user_id=None) -> dict:
     """Aggregates for the dashboard: KPI totals, breakdowns by source/backend/type, a
     time-series of request counts, and latency stats. The recent-requests table is served
     separately by recent() below (paginated/filterable, so it doesn't need this whole
     aggregate payload re-fetched just to turn a page or change a filter)."""
-    where, params = _window_clause(hours)
+    where, params = _window_clause(hours, user_id)
     with _connect() as conn:
         c = conn.cursor()
 
@@ -130,7 +138,7 @@ def summary(hours: float | None = 24) -> dict:
         by_source = group("source")
         by_backend = group("backend")
         by_type = group("ask_category")
-        by_model = model_report(hours, conn)
+        by_model = model_report(hours, conn, user_id=user_id)
 
         # p95 latency (approx: order + offset)
         lat = [r[0] for r in c.execute(
@@ -172,12 +180,12 @@ def summary(hours: float | None = 24) -> dict:
     }
 
 
-def model_report(hours: float | None = 24, conn=None) -> list[dict]:
+def model_report(hours: float | None = 24, conn=None, *, user_id=None) -> list[dict]:
     """Compare generation requests only; correctness comes from explicit reviews."""
     if conn is None:
         with _connect() as connection:
-            return model_report(hours, connection)
-    where, params = _window_clause(hours)
+            return model_report(hours, connection, user_id=user_id)
+    where, params = _window_clause(hours, user_id)
     where += (" AND" if where else " WHERE") + " request_type IN ('chat_completion','completion')"
     rows = [dict(r) for r in conn.execute(f"""
         SELECT COALESCE(NULLIF(model,''),'Unattributed requests') model,
@@ -208,12 +216,12 @@ def model_report(hours: float | None = 24, conn=None) -> list[dict]:
     return rows
 
 
-def review_coding(request_id: int, passed: bool | None) -> bool:
+def review_coding(request_id: int, passed: bool | None, *, user_id=None) -> bool:
     with _connect() as conn:
         return conn.execute(
             "UPDATE request_metrics SET coding_passed=%s WHERE id=%s AND ask_category='code' "
-            "AND request_type IN ('chat_completion','completion')",
-            (None if passed is None else int(passed), request_id),
+            "AND request_type IN ('chat_completion','completion') AND (%s::text IS NULL OR user_id = %s)",
+            (None if passed is None else int(passed), request_id, user_id, user_id),
         ).rowcount == 1
 
 
@@ -236,6 +244,7 @@ def recent(
     model: str | None = None,
     sort: str = "id",
     direction: str = "desc",
+    *, user_id=None,
 ) -> dict:
     """Paginated, filterable request log for the Recent Requests table — split out from
     summary() above (which stays focused on the KPI/bars/series aggregates) so changing a
@@ -249,7 +258,7 @@ def recent(
     table's own existing color-coding) rather than exact HTTP codes, which is what's actually
     useful to filter by; `model` is a substring match, since exact model ids are long and
     easy to mistype."""
-    where_sql, params = _window_clause(hours)
+    where_sql, params = _window_clause(hours, user_id)
     conj = "WHERE" if not where_sql else "AND"
 
     def add(col: str, val, op: str = "="):
@@ -294,7 +303,7 @@ def recent(
         # and more accurate than a hardcoded list (e.g. no "kobold" option shown if nothing has
         # hit it yet in the selected range).
         def distinct(col):
-            win_sql, win_params = _window_clause(hours)
+            win_sql, win_params = _window_clause(hours, user_id)
             win_conj = "AND" if win_sql else "WHERE"
             return [r[0] for r in c.execute(
                 f"SELECT DISTINCT {col} FROM request_metrics{win_sql} "

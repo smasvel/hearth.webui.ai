@@ -15,6 +15,9 @@ from __future__ import annotations
 from hearth.storage import database
 import time
 import hashlib
+from contextvars import ContextVar
+
+current_owner = ContextVar("browse_history_owner", default=None)
 
 DATA_DIR = database.DATA_DIR
 
@@ -29,6 +32,7 @@ CREATE TABLE IF NOT EXISTS browse_history (
     ok INTEGER NOT NULL DEFAULT 1
 );
 ALTER TABLE browse_history ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+ALTER TABLE browse_history ADD COLUMN IF NOT EXISTS owner_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_browse_history_dedupe_key
     ON browse_history(dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_browse_history_visited_at
@@ -52,44 +56,44 @@ def add_visit(url: str, title: str | None, query: str | None, source: str | None
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO browse_history (visited_at, url, title, query, source, ok) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (time.time(), url, title or None, query or None, source or None, 1 if ok else 0),
+                "INSERT INTO browse_history (visited_at, url, title, query, source, ok, owner_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (time.time(), url, title or None, query or None, source or None, 1 if ok else 0, current_owner.get()),
             )
     except database.Error:
         pass
 
 
 def add_visit_once(url: str, title: str | None, query: str | None, source: str | None,
-                   ok: bool, dedupe_key: str) -> None:
+                   ok: bool, dedupe_key: str, *, owner_id=None) -> None:
     """Record an externally observed visit once, even when a task snapshot repeats it."""
     try:
         key = hashlib.sha256(dedupe_key.encode("utf-8", errors="replace")).hexdigest()
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO browse_history (visited_at, url, title, query, source, ok, dedupe_key) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (dedupe_key) "
+                "INSERT INTO browse_history (visited_at, url, title, query, source, ok, dedupe_key, owner_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (dedupe_key) "
                 "WHERE dedupe_key IS NOT NULL DO NOTHING",
                 (time.time(), url, title or None, query or None, source or None,
-                 1 if ok else 0, key),
+                 1 if ok else 0, key, owner_id),
             )
     except database.Error:
         pass
 
 
-def list_history(search: str | None = None, page: int = 1, per_page: int = 25) -> dict:
+def list_history(search: str | None = None, page: int = 1, per_page: int = 25, *, owner_id=None) -> dict:
     """Newest-first page of history rows plus the total match count (for pagination).
     `search` does a case-insensitive substring match across url, title, and the query
     that led there — one box searching all three is what "live history search" needs;
     nobody remembers which field the thing they're looking for appeared in."""
     page = max(1, page)
     per_page = max(1, min(per_page, 200))
-    where = ""
-    params: list = []
+    where = "WHERE owner_id IS NOT DISTINCT FROM %s"
+    params = [owner_id]
     if search and search.strip():
         like = f"%{search.strip()}%"
-        where = "WHERE url ILIKE %s OR title ILIKE %s OR query ILIKE %s"
-        params = [like, like, like]
+        where += " AND (url ILIKE %s OR title ILIKE %s OR query ILIKE %s)"
+        params.extend([like, like, like])
     with _connect() as conn:
         total = conn.execute(
             f"SELECT COUNT(*) FROM browse_history {where}", params
@@ -107,13 +111,13 @@ def list_history(search: str | None = None, page: int = 1, per_page: int = 25) -
     }
 
 
-def delete_visit(visit_id: int) -> bool:
+def delete_visit(visit_id: int, *, owner_id=None) -> bool:
     with _connect() as conn:
-        row = conn.execute("DELETE FROM browse_history WHERE id = %s RETURNING id", (visit_id,)).fetchone()
+        row = conn.execute("DELETE FROM browse_history WHERE id = %s AND owner_id IS NOT DISTINCT FROM %s RETURNING id", (visit_id, owner_id)).fetchone()
     return row is not None
 
 
-def clear_history() -> int:
+def clear_history(*, owner_id=None) -> int:
     with _connect() as conn:
-        rows = conn.execute("DELETE FROM browse_history RETURNING id").fetchall()
+        rows = conn.execute("DELETE FROM browse_history WHERE owner_id IS NOT DISTINCT FROM %s RETURNING id", (owner_id,)).fetchall()
     return len(rows)

@@ -24,18 +24,18 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_model_test_scenarios_enabled ON model_test_scenarios(enabled, updated_at DESC)")
 
 
-def list_scenarios(*, enabled_only=False):
-    query = "SELECT * FROM model_test_scenarios"
+def list_scenarios(*, enabled_only=False, owner_id=None):
+    query = "SELECT * FROM model_test_scenarios WHERE created_by IS NOT DISTINCT FROM %s"
     if enabled_only:
-        query += " WHERE enabled=TRUE"
+        query += " AND enabled=TRUE"
     query += " ORDER BY updated_at DESC, name ASC"
     with database.connect() as conn:
-        return [dict(row) for row in conn.execute(query).fetchall()]
+        return [dict(row) for row in conn.execute(query, (owner_id,)).fetchall()]
 
 
-def get_scenario(scenario_id):
+def get_scenario(scenario_id, *, owner_id=None):
     with database.connect() as conn:
-        row = conn.execute("SELECT * FROM model_test_scenarios WHERE id=%s", (scenario_id,)).fetchone()
+        row = conn.execute("SELECT * FROM model_test_scenarios WHERE id=%s AND created_by IS NOT DISTINCT FROM %s", (scenario_id, owner_id)).fetchone()
     return dict(row) if row else None
 
 
@@ -44,8 +44,10 @@ def save_scenario(*, name, prompt, expected_answer, match_mode='contains',
     now = time.time()
     scenario_id = scenario_id or uuid.uuid4().hex
     with database.connect() as conn:
-        existing = conn.execute("SELECT created_at FROM model_test_scenarios WHERE id=%s",
+        existing = conn.execute("SELECT created_by FROM model_test_scenarios WHERE id=%s FOR UPDATE",
                                 (scenario_id,)).fetchone()
+        if existing and existing["created_by"] != created_by:
+            return None
         if existing:
             conn.execute("""UPDATE model_test_scenarios SET name=%s, prompt=%s,
                 expected_answer=%s, match_mode=%s, enabled=%s, updated_at=%s WHERE id=%s""",
@@ -56,17 +58,18 @@ def save_scenario(*, name, prompt, expected_answer, match_mode='contains',
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (scenario_id, name, prompt, expected_answer, match_mode, enabled,
                  created_by, now, now))
-    return get_scenario(scenario_id)
+    return get_scenario(scenario_id, owner_id=created_by)
 
 
-def set_enabled(scenario_id, enabled):
+def set_enabled(scenario_id, enabled, *, owner_id=None):
     with database.connect() as conn:
         row = conn.execute("""UPDATE model_test_scenarios SET enabled=%s, updated_at=%s
-            WHERE id=%s RETURNING *""", (enabled, time.time(), scenario_id)).fetchone()
+            WHERE id=%s AND created_by IS NOT DISTINCT FROM %s RETURNING *""", (enabled, time.time(), scenario_id, owner_id)).fetchone()
     return dict(row) if row else None
 
 
-def delete_scenario(scenario_id):
+def delete_scenario(scenario_id, *, owner_id=None):
     with database.connect() as conn:
-        return conn.execute("DELETE FROM model_test_scenarios WHERE id=%s RETURNING id",
-                            (scenario_id,)).fetchone() is not None
+        return conn.execute("DELETE FROM model_test_scenarios "
+                            "WHERE id=%s AND created_by IS NOT DISTINCT FROM %s RETURNING id",
+                            (scenario_id, owner_id)).fetchone() is not None

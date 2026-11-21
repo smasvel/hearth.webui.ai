@@ -58,6 +58,95 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(self.manager.get(key)['cycles'],2)
         self.assertEqual(self.manager.get(key)['status'],'running')
 
+    def test_agent_project_memory_only_searches_the_assignment_owners_notes(self):
+        from hearth.agents import agent_store
+
+        other = self.create_other_account()
+        own_task = self.manager.create(self.values, self.owner)
+        other_task = self.manager.create(self.values, other)
+        agent_store.replace_agent_project_memory(self.owner, own_task['id'], ['orbit own note'], None)
+        agent_store.replace_agent_project_memory(other, other_task['id'], ['orbit other note'], None)
+
+        own_context = self.manager._agent_memory_context({**own_task, 'goal': 'orbit'})
+        other_context = self.manager._agent_memory_context({**other_task, 'goal': 'orbit'})
+        self.assertIn('orbit own note', own_context)
+        self.assertNotIn('orbit other note', own_context)
+        self.assertIn('orbit other note', other_context)
+        self.assertNotIn('orbit own note', other_context)
+
+    def test_shared_recipient_cannot_read_or_relink_owners_chat(self):
+        from hearth.agents import agent_store
+
+        recipient = self.create_other_account()
+        owner_chat, recipient_chat = uuid.uuid4().hex, uuid.uuid4().hex
+        for conversation, account in ((owner_chat, self.owner), (recipient_chat, recipient)):
+            app.chat_store.ensure_conversation(conversation, account, None, 'Private conversation')
+            self.addCleanup(app.chat_store.delete_conversation, conversation, account)
+        job = self.manager.create(self.values, self.owner)
+        job.update(shared_with=[recipient], origin_conversation_id=owner_chat,
+                   status='completed', summary='Private chat report fixture')
+        self.manager.save(job)
+        agent_store.save_chat_report(job['id'], 1, 'Formatted report fixture')
+        with patch.object(app, '_agent_tasks', self.manager):
+            owner = self.signed_in_client(self.owner)
+            viewer = self.signed_in_client(recipient)
+            result = owner.get(f'/api/conversations/{owner_chat}').json['agents'][0]
+            self.assertEqual(result['formatted_summary'], 'Formatted report fixture')
+            self.assertEqual(viewer.get(f'/api/conversations/{owner_chat}').status_code, 404)
+            self.assertEqual(agent_store.list_chat_tasks(recipient, owner_chat), [])
+            response = viewer.patch(f"/api/agent-tasks/{job['id']}/chat",
+                                    json={'conversation_id': recipient_chat},
+                                    headers={'X-CSRF-Token': 'test'})
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(viewer.get(f'/api/conversations/{recipient_chat}').json['agents'], [])
+            self.assertEqual(owner.get(f'/api/conversations/{owner_chat}').json['agents'][0]['id'], job['id'])
+
+    def test_shared_recipient_cannot_list_or_change_owners_schedule(self):
+        recipient = self.create_other_account()
+        job = self.manager.create(self.values, self.owner)
+        job['shared_with'] = [recipient]
+        self.manager.save(job)
+        config = {'task_id': job['id'], 'interval_seconds': 3600,
+                  'interval_unit': 'hours', 'interval_value': 1}
+        schedule = self.manager.create_schedule(config, self.owner)
+        path = f"/api/agent-schedules/{schedule['id']}"
+        with patch.object(app, '_agent_tasks', self.manager):
+            owner = self.signed_in_client(self.owner)
+            viewer = self.signed_in_client(recipient)
+            self.assertEqual(viewer.get('/api/agent-schedules').json['schedules'], [])
+            for method, body in [('PATCH', {'enabled': False}), ('PUT', config), ('DELETE', {})]:
+                with self.subTest(method=method):
+                    response = viewer.open(path, method=method, json=body,
+                                           headers={'X-CSRF-Token': 'test'})
+                    self.assertEqual(response.status_code, 404)
+            saved = owner.get('/api/agent-schedules').json['schedules']
+            self.assertEqual([item['id'] for item in saved], [schedule['id']])
+            self.assertTrue(saved[0]['enabled'])
+
+    def test_workspace_lookup_is_scoped_to_the_account_even_with_known_workspace_id(self):
+        from hearth.agents import agent_store
+
+        other = self.create_other_account()
+        workspace = self.manager.create(self.values, self.owner)['id']
+        agent_store.save_workspace_file(self.owner, 'notes.txt', b'Owner-only workspace content',
+                                        workspace_id=workspace)
+        self.assertEqual(bytes(agent_store.list_workspace_files(self.owner, workspace)[0]['content']),
+                         b'Owner-only workspace content')
+        self.assertEqual(agent_store.list_workspace_files(other, workspace), [])
+        self.assertFalse(agent_store.has_workspace_checkpoint(other, workspace))
+
+    def create_other_account(self):
+        user = app.users_store.create_user('agent-test-' + uuid.uuid4().hex, 'test-password', 'admin')
+        self.addCleanup(app.users_store.delete_user, user['id'])
+        return user['id']
+
+    def signed_in_client(self, account):
+        client = app.app.test_client()
+        with client.session_transaction() as session:
+            session.update(logged_in=True, user_id=account, last_activity=time.time(),
+                           login_csrf_token='test')
+        return client
+
     def test_thinking_choice_is_saved_and_defaults_on(self):
         enabled = self.manager.create(self.values, self.owner)
         disabled = self.manager.create({**self.values, 'enable_thinking': False}, self.owner)
@@ -272,7 +361,7 @@ class AgentTaskTests(unittest.TestCase):
 
         add_visit.assert_called_once_with(
             url='https://example.org/result', title='Agent research (duckduckgo)',
-            query='Agent task online search', source='agent-duckduckgo', ok=True,
+            query='Agent task online search', source='agent-duckduckgo', ok=True, owner_id=self.owner,
             dedupe_key=f"{key}:research:0:duckduckgo_search:https://example.org/result",
         )
 
@@ -871,6 +960,55 @@ class AgentAPITests(unittest.TestCase):
         with patch.object(app.users_store,'get_user_by_id',return_value={'id':'admin','username':'admin','role':'user'}):
             self.assertEqual(self.client.get('/api/agent-tasks').status_code,403)
 
+    def test_assignment_access_is_scoped_to_owner_and_explicit_recipients(self):
+        job = {
+            'id': 'private-task', 'owner': 'owner', 'shared_with': ['recipient'],
+            'status': 'completed', 'title': 'Shared assignment', 'model': MODEL,
+            'summary': 'Completed result', 'result_platform': 'report',
+            'goal': 'Private instructions', 'origin_conversation_id': 'private-chat',
+            'messages': [{'text': 'Private transcript'}], 'activity': [{'text': 'Private log'}],
+            'schedule_id': 'private-schedule',
+        }
+        self.manager.get.side_effect = lambda key: copy.deepcopy(job) if key == job['id'] else None
+        self.manager.list.side_effect = lambda: [copy.deepcopy(job)]
+        base = '/api/agent-tasks/private-task'
+        private_routes = [
+            ('GET', '/live-messages'), ('GET', '/events'), ('GET', '/download'),
+            ('GET', '/preview'), ('POST', '/control'), ('POST', '/rerun'),
+            ('POST', '/edit-rerun'), ('PATCH', '/settings'), ('PATCH', '/model'),
+            ('POST', '/steer'), ('POST', '/reply'), ('PUT', '/shares'),
+            ('PATCH', '/chat'), ('POST', '/chat-report'), ('DELETE', ''),
+        ]
+        for account in ('outsider', 'recipient', 'owner'):
+            user = dict(id=account, username=account, role='user', agentic_workflow_enabled=True)
+            with self.subTest(account=account), patch.object(app.users_store, 'get_user_by_id', return_value=user):
+                with self.client.session_transaction() as session:
+                    session.update(logged_in=True, user_id=account, last_activity=time.time(),
+                                   login_csrf_token='test')
+                listing = self.client.get('/api/agent-tasks').json['tasks']
+                detail = self.client.get(base)
+                if account == 'owner':
+                    self.assertEqual(detail.json['origin_conversation_id'], 'private-chat')
+                    self.assertEqual(self.client.get(base + '/live-messages').json['messages'], job['messages'])
+                    continue
+                if account == 'recipient':
+                    self.assertEqual(detail.json['summary'], 'Completed result')
+                    self.assertEqual(detail.json['messages'], [])
+                    for private_key in ('goal', 'origin_conversation_id', 'schedule_id'):
+                        self.assertNotIn(private_key, detail.json)
+                        self.assertNotIn(private_key, listing[0])
+                else:
+                    self.assertEqual(listing, [])
+                    self.assertEqual(detail.status_code, 404)
+                    self.assertEqual(self.client.get('/agents/private-task').status_code, 404)
+                for method, suffix in private_routes:
+                    with self.subTest(method=method, suffix=suffix):
+                        response = self.client.open(base + suffix, method=method, json={},
+                                                    headers={'X-CSRF-Token': 'test'})
+                        self.assertEqual(response.status_code, 404)
+                self.assertEqual(self.client.post('/api/agent-schedules', json={'task_id': job['id']},
+                                                  headers={'X-CSRF-Token': 'test'}).status_code, 404)
+
     def test_agent_models_marks_currently_loaded_model(self):
         self.login()
         self.manager.client.models.return_value=[{**MODEL,'name':'Qwen'}]
@@ -1013,7 +1151,8 @@ class AgentAPITests(unittest.TestCase):
         with patch.object(app.lemonade, 'list_models', return_value=[{
                 'id': model['id'], 'state': 'loaded', 'loaded_context_length': 8192,
                 'max_context_length': 65536,
-        }]), patch.object(app, '_test_load_model') as load:
+        }]), patch.object(app, '_saved_model_context', return_value=None), \
+             patch.object(app, '_test_load_model') as load:
             app._prepare_agent_model({'model': model})
         load.assert_called_once_with({'backend': 'lemonade', 'id': model['id'],
                                       'context_length': 16384})

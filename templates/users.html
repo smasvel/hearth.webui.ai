@@ -38,9 +38,8 @@
         <div class="console-head">
           <h1>Users</h1>
           <p class="hint">
-            Passwords are hashed (never stored or shown in plain text) — an admin can reset a
-            user's password to a new one, but can never retrieve their existing one. Agentic
-            workflow access is controlled separately for each account.
+            Administrators can create accounts and manage agent access. Password changes
+            and personal LAN tokens are available only to the signed-in account owner.
           </p>
         </div>
 
@@ -65,7 +64,7 @@
 
           <div class="console-card span-all">
             <div class="users-list-header"><h2>Login and password history</h2><button id="refresh-auth-events" class="icon-btn" title="Refresh history">&#8635;</button></div>
-            <p class="hint">Successful and failed sign-ins, plus password creation and reset events. Password resets identify the administrator who performed them. Passwords and hashes are never shown.</p>
+            <p class="hint">Sign-in and password activity for your account.</p>
             <div class="metric-table-wrap" role="region" tabindex="0" aria-label="Login history table.">
               <table class="console-table metric-table">
                 <thead><tr><th>Time</th><th>Username</th><th>Event</th><th>Result</th><th>IP address</th><th>Changed by</th></tr></thead>

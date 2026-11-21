@@ -149,13 +149,16 @@ def provider_availability(provider: str = 'opencode') -> list[dict]:
         return []
 
 
-def clear_all() -> None:
+def clear_all(*, owner_id: str | None = None) -> None:
     """Clear finished live-log entries and saved traces without hiding active work."""
     with _lock:
         with database.connect() as conn:
-            conn.execute("DELETE FROM developer_traces WHERE NOT (id = ANY(%s))",
-                         (list(_active),))
-        _recent.clear()
+            if owner_id is None:
+                conn.execute("DELETE FROM developer_traces WHERE NOT (id = ANY(%s))", (list(_active),))
+            else:
+                conn.execute("DELETE FROM developer_traces WHERE payload::jsonb->>'owner_id' = %s "
+                             "AND NOT (id = ANY(%s))", (owner_id, list(_active)))
+        _recent[:] = [entry for entry in _recent if owner_id is not None and entry.get("owner_id") != owner_id]
 
 
 def _persist_finished(entry: dict) -> None:
@@ -203,6 +206,7 @@ def _persist_started(entry: dict) -> None:
 def start(
     *, source: str, backend: str, model: str, max_tokens: int | None = None,
     is_npu: bool = False, request_content: str | None = None, task_id: str | None = None,
+    owner_id: str | None = None,
 ) -> int:
     now = time.monotonic()
     wall_now = time.time()
@@ -212,6 +216,7 @@ def start(
             "id": req_id,
             "source": source,
             "task_id": task_id,
+            "owner_id": owner_id,
             "backend": backend,
             "model": model,
             "max_tokens": max_tokens,
@@ -234,10 +239,10 @@ def start(
     return req_id
 
 
-def update(req_id: int, *, delta_chars: int, delta_content: str | None = None) -> None:
+def update(req_id: int, *, delta_chars: int, delta_content: str | None = None, unowned_only=False) -> None:
     with _lock:
         entry = _active.get(req_id)
-        if entry is None:
+        if entry is None or (unowned_only and entry.get("owner_id") is not None):
             return
         if entry["first_token_at"] is None and delta_chars > 0:
             entry["first_token_at"] = time.time()
@@ -258,9 +263,11 @@ def update(req_id: int, *, delta_chars: int, delta_content: str | None = None) -
 
 def finish(
     req_id: int, *, status: str = "done", total_tokens: int | None = None,
-    status_code: int | None = None, error_detail: str | None = None,
+    status_code: int | None = None, error_detail: str | None = None, unowned_only=False,
 ) -> None:
     with _lock:
+        if unowned_only and (_active.get(req_id) or {}).get("owner_id") is not None:
+            return
         was_cancelled = bool(_cancel_events.get(req_id) and _cancel_events[req_id].is_set())
         entry = _active.pop(req_id, None)
         _cancel_events.pop(req_id, None)
@@ -284,11 +291,12 @@ def finish(
         _persist_finished(entry)
 
 
-def cancel(request_id: int) -> bool:
+def cancel(request_id: int, *, owner_id: str | None = None) -> bool:
     """Request cancellation for a stream owned by this Hearth process."""
     with _lock:
         event = _cancel_events.get(request_id)
-        if event is None:
+        entry = _active.get(request_id)
+        if event is None or (owner_id is not None and (not entry or entry.get("owner_id") != owner_id)):
             return False
         event.set()
         callback = next((row.get("cancel_callback") for row in _active.values()
@@ -313,7 +321,7 @@ def set_cancel_callback(request_id: int, callback) -> None:
             entry["cancel_callback"] = callback
 
 
-def snapshot(limit: int = 500) -> list[dict]:
+def snapshot(limit: int = 500, *, viewer_id: str | None = None) -> list[dict]:
     now = time.monotonic()
     with _lock:
         cutoff = time.time() - _RECENT_KEEP_SECONDS
@@ -347,6 +355,8 @@ def snapshot(limit: int = 500) -> list[dict]:
                 if e.get("first_token_at") and e.get("started_at") else None
             ),
             "status": e["status"],
+            "can_cancel": viewer_id is not None and e.get("owner_id") == viewer_id
+                          and e.get("status") == "streaming",
             "status_code": e.get("status_code"),
             "error_detail": e.get("error_detail"),
             "response_truncated": e.get("response_truncated", False),
