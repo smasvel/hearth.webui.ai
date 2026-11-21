@@ -112,6 +112,37 @@ def get_conversation(conversation_id: str, user_id: str) -> dict | None:
         return result
 
 
+def search_chat_context(user_id: str, query: str, *, exclude_conversation_id: str | None = None,
+                        limit: int = 12) -> list[dict]:
+    """Find relevant prior user and assistant messages in this user's chats only."""
+    import re
+
+    ignored = {"the", "and", "for", "with", "from", "find", "check", "current", "please",
+               "what", "where", "when", "wait", "time", "times", "waiting", "great", "clips"}
+    terms = list(dict.fromkeys(
+        token for token in re.findall(r"[\w'-]{3,}", query.casefold())
+        if token not in ignored
+    ))
+    # Brand/service queries need the business entity to be the retrieval key, even
+    # when the current sentence contains only "my Great Clips location".
+    if "great clips" in query.casefold():
+        terms = ["great clips"]
+    if not terms:
+        return []
+    conditions = " OR ".join("m.content ILIKE %s" for _ in terms)
+    params = [user_id, exclude_conversation_id, *(f"%{term}%" for term in terms), max(1, min(limit, 30))]
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT m.role, m.content, m.created_at, c.title FROM messages m "
+            "JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE c.user_id = %s AND c.id IS DISTINCT FROM %s "
+            "AND m.role IN ('user', 'assistant') AND (" + conditions + ") "
+            "ORDER BY m.created_at DESC LIMIT %s",
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def delete_conversation(conversation_id: str, user_id: str) -> None:
     with _connect() as conn:
         conn.execute(

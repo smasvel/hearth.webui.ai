@@ -63,6 +63,19 @@ class ChatToolSelectionTests(unittest.TestCase):
         self.assertEqual(select_chat_tools(tools, "Click the button", web_evidence_ready=True), tools[:2])
         self.assertEqual(select_chat_tools(tools, "Run Python"), tools[2:])
 
+    def test_current_wait_time_enables_browser_tools(self):
+        from hearth.integrations.mcp_tools_client import chat_tool_mode, select_chat_tools
+        from hearth.integrations import web_search_client
+        tools = [{"function": {"name": "playwright__" + name}} for name in (
+            "browser_navigate", "browser_snapshot", "browser_click",
+        )]
+        self.assertEqual(chat_tool_mode("Find waiting time in my Great Clips location"), "browser")
+        self.assertTrue(web_search_client.should_search_web("Find waiting time in my Great Clips location"))
+        self.assertEqual(
+            select_chat_tools(tools, "Find waiting time in my Great Clips location"),
+            tools[:2],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

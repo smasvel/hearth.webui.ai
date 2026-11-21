@@ -66,6 +66,27 @@ class PostgreSQLStoreTests(unittest.TestCase):
         with database.connect() as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0], 0)
 
+    def test_chat_context_finds_prior_assistant_details_without_crossing_users_or_current_chat(self):
+        chat_store.ensure_conversation('old-chat', 'owner', 'model', None)
+        chat_store.add_message(
+            'old-chat', 'assistant',
+            'Earlier lookup: Great Clips Market Square, 620 Jefferson Rd, Rochester, NY. '
+            'Official page: https://salons.greatclips.com/us/ny/rochester/620-jefferson-rd',
+        )
+        chat_store.ensure_conversation('current-chat', 'owner', 'model', None)
+        chat_store.add_message('current-chat', 'user', 'Find waiting time at Great Clips')
+        chat_store.ensure_conversation('other-users-chat', 'another-owner', 'model', None)
+        chat_store.add_message('other-users-chat', 'assistant', 'Great Clips New York location')
+
+        rows = chat_store.search_chat_context(
+            'owner', 'Find waiting time in my Great Clips location',
+            exclude_conversation_id='current-chat',
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['role'], 'assistant')
+        self.assertIn('620 Jefferson Rd', rows[0]['content'])
+
     def test_history_search_remains_case_insensitive(self):
         browse_history_store.add_visit('https://example.org', 'UpperCase title', None, 'test', True)
         self.assertEqual(browse_history_store.list_history('uppercase')['total'], 1)

@@ -167,6 +167,9 @@ supporting at least that maximum, and 8,192 tokens otherwise. The Models page's 
 loading ctx-size is a separate load setting.
 Loaded models show a separate **loaded ctx-size** line with the runtime's active context;
 unloaded models do not show this line.
+On the **Models** page, backend sections with loaded models appear first, and loaded
+models are listed before unloaded models within each backend section. Search and warning
+filters continue to apply to the displayed list.
 Large OpenCode prompts can take many minutes to prefill on CPU. Lemonade is configured
 with a one-hour request timeout to prevent its internal HTTP client from aborting those
 requests. New backend installs set this automatically. For an existing Docker install,
@@ -865,6 +868,9 @@ single-model llama-server keeps its launch-managed context and weights. In
 **Settings → Service controls**, select **llama.cpp** to restart the managed
 container and restore its loaded model. Chat uses the existing account-scoped
 memory index and falls back to saved text when embeddings are unavailable.
+The container can also be restarted directly from the repository with
+`docker compose -p hearth-llamacpp -f deploy/compose.llamacpp.yml restart llamacpp`;
+check that it is healthy with `docker compose -p hearth-llamacpp -f deploy/compose.llamacpp.yml ps`.
 
 #### Authenticated llama.cpp Caddy gateway
 
@@ -1369,6 +1375,8 @@ An explicitly configured remote URL is preserved even when local runtimes are in
 Administrators can restart managed inference services from **Settings → Service
 controls → Restart all backends**. Hearth restarts LM Studio, Lemonade's gateway,
 vLLM, KoboldCPP, q38rocm, and FastFlowLM independently and reports each result.
+The llama.cpp Compose container is managed separately and can be restarted from its
+Settings card or with the Compose command in the Direct llama.cpp router section.
 Use **Restart q38rocm** on its Settings card to restart only that service; it must
 already be loaded. A backend
 restart interrupts active inference and may require loading the model again. Use

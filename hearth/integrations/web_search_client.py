@@ -978,6 +978,7 @@ _RECENCY_KEYWORDS = (
     "who is", "who was", "who are", "what version", "which version", "how popular",
     "market share", "how many people", "population of", "net worth", "stock price",
     "how old is", "when was", "where is", "where can i",
+    "wait time", "waiting time", "wait times", "waiting times", "availability",
 )
 # A recent-enough year mentioned anywhere ("best laptops 2026", "GLM 5 benchmarks 2025")
 # is a fresh-fact signal no keyword list can enumerate. Cutoff is intentionally rolling

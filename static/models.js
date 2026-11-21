@@ -507,8 +507,14 @@
       (!q || (m.id || "").toLowerCase().includes(q)) &&
       (!warningsOnlyEl?.checked || m.resource_warning || m.load_status?.state === "error"));
     shown = matching.length;
-    for (const g of ordered) {
-      const list = matching.filter((m) => m.backend === g.key);
+    // Put every loaded local model before unloaded ones, including across backend
+    // sections. Keep the existing backend sections and model order within each state.
+    const loadedFirst = (a, b) => Number(b.state === "loaded") - Number(a.state === "loaded");
+    const loadedBackends = new Set(matching.filter((m) => m.state === "loaded").map((m) => m.backend));
+    const backendOrder = [...ordered].sort((a, b) =>
+      Number(loadedBackends.has(b.key)) - Number(loadedBackends.has(a.key)));
+    for (const g of backendOrder) {
+      const list = matching.filter((m) => m.backend === g.key).sort(loadedFirst);
       if (!list.length) continue;
       const section = document.createElement("div");
       section.className = "console-card span-all model-group";

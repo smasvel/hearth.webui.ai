@@ -91,6 +91,11 @@ _BROWSER_INTENT_RE = re.compile(
     r"|\b(?:web ?page|website|browser tab|this link|this url|playwright|mcp tools?)\b",
     re.IGNORECASE,
 )
+_LIVE_LOOKUP_RE = re.compile(
+    r"\b(?:wait(?:ing)?\s+times?|availability|open(?:ing)?\s+hours?|"
+    r"appointments?|reservations?|queue|in stock|stock levels?)\b",
+    re.IGNORECASE,
+)
 _BROWSER_INTERACTION_RE = re.compile(
     r"\b(?:click|fill|type|select|submit|interact with)\b", re.IGNORECASE,
 )
@@ -107,7 +112,8 @@ def chat_tool_mode(user_text: str | None, *, research_fallback: bool = False) ->
     """Select MCP tools only when a user turn explicitly needs them."""
     text = user_text or ""
     modes = []
-    if research_fallback or "http://" in text.lower() or "https://" in text.lower() or _BROWSER_INTENT_RE.search(text):
+    if (research_fallback or "http://" in text.lower() or "https://" in text.lower()
+            or _BROWSER_INTENT_RE.search(text) or _LIVE_LOOKUP_RE.search(text)):
         modes.append("browser")
     if _PYTHON_INTENT_RE.search(text):
         modes.append("python")

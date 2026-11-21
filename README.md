@@ -188,5 +188,16 @@ To include browser coverage:
 The browser runner discovers `tools/check_*_ui.py` suites and lists named checks
 for desktop and mobile pages, route permissions, and sign-in flows.
 
+For a live Playwright MCP chat regression, keep Hearth running with a chat model
+selected for the `admin` account and run:
+
+```bash
+.venv/bin/python tests/run_playwright_mcp_chat_regression.py
+```
+
+This sends a real Hearth chat request through that account's saved active model and
+the running Playwright MCP, checks a Great Clips salon in Rochester, NY, and removes
+the successful test conversation afterward. It does not load or switch models.
+
 For environment setup and deployment options, see the
 [installation guide](deploy/FIRST_TIME_INSTALL.md).
