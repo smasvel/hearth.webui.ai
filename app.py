@@ -3416,36 +3416,36 @@ def api_agent_tasks_preview(task_id):
     platform = job.get('result_platform', 'general')
     if platform not in ('web', 'report'):
         return jsonify({'error': 'This assignment is not configured for an HTML result.'}), 409
-    if platform == 'report' and job.get('status') != 'completed':
+    if job.get('status') != 'completed':
         return jsonify({'error': 'The accepted agent result is not available until the assignment completes.'}), 409
-    files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'])
-    if platform == 'web':
-        entry = next((item for item in files if not item['is_dir'] and
-                      str(item['path']).removeprefix('./') in
-                      ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')), None)
-        if not entry:
-            return jsonify({'error': 'No supported HTML entry file was found in the project.'}), 404
-        content = bytes(entry['content'])
+    files = agent_store.list_workspace_files(job['owner'], workspace_id=job['id'], legacy_fallback=False)
+    visible_files = [item for item in files if not item['is_dir'] and
+                     not any(part.startswith('.') for part in Path(item['path']).parts)]
+    html_files = [item for item in visible_files if Path(item['path']).suffix.lower() in ('.html', '.htm')]
+    preferred_html = (
+        ('index.html', 'index.htm', 'dist/index.html', 'build/index.html')
+        if platform == 'web' else ('results.html', 'result.html', 'report.html', 'index.html')
+    )
+    rank = {name: index for index, name in enumerate(preferred_html)}
+
+    def html_rank(item):
+        path = Path(item['path'])
+        report_file = any(term in path.stem.lower() for term in ('result', 'report'))
+        return (
+            rank.get(path.as_posix().lower(), rank.get(path.name.lower(), len(rank) + (not report_file))),
+            -float(item.get('updated_at') or 0), path.as_posix().lower(),
+        )
+
+    final_text = str(job.get('summary') or job.get('completion') or '').strip()
+    inline_html = re.search(r'(?is)```html[ \t]*\r?\n(.*?)```', final_text)
+    if html_files:
+        content = bytes(min(html_files, key=html_rank)['content'])
+    elif inline_html:
+        content = inline_html.group(1).encode('utf-8')
+    elif re.fullmatch(r'(?is)(?:<!doctype html>\s*)?<html\b[^>]*>.*?</html>', final_text):
+        content = final_text.encode('utf-8')
     else:
-        html_files = [item for item in files if not item['is_dir']
-                      and not Path(item['path']).name.startswith('.')
-                      and str(item['path']).lower().endswith(('.html', '.htm'))]
-        preferred_html = {'results.html': 0, 'result.html': 1, 'report.html': 2, 'index.html': 3}
-        html_files.sort(key=lambda item: (
-            preferred_html.get(Path(item['path']).name.lower(),
-                4 if any(term in Path(item['path']).name.lower() for term in ('result', 'report')) else 5),
-            -float(item.get('updated_at') or 0), item['path'].lower()))
-        if html_files:
-            # The report platform often produces a finished HTML deliverable beside
-            # its source JSON. Show that requested result rather than the JSON
-            # fallback generated from the agent's final response.
-            content = bytes(html_files[0]['content'])
-            response = Response(content, mimetype='text/html')
-            response.headers['Content-Security-Policy'] = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; sandbox"
-            response.headers['X-Content-Type-Options'] = 'nosniff'
-            response.headers['Cache-Control'] = 'no-store'
-            return response
-        json_files = [item for item in files if not item['is_dir'] and item['path'].lower().endswith('.json')]
+        json_files = [item for item in visible_files if item['path'].lower().endswith('.json')]
         preferred = {'results.json': 0, 'result.json': 1, 'report.json': 2, 'scan.json': 3}
         json_files.sort(key=lambda item: (
             preferred.get(Path(item['path']).name.lower(), 10),
@@ -3464,7 +3464,6 @@ def api_agent_tasks_preview(task_id):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
         if not report_found:
-            final_text = str(job.get('summary') or job.get('completion') or '').strip()
             if not final_text:
                 return jsonify({'error': 'No saved JSON report or accepted final response is available.'}), 404
             try:

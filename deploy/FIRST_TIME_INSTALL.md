@@ -613,8 +613,10 @@ New assignments also accept a result label and platform/output type. Web-page
 assignments preview a completed `index.html`, `dist/index.html`, or
 `build/index.html` in a sandboxed frame on the task page. Choose **JSON results
 (HTML view)** to show a saved JSON artifact or accepted final response in a separate,
-labeled sandboxed report view. A saved HTML report is previewed directly; otherwise
-JSON records and nested objects render as HTML tables rather than raw JSON text.
+labeled sandboxed report view. Both formats can display a saved HTML file with a
+custom filename or HTML included in the final response. JSON records and nested
+objects render as HTML tables when no HTML result is available. A completed HTML
+result also appears in the linked conversation, below the summary.
 The latest agent response and labeled HTML result appear at the top of the task page,
 before task details, controls, activity, and conversation logs.
 feed, which streams task progress, the agent container's tool inputs and outputs,

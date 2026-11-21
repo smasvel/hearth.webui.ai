@@ -95,9 +95,14 @@ with contextlib.ExitStack() as stack:
   fake.message.return_value={'status':'exited','exit':0,'output':{'output':'tests passed'}}
   snap['active']=False;snap['messages']=[{'id':'a_browser','type':'assistant','finish':'stop','content':[{'type':'text','text':'Verified result\n'+MARKER}]}]
   manager.tick();manager.tick()
+  app.agent_store.save_workspace_file(owner, './assignment-findings.html', (
+   b'<h1>Saved assignment findings</h1><table><tr><td>Verified artifact</td></tr></table>'
+   b'<script>document.querySelector("h1").textContent = "Unexpected script execution"</script>'
+  ), workspace_id=key)
   expect(page.locator('#agent-status')).to_contain_text('completed',timeout=7000)
   expect(page.locator('#agent-result-heading')).to_have_text('Completed result')
   expect(page.locator('#agent-result')).to_contain_text('Verified result')
+  expect(page.frame_locator('#agent-html-preview').get_by_role('heading',name='Saved assignment findings')).to_be_visible()
   result_chat=context.new_page()
   result_chat.route('**/api/models',lambda route:route.fulfill(json={'models':[
    {'id':model['id'],'backend':model['providerID'],'type':'llm','state':'loaded'},
@@ -106,11 +111,13 @@ with contextlib.ExitStack() as stack:
    result_chat.goto(base+page.get_by_role('link',name='Open linked Chat').get_attribute('href'))
    result= result_chat.get_by_role('region',name='Agent results')
    expect(result.get_by_role('heading',name='Summary')).to_be_visible(timeout=12000)
+   expect(result.frame_locator('.agent-chat-html-preview').get_by_role('cell',name='Verified artifact')).to_be_visible()
    expect(result).to_contain_text('Verified result')
    expect(result.get_by_text('Original agent result',exact=True)).to_be_visible()
    expect(result.get_by_role('link',name='Open assignment and full result')).to_have_attribute('href',f'/agents/{key}')
    result_chat.reload()
    expect(result.get_by_role('heading',name='Summary')).to_be_visible()
+   expect(result.frame_locator('.agent-chat-html-preview').get_by_role('heading',name='Saved assignment findings')).to_be_visible()
    formatter.assert_called_once()
   result_chat.close()
   print('CASE PASS completed assignment is formatted once and persists in its source conversation')

@@ -209,7 +209,7 @@
       previewWrap.hidden=!showPreview;
       if(el('agent-result'))el('agent-result').hidden=showPreview && task.result_platform==='report';
       preview.title=`${task.result_label || 'Results'} HTML view`;
-      const src=showPreview?`/api/agent-tasks/${encodeURIComponent(task.id)}/preview`:'';
+      const src=showPreview?`/api/agent-tasks/${encodeURIComponent(task.id)}/preview?run=${encodeURIComponent(task.run_count || 1)}`:'';
       if(preview.dataset.src!==src){preview.dataset.src=src;preview.src=src || 'about:blank';}
     }
     if(el('agent-result')) {

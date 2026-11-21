@@ -234,6 +234,8 @@ def list_chat_tasks(owner: str, conversation_id: str) -> list[dict]:
             """
             SELECT id, payload::jsonb->>'title' AS title,
                    payload::jsonb->>'status' AS status,
+                   payload::jsonb->>'result_platform' AS result_platform,
+                   payload::jsonb->>'result_label' AS result_label,
                    COALESCE((payload::jsonb->>'run_count')::integer, 1) AS run_count,
                    reports.content AS formatted_summary,
                    LEFT(payload::jsonb->>'summary', 16000) AS summary,
@@ -744,9 +746,9 @@ def delete_skill(owner_id, skill_id):
         ).fetchone() is not None
 
 
-def list_workspace_files(owner_id, workspace_id=''):
+def list_workspace_files(owner_id, workspace_id='', *, legacy_fallback=True):
     with database.connect() as conn:
-        initialized = (not workspace_id or conn.execute(
+        initialized = (not legacy_fallback or not workspace_id or conn.execute(
             "SELECT 1 FROM agent_workspace_checkpoints WHERE owner_id = %s AND workspace_id = %s",
             (owner_id, workspace_id),
         ).fetchone())

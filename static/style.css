@@ -723,6 +723,7 @@ html, body {
 .chat-linked-agents article { display: grid; gap: 6px; }
 .agent-chat-report { overflow-wrap: anywhere; }
 .agent-chat-report :is(ul, ol, p) { margin: 0.5em 0; }
+.agent-chat-html-preview { display: block; width: 100%; height: 55vh; min-height: 320px; margin: 0.65em 0; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .msg-wrap.system { align-self: center; align-items: center; }
 .msg-wrap.error { align-self: flex-start; align-items: flex-start; }
 

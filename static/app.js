@@ -845,6 +845,16 @@
         `/agents/schedules?task=${encodeURIComponent(agent.id)}`;
       scheduleLink.textContent = agent.schedules?.length ? "Manage schedules" : "Set up a schedule";
       card.append(heading, schedules, result);
+      if (agent.status === "completed" && ["web", "report"].includes(agent.result_platform)) {
+        const preview = document.createElement("iframe");
+        preview.className = "agent-chat-html-preview";
+        preview.title = `${agent.result_label || agent.title} HTML view`;
+        preview.setAttribute("sandbox", "");
+        preview.referrerPolicy = "no-referrer";
+        preview.loading = "lazy";
+        preview.src = `/api/agent-tasks/${encodeURIComponent(agent.id)}/preview?run=${encodeURIComponent(agent.run_count)}`;
+        card.append(preview);
+      }
       if (agent.formatted_summary && agent.summary) {
         const original = document.createElement("details");
         const label = document.createElement("summary");
