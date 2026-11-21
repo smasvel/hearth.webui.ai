@@ -19,6 +19,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,7 @@ BACKENDS = (
     ("vllm", 8445, 8000),
     ("kobold", 8446, 5001),
     ("fastflowlm", 8447, 52626),
+    ("llamacpp", 8448, 8093),
 )
 TOKEN_LABELS = ("opencode", "vscode", "lan")
 
@@ -118,7 +120,14 @@ def render_caddyfile(addresses: list[str], tokens: dict[str, str], backends=BACK
             "\troute {",
             "\t\timport client_auth",
         ]
-        for label in TOKEN_LABELS:
+        labels = TOKEN_LABELS
+        if _name == "llamacpp":
+            lines += [
+                "		@outside_llamacpp expression `!(method('GET') && path('/v1/models')) && !(method('POST') && path('/v1/chat/completions'))`",
+                "		respond @outside_llamacpp 404",
+            ]
+            labels = (*TOKEN_LABELS, *(label for label in tokens if label.startswith("user_")))
+        for label in labels:
             lines.append(f"\t\treverse_proxy @{label} localhost:{upstream}")
         lines += ["\t\trespond 401", "\t}", "}"]
     return "\n".join(lines) + "\n"
@@ -126,6 +135,20 @@ def render_caddyfile(addresses: list[str], tokens: dict[str, str], backends=BACK
 
 def managed_section(text: str) -> str:
     return f"{BEGIN_MARKER}\n{text.rstrip()}\n{END_MARKER}\n"
+
+
+def install_llamacpp_site(existing: str, addresses: list[str]) -> str:
+    """Append the inference-only gateway without replacing existing routes or auth."""
+    if re.search(r"(?m)^\s*[^#{\n]+:8448\s*\{", existing):
+        return existing
+    tokens = parse_tokens(existing)
+    if not re.search(r"(?m)^\s*\(client_auth\)\s*\{", existing) or not all(
+        label in tokens for label in TOKEN_LABELS
+    ):
+        raise ValueError("The existing Caddyfile needs Hearth's client_auth snippet.")
+    native = next(backend for backend in BACKENDS if backend[0] == "llamacpp")
+    site = render_caddyfile(addresses, tokens, backends=(native,)).split("\n}\n", 1)[1]
+    return existing.rstrip() + "\n\n# Hearth llama.cpp inference gateway\n" + site.lstrip()
 
 
 def install_section(existing: str, section: str) -> str:
@@ -285,7 +308,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--print", action="store_true", help="Print the gateway config and exit.")
     parser.add_argument("--no-reload", action="store_true",
                         help="Write the system Caddyfile but skip reloading, cert priming, and CA export.")
+    parser.add_argument("--add-llamacpp", action="store_true",
+                        help="Append only the llama.cpp gateway to an existing system Caddyfile.")
     args = parser.parse_args(argv)
+
+    if args.add_llamacpp:
+        if not args.system_file:
+            parser.error("--add-llamacpp requires --system-file")
+        try:
+            current = args.system_file.read_text()
+            updated = install_llamacpp_site(current, detect_addresses())
+            if updated != current:
+                with tempfile.NamedTemporaryFile(mode="w", dir=args.system_file.parent, suffix=".Caddyfile") as candidate:
+                    candidate.write(updated)
+                    candidate.flush()
+                    if not _validate_caddy(Path(candidate.name)):
+                        return 1
+                _write(args.system_file, updated, mode=args.system_file.stat().st_mode & 0o777)
+            if not args.no_reload and not _reload_caddy(args.system_file):
+                return 1
+        except (OSError, ValueError) as exc:
+            print(f"Could not install the llama.cpp gateway: {exc}", file=sys.stderr)
+            return 1
+        print("llama.cpp gateway configured on HTTPS port 8448.")
+        return 0
 
     state_file = args.state_file or Path.home() / ".local/share/hearth/Caddyfile"
     existing = state_file.read_text() if state_file.exists() else ""

@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from hearth.integrations import web_search_client as web_search
+from hearth.integrations import page_scraper, web_search_client as web_search
 
 
 class WebSearchRoutingTests(unittest.TestCase):
@@ -17,6 +18,33 @@ class WebSearchRoutingTests(unittest.TestCase):
     def test_online_topic_research_triggers_live_lookup(self):
         self.assertTrue(web_search.should_search_web("Research solid-state battery progress online"))
         self.assertTrue(web_search.is_explicit_search_request("Research solid-state battery progress online"))
+
+    def test_playwright_method_reuses_topic_and_preserves_actual_playwright_queries(self):
+        prior = "Find the James Webb Space Telescope mission launch date"
+        followup = "Search online using Playwright"
+        self.assertEqual(web_search.contextualize_search_query(followup, [
+            {"role": "user", "content": prior},
+            {"role": "assistant", "content": "Which sources should I check?"},
+            {"role": "user", "content": followup},
+        ]), prior)
+        self.assertEqual(web_search.contextualize_search_query(followup, []), "")
+        self.assertEqual(web_search.contextualize_search_query("Invoke Playwright to find Webb's launch date", []),
+                         "find Webb's launch date")
+        self.assertEqual(web_search.contextualize_search_query("Research Playwright test fixtures online", []),
+                         "Research Playwright test fixtures online")
+
+    def test_playwright_reports_launch_failure_without_claiming_pages_were_read(self):
+        progress = []
+        token = page_scraper.playwright_progress.set(progress.append)
+        try:
+            with (
+                patch.object(page_scraper, "_PLAYWRIGHT_AVAILABLE", True),
+                patch.object(page_scraper, "sync_playwright", side_effect=RuntimeError("test launch failure")),
+            ):
+                self.assertEqual(page_scraper.fetch_pages(["https://example.org/"]), {})
+        finally:
+            page_scraper.playwright_progress.reset(token)
+        self.assertEqual(progress, ["Starting Playwright…", "Playwright could not start."])
 
     def test_social_greetings_do_not_trigger_live_lookup(self):
         for message in (

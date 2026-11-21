@@ -4,6 +4,17 @@ from tools import caddy_gateway_setup as gateway
 
 
 class CaddyGatewaySetupTests(unittest.TestCase):
+    def test_incremental_llamacpp_site_preserves_existing_gateway_and_tokens(self):
+        tokens = gateway.generate_tokens()
+        base = gateway.render_caddyfile(["localhost"], tokens, backends=(("lemonade", 8444, 13306),))
+        updated = gateway.install_llamacpp_site(base, ["localhost"])
+        self.assertTrue(updated.startswith(base.rstrip()))
+        self.assertEqual(gateway.parse_tokens(updated), tokens)
+        self.assertIn("localhost:8448", updated)
+        self.assertIn("reverse_proxy @lan localhost:8093", updated)
+        self.assertIn("respond @outside_llamacpp 404", updated)
+        self.assertEqual(gateway.install_llamacpp_site(updated, ["localhost"]), updated)
+
     def test_tokens_are_64_hex_and_existing_ones_survive(self):
         tokens = gateway.generate_tokens()
         self.assertEqual(set(tokens), set(gateway.TOKEN_LABELS))

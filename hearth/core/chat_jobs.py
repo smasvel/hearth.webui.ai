@@ -42,15 +42,21 @@ class ChatJob:
         self.status = "running"
         self.content = ""
         self.reasoning = ""
+        self.research_status = None
         self.error = None
         self.cancel = threading.Event()
         self.lock = threading.RLock()
+
+    def set_research_status(self, status):
+        with self.lock:
+            self.research_status = status
 
     def snapshot(self):
         with self.lock:
             return {
                 "id": self.id, "status": self.status, "model": self.model,
                 "content": self.content, "reasoning": self.reasoning,
+                "research_status": self.research_status,
                 "error": self.error, "started_at": self.started_at,
                 "user_text": self.user_text, "base_message_count": self.base_message_count,
                 "preserved_reply": self.preserved_reply,

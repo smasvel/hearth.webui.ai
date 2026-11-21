@@ -94,6 +94,11 @@ def model_inventory_entry() -> dict:
     }
 
 
+def model_download_active() -> bool:
+    with _prepare_lock:
+        return _prepare_status["state"] == "downloading"
+
+
 def start_model_download() -> str:
     """Begin preparing Wan's weights in the shared cache, returning current status."""
     with _prepare_lock:
@@ -172,7 +177,10 @@ def generate_video(prompt: str) -> dict:
     # sd.cpp uses shared Vulkan resources; serialize generations so two browser
     # requests cannot compete for the iGPU's shared memory.
     with _generation_lock:
-        model, vae, t5 = _download_model_files()
+        files = [_cached_file(repo, filename) for repo, filename in _MODEL_FILES]
+        if any(path is None or not path.is_file() for path in files):
+            raise VideoGenerationError("Prepare Wan 2.2 from the Models page before generating video.")
+        model, vae, t5 = (_container_model_path(path) for path in files)
         cli = _find_sd_cli()
         token = uuid.uuid4().hex
         output = f"/opt/lemonade/.cache/lemonade/hearth-videos/{token}.webm"

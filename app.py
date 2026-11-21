@@ -52,6 +52,7 @@ from hearth.backends import flm_conversion
 from hearth.backends import media_intent
 from hearth.backends import video_generation
 from hearth.backends import lemonade_client as lemonade
+from hearth.backends import llamacpp_client as llamacpp
 from hearth.backends import lmstudio_client as lms
 from hearth.backends import vllm_client as vllm
 from hearth.backends import opencode_client as zen
@@ -75,7 +76,7 @@ from hearth.core import security_scan
 from hearth.storage import settings_store
 from hearth.storage import secret_store
 from hearth.storage import users_store
-from hearth.integrations import web_search_client as web_search
+from hearth.integrations import page_scraper, web_search_client as web_search
 from hearth.integrations import historical_chart
 from hearth.core import generation_guard
 from hearth.core import advice_disclaimer
@@ -450,7 +451,7 @@ def _clear_download_progress(key: str) -> None:
         _active_downloads.pop(key, None)
 
 
-def _start_download_worker(key: str, worker_fn) -> None:
+def _start_download_worker(key: str, worker_fn) -> bool:
     """Starts worker_fn (no args; responsible for its own _set_download_progress calls,
     ending with done=True or error=<str>) in a background daemon thread — idempotent, a
     duplicate call for a key that's already got a live worker just attaches a new relay
@@ -473,11 +474,39 @@ def _start_download_worker(key: str, worker_fn) -> None:
     with _active_downloads_lock:
         existing = _active_download_threads.get(key)
         if existing is not None and existing.is_alive():
-            return
+            return True
+        if _model_download_busy():
+            return False
         _cancelled_downloads.discard(key)
         thread = threading.Thread(target=worker_fn, daemon=True)
         _active_download_threads[key] = thread
         thread.start()
+        return True
+
+
+def _model_download_busy() -> bool:
+    """Check download admission while holding _active_downloads_lock."""
+    return (
+        any(thread.is_alive() for thread in _active_download_threads.values())
+        or video_generation.model_download_active()
+        or bool(llamacpp.active_downloads())
+    )
+
+
+def _single_model_download_request(field: str, *options: str):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or body.keys() - {field, *options}:
+        return None, ""
+    if any(not isinstance(value, str) for value in body.values()):
+        return None, ""
+    model = body.get(field, "").strip()
+    if not model or any(char in model for char in ",;\r\n*"):
+        return None, ""
+    return body, model
+
+
+def _download_busy_response():
+    return jsonify({"error": "A model download is already active. Wait for it to finish before starting another."}), 409
 
 
 def _relay_download(key: str):
@@ -564,6 +593,8 @@ def _download_worker_structured(key: str, model_id: str, backend: str, source: s
             puller = kobold.download_model
         elif backend == "fastflowlm":
             puller = fastflowlm.download_model
+        elif backend == "llamacpp":
+            puller = lambda mid: llamacpp.download_model(mid, cancelled=lambda: _download_cancelled(key))
         elif backend == "q38rocm":
             puller = lambda mid: q38rocm.download_model(
                 mid, cancelled=lambda: _download_cancelled(key),
@@ -585,7 +616,7 @@ def _download_worker_structured(key: str, model_id: str, backend: str, source: s
                 except Exception as exc:
                     print(f"[downloads] Could not clear deleted state for {model_id}: {exc}", flush=True)
     except (lemonade.LemonadeError, vllm.VLLMError, kobold.KoboldError,
-            fastflowlm.FastFlowLMError, q38rocm.Q38RocmError) as exc:
+            fastflowlm.FastFlowLMError, q38rocm.Q38RocmError, llamacpp.LlamaCppError) as exc:
         _set_download_progress(key, error=str(exc))
 
 
@@ -621,7 +652,7 @@ def _rag_embedding_backend(model: str | None) -> str:
 
     Every other backend retains the existing Lemonade vector space and request path.
     """
-    return "kobold" if model and kobold.owns_model(model) else "lemonade"
+    return "kobold" if model and not llamacpp.owns_model(model) and kobold.owns_model(model) else "lemonade"
 
 
 def _embed_rag_texts(texts: list[str], embedding_backend: str) -> tuple[str, list[list[float]]]:
@@ -732,15 +763,16 @@ def _recall_memory(user_id: str, conversation_id: str, query_text: str | None,
         # the actual "My name is ..." chunk. A directive-style fact fixes it.
         name_fact = memory_store.latest_name(user_id)
     preferred_backend = embedding_backend = _rag_embedding_backend(model)
+    hits = []
     try:
         embedding_backend, query_vectors = _embed_rag_texts([query_text], embedding_backend)
-        query_embedding = query_vectors[0] if len(query_vectors) == 1 else None
+        if len(query_vectors) == 1:
+            hits = memory_store.search(
+                user_id, query_vectors[0], exclude_conversation_id=conversation_id,
+                embedding_backend=embedding_backend, role="user", top_k=4,
+            )
     except (lemonade.LemonadeError, kobold.KoboldError):
-        query_embedding = None
-    hits = memory_store.search(
-        user_id, query_embedding, exclude_conversation_id=conversation_id,
-        embedding_backend=embedding_backend, role="user", top_k=4,
-    ) if query_embedding is not None else []
+        pass
     if name_fact or direct_location_query:
         # A name query with an extracted name, or any location query, uses only
         # the direct fact if one exists. Loose semantic hits are more likely to
@@ -757,7 +789,7 @@ def _recall_memory(user_id: str, conversation_id: str, query_text: str | None,
         # A strong keyword match in saved history can be newer than the vector
         # index. Check it even when semantically similar chunks were found.
         text_hits = memory_store.search_user_text(user_id, query_text, conversation_id)
-        if not text_hits and not hits:
+        if embedding_backend and not text_hits and not hits:
             alternate = "lemonade" if embedding_backend == "kobold" else "kobold"
             if alternate != preferred_backend and memory_store.has_user_embeddings(
                 user_id, alternate, conversation_id,
@@ -813,6 +845,20 @@ def _recall_memory(user_id: str, conversation_id: str, query_text: str | None,
 def _browse_framing(note: str) -> str:
     """Label evidence retrieved by Hearth's browser."""
     return "Hearth fetched excerpts from live web pages.\n\n" + note
+
+
+_WEB_ACCESS_DENIAL = re.compile(
+    r"\b(?:i (?:can(?:not|'t)|(?:do not|don't) have|am unable to|lack)|i have no)"
+    r"[^.!?\n]{0,75}\b(?:internet|web access|browse|browsing|search online|playwright)\b",
+    re.I,
+)
+
+
+def _research_source_reply(evidence: str) -> str | None:
+    sources = [line for line in evidence.splitlines() if line.startswith("- ") and re.search(r"https?://", line)]
+    if sources:
+        return "Hearth retrieved these source excerpts:\n\n" + "\n\n".join(sources)
+    return None
 
 
 def _screenshots_from_results(results: list[dict]) -> list[dict]:
@@ -942,9 +988,10 @@ def _web_search_context(query_text: str | None, *, snippets_only: bool = False) 
             note = web_search.format_news_for_context(query_text, results)
             if note and any((r.get("full_text") or "").strip() for r in results):
                 note = _browse_framing(note)
-            return note, _screenshots_from_results(results)
+            if note:
+                return note, _screenshots_from_results(results)
         urls_in_query = web_search.extract_urls(query_text)
-        if urls_in_query and allow_direct_urls and browser_enabled:
+        if urls_in_query and allow_direct_urls and browser_enabled and max_pages:
             # A raw URL in the message names an exact page - fetched directly via
             # Playwright rather than run through DDGS as a search string (see
             # fetch_urls_directly's docstring; a real report showed a bare URL with no
@@ -953,7 +1000,7 @@ def _web_search_context(query_text: str | None, *, snippets_only: bool = False) 
             # below only if the direct fetch got nothing back (Playwright unavailable,
             # page failed to render, etc.) rather than claiming a browse that didn't
             # actually happen.
-            url_results = web_search.fetch_urls_directly(urls_in_query, screenshot_dir=shots_dir, query=query_text)
+            url_results = web_search.fetch_urls_directly(urls_in_query[:max_pages], screenshot_dir=shots_dir, query=query_text)
             if any((r.get("full_text") or "").strip() for r in url_results):
                 note = web_search.format_for_context(query_text, url_results)
                 return (_browse_framing(note) if note else None), _screenshots_from_results(url_results)
@@ -1587,6 +1634,10 @@ def api_restart_backends():
         "q38rocm": restart_q38_if_running,
         "FastFlowLM": lambda: fastflowlm._systemctl("restart", timeout=120),
     }
+    if llamacpp.managed_here():
+        all_services["llama.cpp"] = llamacpp.restart_service
+        if "backends" not in body:
+            selected.append("llama.cpp")
     services = {k: v for k, v in all_services.items() if k in selected}
 
     # Unload non-mandatory models before restart (preserve RAG/embedding, STT, TTS)
@@ -1756,6 +1807,11 @@ def api_service_status():
         "updated_at": time.time(),
         "detail": detail
     })
+    if llamacpp.base_url():
+        ready, message = llamacpp.health()
+        services = [entry for entry in services if entry.get("service") != "llama.cpp"]
+        services.append({"service": "llama.cpp", "status": "active" if ready else "inactive",
+                         "updated_at": time.time(), "detail": message})
     return jsonify({"services": services})
 
 
@@ -2235,7 +2291,9 @@ def _collect_completion(messages: list[dict], model: str, temperature: float = 0
                         max_tokens: int | None = 2048, session_id: str | None = None) -> str:
     """Run a non-streaming chat completion by draining the selected backend's SSE stream
     and concatenating the content deltas. Backend is chosen the same way /api/chat does."""
-    if lemonade.owns_model(model):
+    if llamacpp.owns_model(model):
+        backend = llamacpp
+    elif lemonade.owns_model(model):
         backend = lemonade
     elif vllm.owns_model(model):
         backend = vllm
@@ -2298,7 +2356,8 @@ def api_quiz_generate():
     try:
         text = _collect_completion(messages, model, temperature=0.5, max_tokens=2400,
                                    session_id='quiz:' + conversation_id)
-    except (lemonade.LemonadeError, vllm.VLLMError, zen.OpenCodeError, lms.LMStudioError) as exc:
+    except (lemonade.LemonadeError, vllm.VLLMError, zen.OpenCodeError, lms.LMStudioError,
+            llamacpp.LlamaCppError) as exc:
         return jsonify({"error": f"Generation failed: {exc}"}), 502
     questions = quiz_store.parse_generated(text, count)
     if not questions:
@@ -2359,7 +2418,7 @@ def api_list_models():
     # LM Studio — same fail-soft contract as the other backends below; it being
     # down should never block the rest of the models list from loading.
     try:
-        models = lms.list_models()
+        models = list(lms.list_models())
     except lms.LMStudioError:
         models = []
     for m in models:
@@ -2422,6 +2481,7 @@ def api_list_models():
         m["backend"] = "q38rocm"
         m["enable_thinking"] = _q38rocm_model_thinking_overrides().get(m.get("id"), False)
     models += q38_models
+    models += llamacpp.list_models()
     # Wan's sd.cpp CLI loads weights per generation rather than remaining resident
     # behind a Lemonade model slot. Expose it in inventory with its cache/readiness
     # status without reporting it as a chat model or falsely claiming it is loaded.
@@ -2599,7 +2659,7 @@ def api_set_model_context():
     if not model_id or len(model_id) > 512:
         return jsonify({"error": "model is required"}), 400
     backend = body.get("backend", "lemonade")
-    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold, "q38rocm": q38rocm, "fastflowlm": fastflowlm}
+    clients = {"lemonade": lemonade, "lmstudio": lms, "vllm": vllm, "kobold": kobold, "q38rocm": q38rocm, "fastflowlm": fastflowlm, "llamacpp": llamacpp}
     if backend not in clients:
         return jsonify({"error": f"{backend} does not support changing its served context from Hearth."}), 400
     try:
@@ -2614,6 +2674,8 @@ def api_set_model_context():
         return jsonify({"error": f"Could not read the {backend} model list: {exc}"}), 502
     if entry is None:
         return jsonify({"error": f"{model_id} is not available from {backend}."}), 404
+    if backend == "llamacpp" and not entry.get("context_editable"):
+        return jsonify({"error": llamacpp.MANAGEMENT_HINT}), 409
     maximum = entry.get("max_context_length")
     if 'k2-horizon' in str(model_id).lower() and (not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 32768):
         maximum = 32768
@@ -2707,6 +2769,10 @@ def _test_load_model(target):
         # Agents store providerID separately; model tests use namespaced catalog IDs.
         zen.verify_model(model_id if zen.owns_model(model_id) else 'opencode/' + model_id)
         return
+    if target["backend"] == "llamacpp" and any(
+        item["id"] == target["id"] and item["externally_managed"] for item in llamacpp.list_models()
+    ):
+        return
     _model_test_context.active = True
     try:
         expected = (target['backend'], target['id'])
@@ -2759,10 +2825,12 @@ def _test_loaded_reasoning_models():
     metadata cannot fail an otherwise successful handoff.
     """
     clients = (("lmstudio", lms), ("lemonade", lemonade), ("vllm", vllm),
-               ("kobold", kobold), ("q38rocm", q38rocm), ("fastflowlm", fastflowlm))
+               ("kobold", kobold), ("q38rocm", q38rocm), ("fastflowlm", fastflowlm), ("llamacpp", llamacpp))
     loaded = []
     for backend, client in clients:
         for model in client.list_models():
+            if backend == "llamacpp" and model.get("externally_managed"):
+                continue
             if model.get("state") == "loaded" and model.get("type") not in _SUPPORT_MODEL_TYPES:
                 loaded.append({**model, "backend": backend})
     return loaded
@@ -2798,7 +2866,7 @@ def _test_connection(target):
     backend = target['backend']
     client = {'fastflowlm': fastflowlm, 'lmstudio': lms, 'lemonade': lemonade,
               'vllm': vllm, 'kobold': kobold, 'opencode': zen,
-              'q38rocm': q38rocm}[backend]
+              'q38rocm': q38rocm, 'llamacpp': llamacpp}[backend]
     base = client.base_url().rstrip('/')
     local = urlsplit(base)
     proxy_ports = {'fastflowlm': (52625, 52626), 'lmstudio': (1234, 13307), 'lemonade': (13305, 13306)}
@@ -2807,6 +2875,8 @@ def _test_connection(target):
     model = target['id']
     if backend == 'fastflowlm':
         model = fastflowlm.resolve_model(model)
+    elif backend == 'llamacpp':
+        model = llamacpp.request_model_id(model)
     elif backend == 'q38rocm':
         model = q38rocm.request_model_id()
     elif backend == 'kobold':
@@ -2835,7 +2905,7 @@ def _test_context(target):
     if target['backend'] == 'fastflowlm':
         return flm_context.context_limit(target['id'])
     client = {'lmstudio': lms, 'lemonade': lemonade, 'vllm': vllm,
-              'kobold': kobold, 'opencode': zen, 'q38rocm': q38rocm}[target['backend']]
+              'kobold': kobold, 'opencode': zen, 'q38rocm': q38rocm, 'llamacpp': llamacpp}[target['backend']]
     for model in client.list_models():
         if model.get('id') == target['id']:
             window = model.get('loaded_context_length')
@@ -4022,7 +4092,7 @@ def api_model_test_scenario_assistant():
         return jsonify({'error': 'Wait for model tests and assigned agents to finish before chatting with the scenario assistant.'}), 409
     body = request.get_json(silent=True) or {}
     backend, model_id = body.get('backend'), body.get('model')
-    if backend not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm', 'opencode') or not isinstance(model_id, str):
+    if backend not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm', 'llamacpp', 'opencode') or not isinstance(model_id, str):
         return jsonify({'error': 'Choose a supported installed chat model for the scenario assistant.'}), 400
     messages = body.get('messages')
     if not isinstance(messages, list) or not 1 <= len(messages) <= 16:
@@ -4129,7 +4199,7 @@ def api_model_tests_start():
         model = inventory.get(pair)
         if (not model or pair in seen or model.get('type') in _SUPPORT_MODEL_TYPES
                 or model.get('loadable') is False
-                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm')):
+                or pair[0] not in ('fastflowlm', 'lmstudio', 'lemonade', 'vllm', 'kobold', 'q38rocm', 'llamacpp')):
             return jsonify({'error': 'Choose unique, installed, loadable chat models.'}), 400
         seen.add(pair)
         targets.append({'backend': pair[0], 'id': pair[1]})
@@ -4244,6 +4314,8 @@ def _unload_reasoning_models_before_load(requested: str, *, npu_lock_held: bool 
         ("vLLM", vllm.list_models, vllm.unload_model),
         ("KoboldCPP", kobold.list_models, kobold.unload_model),
         ("q38rocm", q38rocm.list_models, q38rocm.unload_model),
+        ("llama.cpp", lambda: [item for item in llamacpp.list_models() if not item["externally_managed"]],
+             llamacpp.unload_model),
         ("FastFlowLM", fastflowlm.list_models, fastflowlm.unload_model),
     )
     inventories = []
@@ -4466,6 +4538,29 @@ def api_load_model():
     model_key = body.get("model")
     if not model_key:
         return jsonify({"error": "'model' is required"}), 400
+    if llamacpp.owns_model(model_key):
+        model = next((item for item in llamacpp.list_models() if item["id"] == model_key), None)
+        if not model:
+            return jsonify({"error": "Model is not listed by llama-server."}), 404
+        if model["externally_managed"]:
+            return jsonify({"ok": True, "unloaded": [], "externally_managed": True})
+        try:
+            ctx = body.get("context_length") or _saved_model_context("llamacpp", model_key)
+            if ctx is not None and (type(ctx) is not int or not 512 <= ctx <= 1048576):
+                return jsonify({"error": "Context length must be between 512 and 1,048,576 tokens."}), 400
+            maximum = model.get("max_context_length")
+            if ctx and maximum and ctx > maximum:
+                return jsonify({"error": f"This model supports at most {maximum:,} context tokens."}), 400
+            if ctx and not model["context_editable"]:
+                return jsonify({"error": llamacpp.MANAGEMENT_HINT}), 409
+            refusal = resource_guard.check_available_memory(model.get("size_gb"))
+            if refusal:
+                return jsonify({"error": refusal}), 422
+            unloaded = _unload_reasoning_models_before_load(model_key)
+            llamacpp.load_model(model_key, context_length=ctx)
+        except (llamacpp.LlamaCppError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True, "unloaded": unloaded})
     if zen.owns_model(model_key):
         try:
             zen.verify_model(model_key)
@@ -4680,6 +4775,15 @@ def api_unload_model():
     identifier = body.get("identifier")
     if not identifier:
         return jsonify({"error": "'identifier' is required"}), 400
+    if llamacpp.owns_model(identifier):
+        model = next((item for item in llamacpp.list_models() if item["id"] == identifier), None)
+        if not model or model["externally_managed"]:
+            return jsonify({"error": llamacpp.MANAGEMENT_HINT}), 409
+        try:
+            llamacpp.unload_model(identifier)
+        except llamacpp.LlamaCppError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True})
     if zen.owns_model(identifier):
         return jsonify({"error": "opencode.ai models are hosted remotely and cannot be unloaded from Hearth."}), 409
     if q38rocm.owns_model(identifier):
@@ -4726,9 +4830,8 @@ def api_delete_model():
     identifier = body.get("identifier")
     if not identifier:
         return jsonify({"error": "'identifier' is required"}), 400
-
     backend = next((name for name, client in (
-        ('opencode', zen), ('vllm', vllm), ('kobold', kobold),
+        ('llamacpp', llamacpp), ('opencode', zen), ('vllm', vllm), ('kobold', kobold),
         ('fastflowlm', fastflowlm), ('lemonade', lemonade), ('q38rocm', q38rocm),
     ) if client.owns_model(identifier)), 'lmstudio')
     if not getattr(_model_test_context, 'active', False):
@@ -4746,6 +4849,16 @@ def api_delete_model():
             for job in _model_test_registry.list()
         ):
             return jsonify({'error': 'This model is part of an active model test run. Cancel or wait for that run before deleting it.'}), 409
+
+    if backend == "llamacpp":
+        model = next((item for item in llamacpp.list_models() if item["id"] == identifier), None)
+        if not model or not model["deletable"]:
+            return jsonify({"error": "Only cached llama.cpp models can be deleted here."}), 409
+        try:
+            llamacpp.delete_model(identifier)
+        except llamacpp.LlamaCppError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True})
 
     if backend == 'opencode':
         return jsonify({"error": "opencode.ai models cannot be deleted from Hearth; they are managed by the opencode.ai account."}), 409
@@ -4799,22 +4912,23 @@ def api_delete_model():
 @app.post("/api/models/download")
 @admin_required
 def api_download_model():
-    body = request.get_json(force=True, silent=True) or {}
-    query = (body.get("query") or "").strip()
+    body, query = _single_model_download_request("query", "backend")
+    if body is None:
+        return jsonify({"error": "Choose one model per download request."}), 400
     backend = body.get("backend") or "lmstudio"
-    if not query:
-        return jsonify({"error": "'query' is required"}), 400
-    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm"):
-        return jsonify({"error": "'backend' must be 'lmstudio', 'lemonade', 'vllm', 'kobold', 'fastflowlm', or 'q38rocm'"}), 400
+    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm", "llamacpp"):
+        return jsonify({"error": "'backend' must be 'lmstudio', 'lemonade', 'vllm', 'kobold', 'fastflowlm', 'q38rocm', or 'llamacpp'"}), 400
 
     key = f"{backend}:{query}"
-    if backend in ("vllm", "kobold", "fastflowlm", "q38rocm"):
+    if backend in ("vllm", "kobold", "fastflowlm", "q38rocm", "llamacpp"):
         # Both yield structured byte-level progress dicts (kobold.download_model /
         # vllm.download_model) — routed through the same structured worker as Lemonade's
         # HF pulls, not the freeform text-line one.
-        _start_download_worker(key, lambda: _download_worker_structured(key, query, backend, "huggingface"))
+        started = _start_download_worker(key, lambda: _download_worker_structured(key, query, backend, "huggingface"))
     else:
-        _start_download_worker(key, lambda: _download_worker_freeform(key, query, backend))
+        started = _start_download_worker(key, lambda: _download_worker_freeform(key, query, backend))
+    if not started:
+        return _download_busy_response()
 
     return Response(
         stream_with_context(_relay_download(key)),
@@ -4826,7 +4940,10 @@ def api_download_model():
 @app.post("/api/models/wan22/prepare")
 @admin_required
 def api_prepare_wan22_model():
-    state = video_generation.start_model_download()
+    with _active_downloads_lock:
+        if not video_generation.model_download_active() and _model_download_busy():
+            return _download_busy_response()
+        state = video_generation.start_model_download()
     return jsonify({"state": state}), 202 if state == "downloading" else 200
 
 
@@ -4836,6 +4953,7 @@ _MODEL_BACKEND_INFO = {
     "vllm": ("vLLM", "Hugging Face weights", "CPU on this system"),
     "kobold": ("KoboldCPP", "GGUF", "CPU / Vulkan GPU"),
     "fastflowlm": ("FastFlowLM", "FLM NPU", "AMD Ryzen AI NPU"),
+    "llamacpp": ("llama.cpp", "GGUF", "CPU or GPU by server build"),
     "q38rocm": ("q38rocm (local RADV Vulkan)", "GGUF (Q3_K_M)", "AMD Radeon Vulkan GPU"),
 }
 
@@ -4913,6 +5031,9 @@ def _search_models_for_backend(backend: str, query: str) -> list[dict]:
     if backend == "vllm":
         results = vllm.search_huggingface(query) if query else vllm.suggested_models()
         return _normalize_model_results(results, backend)
+    if backend == "llamacpp":
+        # The shared GGUF search talks directly to Hugging Face.
+        return _normalize_model_results(lemonade.search_huggingface(query, strict_format="gguf") if query else [], backend)
     if backend == "lmstudio":
         try:
             results = public_model_catalog.lmstudio_gguf(query)
@@ -5026,11 +5147,10 @@ def api_download_catalog_model():
     entry needs no custom registration (pull_catalog_model), while a Hugging Face
     result isn't in Lemonade's catalog at all and needs the custom-registration shape
     plus an auto-picked quantization file (pull_huggingface_repo)."""
-    body = request.get_json(force=True, silent=True) or {}
-    model_id = (body.get("model_id") or "").strip()
+    body, model_id = _single_model_download_request("model_id", "source", "backend")
+    if body is None:
+        return jsonify({"error": "Choose one model per download request."}), 400
     source = body.get("source") or "local"
-    if not model_id:
-        return jsonify({"error": "'model_id' is required"}), 400
     if source not in ("local", "huggingface"):
         return jsonify({"error": "'source' must be 'local' or 'huggingface'"}), 400
 
@@ -5038,7 +5158,8 @@ def api_download_catalog_model():
     if backend not in ("lemonade", "q38rocm"):
         return jsonify({"error": "Catalog downloads are supported for Lemonade or q38rocm."}), 400
     key = f"{backend}:{model_id}"
-    _start_download_worker(key, lambda: _download_worker_structured(key, model_id, backend, source))
+    if not _start_download_worker(key, lambda: _download_worker_structured(key, model_id, backend, source)):
+        return _download_busy_response()
 
     return Response(
         stream_with_context(_relay_download(key)),
@@ -5136,6 +5257,9 @@ def api_active_downloads():
             ambient = None
         if ambient:
             downloads.append(ambient)
+    known_downloads = {(item.get("backend"), item.get("model_id")) for item in downloads}
+    downloads.extend(item for item in llamacpp.active_downloads()
+                     if ("llamacpp", item["model_id"]) not in known_downloads)
     return jsonify({"downloads": downloads})
 
 
@@ -5189,12 +5313,20 @@ def api_cancel_download():
     body = request.get_json(silent=True) or {}
     backend = (body.get("backend") or "").strip()
     model_id = (body.get("model_id") or "").strip()
-    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm") or not model_id:
+    if backend not in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "q38rocm", "llamacpp") or not model_id:
         return jsonify({"error": "A valid 'backend' and 'model_id' are required."}), 400
     key = f"{backend}:{model_id}"
     with _active_downloads_lock:
         tracked = key in _active_downloads
         _cancelled_downloads.add(key)
+
+    if backend == "llamacpp":
+        try:
+            llamacpp.pause_download(model_id)
+        except llamacpp.LlamaCppError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True, "tracked": tracked, "processes_stopped": 0,
+                        "files_removed": 0, "bytes_removed": 0})
 
     # App-started CLI downloaders are descendants of this WebUI process. Match both
     # the backend's executable and this exact model before terminating anything.
@@ -5215,7 +5347,7 @@ def api_cancel_download():
                 if all(token in text for token in signature) and any(n in text for n in needles):
                     proc.terminate()
                     terminated.append(proc)
-                    stopped += 1
+                    stop_requested += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     if terminated:
@@ -5232,7 +5364,7 @@ def api_cancel_download():
     return jsonify({
         "ok": True,
         "tracked": tracked,
-        "processes_stopped": stopped,
+        "processes_stopped": stop_requested,
         "files_removed": removed_files,
         "bytes_removed": removed_bytes,
     })
@@ -5278,6 +5410,8 @@ def _read_caddy_info() -> dict | None:
             ports["vllm"] = caddy_port
         elif target_port == "5001":
             ports["kobold"] = caddy_port
+        elif target_port == "8093":
+            ports["llamacpp"] = caddy_port
         elif target_port in ("52625", "52626"):
             # 52625 = FastFlowLM's own server directly; 52626 = flm_tool_shim.py, which Caddy's
             # :8447 block now proxies to instead (see its module docstring) so LAN clients like
@@ -5298,6 +5432,7 @@ def _read_caddy_info() -> dict | None:
 # module docstring.
 _CADDY_UPSTREAM = {
     "lmstudio": 1234, "lemonade": 13306, "vllm": 8000, "kobold": 5001, "fastflowlm": 52626,
+    "llamacpp": 8093,
 }
 
 
@@ -5321,7 +5456,7 @@ def _caddy_user_snippet(username: str, user_id: str, token: str) -> str:
         f'Add to the `(client_auth)` snippet near the top of {CADDYFILE_PATH}:',
         f'    @{matcher} header Authorization "Bearer {token}"',
         "",
-        "Then add one reverse_proxy line to EACH of the 5 port blocks' `route { }`, right",
+        "Then add one reverse_proxy line to each configured port block's `route { }`, right",
         "before `respond 401`:",
     ]
     for backend, upstream in _CADDY_UPSTREAM.items():
@@ -5527,6 +5662,8 @@ def api_test_settings():
             (body.get("base_url") or "").strip() or kobold.base_url(),
             body.get("api_key") or kobold.api_key(),
         )
+    elif target == "llamacpp":
+        ok, message = llamacpp.health((body.get("base_url") or "").strip(), body.get("api_key"))
     elif target == "q38rocm":
         ok, message = _test_q38rocm(
             (body.get("base_url") or "").strip() or q38rocm.base_url(),
@@ -5601,6 +5738,9 @@ def _settings_snapshot() -> dict:
         "opencode_api_plan": zen.plan(),
         "kobold_base_url": kobold.base_url(),
         "kobold_api_key": kobold.api_key() or "",
+        "llamacpp_base_url": llamacpp.base_url(),
+        "llamacpp_api_key": llamacpp.api_key() or "",
+        "llamacpp_managed": llamacpp.managed_here(),
         "q38rocm_base_url": q38rocm.base_url(),
         "q38rocm_api_key": q38rocm.api_key() or "",
         # GPU offload (Vulkan) + speculative decoding tuning (2026-07-27) - see
@@ -5669,6 +5809,7 @@ def api_update_settings():
         "opencode_api_key", "opencode_api_base_url", "opencode_api_plan",
         "kobold_base_url", "kobold_api_key",
         "q38rocm_base_url", "q38rocm_api_key",
+        "llamacpp_base_url", "llamacpp_api_key",
         "fastflowlm_base_url", "fastflowlm_api_key",
         "lan_default_model", "tailscale_ip_override",
         "kobold_gpu_layers", "kobold_draft_model", "kobold_draft_amount",
@@ -6557,6 +6698,7 @@ def api_chat():
     browse_screenshots: list[dict] = []
     memory_note = None
     has_web_evidence = False
+    explicit_search = False
     web_evidence = None
     resolved_research_topic = None
 
@@ -6596,15 +6738,17 @@ def api_chat():
             )
         web_enabled = (settings_store.get("web_search_enabled") or "true") == "true"
         web_mode = settings_store.get("web_search_mode") or "automatic"
+        explicit_search = web_search.is_explicit_search_request(last_user_message)
         should_search = (
             web_enabled
             and web_search.should_search_web(last_user_message)
             and (
                 web_mode == "automatic"
-                or (web_mode == "explicit" and web_search.is_explicit_search_request(last_user_message))
+                or (web_mode == "explicit" and explicit_search)
             )
         )
-        if should_search and web_search.is_live_weather_request(last_user_message):
+        browser_requested = web_search.looks_like_browse_request(last_user_message)
+        if should_search and not browser_requested and web_search.is_live_weather_request(last_user_message):
             reply = _live_weather_reply(user_id, last_user_message, messages)
             chat_store.add_message(conversation_id, "assistant", reply, model=model, backend="open-meteo")
             payload = {"choices": [{"delta": {"content": reply}}]}
@@ -6619,6 +6763,10 @@ def api_chat():
                 chat_store.add_message(conversation_id, "assistant", reply, model=model, backend="hearth-memory")
                 payload = {"choices": [{"delta": {"content": reply}}]}
                 return Response(f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n", mimetype="text/event-stream")
+        if job and should_search:
+            job.set_research_status("Finding sources for online research…")
+        elif job and browser_requested and not web_enabled:
+            job.set_research_status("Playwright lookup skipped because web research is disabled.")
         memory_note = _recall_memory(user_id, conversation_id, last_user_message, model=model)
         if should_search:
             research_query = web_search.contextualize_search_query(
@@ -6627,16 +6775,36 @@ def api_chat():
             if research_query != last_user_message:
                 resolved_research_topic = research_query
             snippets_only = (
-                not web_search.is_explicit_search_request(last_user_message)
+                not explicit_search
                 and not web_search.extract_urls(last_user_message)
                 and not web_search.wants_screenshots(last_user_message)
+                and not llamacpp.owns_model(model)
                 and lemonade.loaded_device(model) == "cpu"
             )
-            if snippets_only:
-                search_note, browse_screenshots = _web_search_context(research_query, snippets_only=True)
-            else:
-                search_note, browse_screenshots = _web_search_context(research_query)
+            progress_token = page_scraper.playwright_progress.set(job.set_research_status if job else None)
+            try:
+                if not research_query:
+                    search_note, browse_screenshots = None, []
+                elif snippets_only:
+                    search_note, browse_screenshots = _web_search_context(research_query, snippets_only=True)
+                else:
+                    search_note, browse_screenshots = _web_search_context(research_query)
+            finally:
+                page_scraper.playwright_progress.reset(progress_token)
+            if job and job.snapshot()["research_status"] == "Finding sources for online research…":
+                if snippets_only or (settings_store.get("web_search_browser_enabled") or "true") != "true":
+                    job.set_research_status("Search finished without opening a browser.")
+                elif not page_scraper.available():
+                    job.set_research_status("Playwright is unavailable on this server.")
+                else:
+                    job.set_research_status("Search finished. Playwright did not open any pages.")
             has_web_evidence = bool(search_note)
+            if explicit_search and not has_web_evidence:
+                reply = ("What topic or page should I research?" if not research_query else
+                         "Hearth’s web lookup did not return usable sources. Try a more specific search or share a public URL.")
+                chat_store.add_message(conversation_id, "assistant", reply, model=model, backend="hearth-research")
+                payload = {"choices": [{"delta": {"content": reply}}]}
+                return Response(f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n", mimetype="text/event-stream")
             if not search_note:
                 search_note = (
                     "Hearth attempted a live web lookup for this request, but no verified "
@@ -6677,10 +6845,14 @@ def api_chat():
     # some reject more than one. Restored/API conversations can contain system turns
     # anywhere, so fold them into one leading instruction before routing to a backend.
     system_messages = [m for m in messages if m.get("role") == "system"]
-    if system_messages:
-        system_content = "\n\n".join(m.get("content", "") for m in system_messages)
-        conversation_messages = [m for m in messages if m.get("role") != "system"]
-        messages = [{"role": "system", "content": system_content}] + conversation_messages
+    system_content = "\n\n".join([
+        *(m.get("content", "") for m in system_messages),
+        "Never initiate or automate Hearth model downloads from chat, including "
+        "bulk requests split into individual actions or delegated to tools or agents. "
+        "Direct administrators to the Downloads page to select and confirm each model.",
+    ])
+    conversation_messages = [m for m in messages if m.get("role") != "system"]
+    messages = [{"role": "system", "content": system_content}] + conversation_messages
     messages = advice_disclaimer.apply(messages)
 
     # Keep retrieved content next to the current request. It stays out of saved chat history.
@@ -6708,7 +6880,9 @@ def api_chat():
                 message["content"] = [{"type": "text", "text": context_note}] + content
             break
 
-    if lemonade.owns_model(model):
+    if llamacpp.owns_model(model):
+        backend, backend_error, backend_name = llamacpp, llamacpp.LlamaCppError, "llamacpp"
+    elif lemonade.owns_model(model):
         backend, backend_error, backend_name = lemonade, lemonade.LemonadeError, "lemonade"
     elif q38rocm.owns_model(model):
         backend, backend_error, backend_name = q38rocm, q38rocm.Q38RocmError, "q38rocm"
@@ -6757,6 +6931,8 @@ def api_chat():
         def worker():
             browse_history_store.current_owner.set(user_id)
             assistant_parts: list[str] = []
+            source_reply = _research_source_reply(web_evidence) if explicit_search and web_evidence else None
+            research_content_streaming = False
             reasoning_parts: list[str] = []
             usage: dict | None = None
             output_limited = False
@@ -6871,58 +7047,75 @@ def api_chat():
                     if backend in (lms, lemonade):
                         backend_lines = generation_guard.guard_sse_stream(backend_lines)
                     for line in backend_lines:
-                        if memory_note and line.strip() == "data: [DONE]":
+                        if (memory_note or source_reply) and line.strip() == "data: [DONE]":
                             continue
-                        result_queue.put(f"{line}\n\n")
+                        obj = None
                         if line.startswith("data:"):
-                            payload = line[len("data:"):].strip()
-                            if payload and payload != "[DONE]":
-                                try:
-                                    obj = json.loads(payload)
-                                except json.JSONDecodeError:
-                                    obj = None
-                                if obj:
-                                    try:
-                                        choice = obj["choices"][0]
-                                        delta_obj = choice["delta"]
-                                    except (KeyError, IndexError):
-                                        choice, delta_obj = {}, {}
-                                    finish_reason = choice.get("finish_reason") or finish_reason
-                                    if finish_reason == "length":
-                                        output_limited = True
-                                    delta = delta_obj.get("content")
-                                    if delta:
-                                        assistant_parts.append(delta)
-                                        live_requests.update(live_id, delta_chars=len(delta))
-                                    # KoboldCpp emits reasoning_content; OpenCode may use
-                                    # reasoning or reasoning_text depending on provider.
-                                    # Use the same normalizer as the live-job snapshot so
-                                    # streamed and saved thinking stay in sync.
-                                    reasoning_delta = chat_jobs.reasoning_from_delta(delta_obj)
-                                    if reasoning_delta:
-                                        reasoning_parts.append(reasoning_delta)
-                                        live_requests.update(live_id, delta_chars=len(reasoning_delta))
-                                    # Streamed incrementally like content deltas: `name` normally
-                                    # arrives whole in the first chunk for a given tool call,
-                                    # `arguments` arrives piecemeal across many chunks and must
-                                    # be concatenated, same as any other OpenAI-shaped tool-call
-                                    # stream (this is exactly what flm_tool_shim.py's own
-                                    # degeneracy/repair logic reconstructs before ever showing
-                                    # it to OpenCode - same accumulation, different consumer).
-                                    for tc_delta in delta_obj.get("tool_calls") or []:
-                                        idx = tc_delta.get("index", 0)
-                                        entry = round_tool_calls.setdefault(
-                                            idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                                        )
-                                        if tc_delta.get("id"):
-                                            entry["id"] = tc_delta["id"]
-                                        fn_delta = tc_delta.get("function") or {}
-                                        if fn_delta.get("name"):
-                                            entry["function"]["name"] += fn_delta["name"]
-                                        if fn_delta.get("arguments"):
-                                            entry["function"]["arguments"] += fn_delta["arguments"]
-                                    if obj.get("usage"):
-                                        usage = obj["usage"]
+                            try:
+                                decoded = json.loads(line[5:].strip())
+                                obj = decoded if isinstance(decoded, dict) else None
+                            except json.JSONDecodeError:
+                                pass
+                        if source_reply and not research_content_streaming and obj and obj.get("choices"):
+                            deltas = [
+                                {**choice, "delta": {
+                                    key: value for key, value in (choice.get("delta") or {}).items()
+                                    if key != "content"
+                                }}
+                                for choice in obj["choices"]
+                            ]
+                            outgoing = {**obj, "choices": deltas}
+                            result_queue.put(f"data: {json.dumps(outgoing)}\n\n")
+                        else:
+                            result_queue.put(f"{line}\n\n")
+                        if obj:
+                            try:
+                                choice = obj["choices"][0]
+                                delta_obj = choice["delta"]
+                            except (KeyError, IndexError):
+                                choice, delta_obj = {}, {}
+                            finish_reason = choice.get("finish_reason") or finish_reason
+                            if finish_reason == "length":
+                                output_limited = True
+                            delta = delta_obj.get("content")
+                            if delta:
+                                assistant_parts.append(delta)
+                                live_requests.update(live_id, delta_chars=len(delta))
+                                if source_reply and not research_content_streaming:
+                                    opening = "".join(assistant_parts)
+                                    if len(opening) >= 450 and not _WEB_ACCESS_DENIAL.search(opening[:450].replace("’", "'")):
+                                        research_content_streaming = True
+                                        payload = {"choices": [{"delta": {"content": opening}}]}
+                                        result_queue.put(f"data: {json.dumps(payload)}\n\n")
+                            # KoboldCpp emits reasoning_content; OpenCode may use
+                            # reasoning or reasoning_text depending on provider.
+                            # Use the same normalizer as the live-job snapshot so
+                            # streamed and saved thinking stay in sync.
+                            reasoning_delta = chat_jobs.reasoning_from_delta(delta_obj)
+                            if reasoning_delta:
+                                reasoning_parts.append(reasoning_delta)
+                                live_requests.update(live_id, delta_chars=len(reasoning_delta))
+                            # Streamed incrementally like content deltas: `name` normally
+                            # arrives whole in the first chunk for a given tool call,
+                            # `arguments` arrives piecemeal across many chunks and must
+                            # be concatenated, same as any other OpenAI-shaped tool-call
+                            # stream (this is exactly what flm_tool_shim.py's own
+                            # degeneracy/repair logic reconstructs before ever showing
+                            # it to OpenCode - same accumulation, different consumer).
+                            for tc_delta in delta_obj.get("tool_calls") or []:
+                                idx = tc_delta.get("index", 0)
+                                entry = round_tool_calls.setdefault(
+                                    idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                                )
+                                if tc_delta.get("id"):
+                                    entry["id"] = tc_delta["id"]
+                                fn_delta = tc_delta.get("function") or {}
+                                if fn_delta.get("name"):
+                                    entry["function"]["name"] += fn_delta["name"]
+                                if fn_delta.get("arguments"):
+                                    entry["function"]["arguments"] += fn_delta["arguments"]
+                            if obj.get("usage"):
+                                usage = obj["usage"]
                     if not tools_list or cancel_event.is_set() or finish_reason != "tool_calls" or not round_tool_calls:
                         break
                     if tool_round >= max_tool_rounds:
@@ -7009,7 +7202,7 @@ def api_chat():
                         else:
                             extra_kwargs.pop("tools", None)
                             extra_kwargs.pop("parallel_tool_calls", None)
-                if not cancel_event.is_set() and not (assistant_parts or reasoning_parts):
+                if not cancel_event.is_set() and not (assistant_parts or reasoning_parts or source_reply):
                     raise backend_error("The model returned no reply. Retry the message.")
             except Exception as exc:
                 detail = str(exc) if isinstance(exc, backend_error) else "Hearth could not complete this chat request."
@@ -7028,6 +7221,12 @@ def api_chat():
               try:
                 assistant_text = "".join(assistant_parts)
                 reasoning_text = "".join(reasoning_parts)
+                if source_reply and not research_content_streaming and not cancel_event.is_set() and request_status == "done":
+                    if not assistant_text.strip() or _WEB_ACCESS_DENIAL.search(assistant_text[:450].replace("’", "'")):
+                        assistant_text = source_reply
+                        output_limited = False
+                    payload = {"choices": [{"delta": {"content": assistant_text}}]}
+                    result_queue.put(f"data: {json.dumps(payload)}\n\n")
                 if not assistant_text.strip() and memory_note and not cancel_event.is_set() and request_status == "done":
                     excerpts = re.findall(r"^- \[\d{4}-\d{2}-\d{2}\] User said: (.+)$", memory_note, re.M)
                     recalled = _memory_excerpt_reply(excerpts)
@@ -7035,7 +7234,7 @@ def api_chat():
                         assistant_text = recalled
                         payload = {"choices": [{"delta": {"content": recalled}}]}
                         result_queue.put(f"data: {json.dumps(payload)}\n\n")
-                if memory_note and not cancel_event.is_set() and request_status == "done":
+                if (memory_note or source_reply) and not cancel_event.is_set() and request_status == "done":
                     result_queue.put("data: [DONE]\n\n")
                 if output_limited:
                     assistant_text += (
@@ -7219,6 +7418,13 @@ def _restore_default_model() -> None:
     backend_name, separator, model = configured.partition("/")
     if not separator or not model:
         print("Startup model: Default LAN model is Auto; leaving backend state unchanged.", flush=True)
+        return
+    if backend_name == "llamacpp":
+        try:
+            with _reasoning_model_load_lock:
+                llamacpp.load_model("llamacpp/" + llamacpp.request_model_id(model))
+        except llamacpp.LlamaCppError as exc:
+            print(f"Startup model: llama.cpp could not restore the configured model: {exc}", flush=True)
         return
 
     # KoboldCPP's model server is heavyweight and must remain stopped until a user

@@ -44,7 +44,7 @@ with contextlib.ExitStack() as stack:
   app.chat_store.ensure_conversation(conversation_id, owner, None, source_goal)
   app.chat_store.add_message(conversation_id, 'user', source_goal)
   page.goto(f'{base}/?conversation={conversation_id}')
-  expect(page.get_by_text(source_goal, exact=True)).to_be_visible()
+  expect(page.locator('#messages').get_by_text(source_goal, exact=True)).to_be_visible()
   page.get_by_role('button',name='Create agent task').click()
   expect(page.locator('#agent-create [name=goal]')).to_have_value(source_goal)
   expect(page.locator('#agent-model option')).to_have_count(1)

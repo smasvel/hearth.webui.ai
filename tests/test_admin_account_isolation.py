@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app
 from hearth.storage import database
@@ -46,6 +46,62 @@ class AdminAccountIsolationTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201)
         self.assertNotIn("caddy_token", created.json["user"])
         self.assertNotIn("caddy_snippet", created.json)
+
+    def test_model_download_routes_reject_batches_before_starting_a_worker(self):
+        with patch.object(app, "_start_download_worker") as start:
+            for path, payload in (
+                ("/api/models/download", {"query": ["owner/one", "owner/two"]}),
+                ("/api/models/download", {"query": "owner/one\nowner/two"}),
+                ("/api/models/download-catalog", {"model_id": "owner/one", "models": ["owner/two"]}),
+                ("/api/models/download-catalog", {"model_id": "owner/*"}),
+            ):
+                with self.subTest(path=path, payload=payload):
+                    response = self.admin.post(path, json=payload, headers=self.csrf)
+                    self.assertEqual(response.status_code, 400)
+            start.assert_not_called()
+
+    def test_downloads_are_serialized_across_backends_and_admins(self):
+        with (
+            patch.object(app, "_active_download_threads", {"llamacpp:owner/one": Mock()}),
+            patch.object(app.video_generation, "model_download_active", return_value=False),
+            patch.object(app.video_generation, "start_model_download") as prepare,
+        ):
+            for path, payload in (
+                ("/api/models/download", {"query": "owner/two", "backend": "vllm"}),
+                ("/api/models/download-catalog", {"model_id": "owner/two"}),
+                ("/api/models/wan22/prepare", {}),
+            ):
+                with self.subTest(path=path):
+                    response = self.admin.post(path, json=payload, headers=self.csrf)
+                    self.assertEqual(response.status_code, 409)
+            prepare.assert_not_called()
+
+    def test_video_prompt_does_not_download_missing_weights(self):
+        with (
+            patch.object(app.video_generation, "_cached_file", return_value=None),
+            patch.object(app.video_generation, "_download_model_files") as download,
+        ):
+            with self.assertRaisesRegex(app.video_generation.VideoGenerationError, "Models page"):
+                app.video_generation.generate_video("A cloud drifting over a mountain")
+            download.assert_not_called()
+
+    def test_cancel_download_reports_terminated_process_count(self):
+        process = Mock()
+        process.cmdline.return_value = ["hf", "download", "example/fixture"]
+        with (
+            patch.object(app, "_active_downloads", {}),
+            patch.object(app, "_cancelled_downloads", set()),
+            patch.object(app.psutil, "Process") as parent,
+            patch.object(app.psutil, "wait_procs", return_value=([process], [])),
+            patch.object(app, "_clean_partial_download_files", return_value=(0, 0)),
+        ):
+            parent.return_value.children.return_value = [process]
+            response = self.admin.post("/api/models/downloads/cancel", json={
+                "backend": "vllm", "model_id": "example/fixture",
+            }, headers=self.csrf)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["processes_stopped"], 1)
+        process.terminate.assert_called_once_with()
 
     def test_generated_media_is_private_even_with_a_known_filename(self):
         root = Path(self.stack.enter_context(TemporaryDirectory()))

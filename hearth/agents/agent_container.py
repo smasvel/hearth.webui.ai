@@ -48,7 +48,7 @@ _opencode_auth_lock = threading.Lock()
 _opencode_auth_cache = {'plan': None, 'loaded_at': 0.0, 'key': None}
 _OPENCODE_AUTH_CACHE_SECONDS = 60
 TOOL_POLICY_VERSION = 'native-tools-v2'
-AGENT_PROMPT_VERSION = 'research-use-directly-v3'
+AGENT_PROMPT_VERSION = 'manual-model-downloads-v4'
 
 
 def _system_ca_bundle():
@@ -1105,7 +1105,7 @@ class ContainerOpenCode(OpenCode):
                 self.snapshot(session_id)
             except Exception:
                 logging.exception('Could not snapshot agent %s before refreshing its prompt.', job.get('id'))
-            self._report(job, 'Starting a fresh session with the corrected online-search argument guidance.')
+            self._report(job, 'Starting a fresh session with the current assignment instructions.')
             return self.create(job)
         current_bundle = self._skill_bundle(job)
         current_skill_hash = hashlib.sha256(json.dumps(

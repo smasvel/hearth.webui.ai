@@ -1,0 +1,25 @@
+services:
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8093:8080"
+    environment:
+      LLAMA_CACHE: /data/cache
+    volumes:
+      - ${HEARTH_LLAMACPP_DATA_DIR:-../data/llamacpp}:/data
+    command:
+      - --models-dir
+      - /data/models
+      - --models-preset
+      - /data/presets.ini
+      - --models-max
+      - "1"
+      - --no-models-autoload
+      - --parallel
+      - "1"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --no-webui

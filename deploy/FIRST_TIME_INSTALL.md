@@ -149,6 +149,10 @@ for VS Code receives each model's advertised loaded context, while its own setti
 compaction. OpenCode requests routed through Hearth's Lemonade relay load an unloaded model
 with its saved Models-page ctx-size, and reapply that size if the model is already loaded
 with a smaller context. Every client remains subject to the model's actual loaded limit.
+Administrators start model downloads individually. Hearth rejects batch download
+requests and new downloads while another model download is active. Chat and
+agent prompts can suggest models for an administrator to download.
+
 Search all backends on Downloads checks the latest public Lemonade catalog and LM
 Studio's model catalog as well as the backend and Hugging Face searches. These public
 matches require internet access; new Lemonade GGUF entries download through Hugging
@@ -818,6 +822,64 @@ and load it from Models. The first-time Ubuntu installer offers a confirmed
 download when Lemonade is available; other models remain available in Downloads.
 Hearth does not start or load KoboldCPP by default. Start it and load a model explicitly
 from Models when needed, so it does not consume memory during normal startup.
+
+### Direct llama.cpp router
+
+The upstream llama-server runs GGUF models and keeps its raw API on loopback.
+Hearth provides Chat, Models, Downloads, Model Tests, request metrics, and Live
+Logs for that runtime. The compose file uses the upstream CPU image.
+
+```bash
+mkdir -p data/llamacpp/models data/llamacpp/cache
+test -f data/llamacpp/presets.ini || printf '[*]\nctx-size = 8192\n' > data/llamacpp/presets.ini
+docker compose -p hearth-llamacpp -f deploy/compose.llamacpp.yml up -d
+```
+
+Put existing GGUF files in `data/llamacpp/models` or download public Hugging Face
+GGUFs from the **llama.cpp** card in **Downloads**. A repository can include a
+quantization suffix such as `:Q4_K_M`. The server keeps downloaded weights in its
+persistent cache. Cancel pauses an active transfer so it can be resumed.
+For a locally managed router, Downloads shows transferred bytes even when the
+router does not report the total size. The page can show active transfers again
+after a refresh or Hearth restart.
+
+Set the URL under **Settings → llama.cpp** or set
+`LLAMACPP_BASE_URL=http://127.0.0.1:8093` in Hearth's environment. For a server
+that requires authentication, enter its API key in Settings. For the local
+compose deployment, set these additional variables in the Hearth service
+environment and restart Hearth:
+
+```text
+HEARTH_LLAMACPP_CONTAINER=hearth-llamacpp-llamacpp-1
+HEARTH_LLAMACPP_PRESETS=/absolute/path/to/hearth/data/llamacpp/presets.ini
+```
+
+If you change the local router's published port, set
+`HEARTH_LLAMACPP_MANAGED_URL` to match the URL in Settings.
+
+In **Models**, load a GGUF and select it in Chat. Models shows the loaded
+context and can update the configured context for the local router. A separate,
+single-model llama-server keeps its launch-managed context and weights. In
+**Settings → Service controls**, select **llama.cpp** to restart the managed
+container and restore its loaded model. Chat uses the existing account-scoped
+memory index and falls back to saved text when embeddings are unavailable.
+
+#### Authenticated llama.cpp Caddy gateway
+
+On an existing Hearth Caddy install, this adds the inference route without
+replacing other sites or rotating tokens:
+
+```bash
+sudo python3 tools/caddy_gateway_setup.py --add-llamacpp --system-file /etc/caddy/Caddyfile
+```
+
+Clients connect to HTTPS port `8448` using the existing Caddy bearer token and
+trusted local CA. The gateway allows `GET /v1/models` and
+`POST /v1/chat/completions`. Model lifecycle operations stay inside Hearth.
+**Help** includes loaded llama.cpp models in the generated client configs.
+
+### Optional q38rocm backend
+
 For one-command installation of Hearth with the optional q38rocm Qwen 3.8
 backend on Ubuntu or Debian, run this from the project checkout:
 
@@ -1048,6 +1110,12 @@ For CPU models served by Lemonade, automatic web lookups use search snippets.
 Explicit web searches, direct URLs, and screenshot requests can still fetch full pages.
 Hearth limits the web research text added to each chat prompt. Account-scoped
 browse history and captured screenshots are available.
+For a follow-up such as “Search online using Playwright,” Chat uses the preceding
+research topic and opens public sources in a fresh browser context. If an explicit
+lookup finds no sources, Chat reports that directly. If the model denies web access
+despite receiving sources, Chat can show the retrieved excerpts and links.
+Chat shows Playwright’s progress above the composer and reports how many pages
+returned readable text.
 
 Administrators can inspect request metrics on **Metrics** and open **Live logs** for
 streaming request progress, errors, and request/response traces. The live feed polls
@@ -1182,8 +1250,9 @@ Lemonade evicts them for inactivity. FFmpeg is required for audio processing.
 Text-to-video uses Wan 2.2 TI2V-5B Q4 with the Vulkan `sd-cli` bundled in the Lemonade
 container. Install and start the Docker-based Lemonade backend, and keep its Hugging Face
 cache mounted at `/opt/lemonade/.cache/huggingface` (the standard installer does this).
-The first video request downloads the Q4 diffusion model, VAE, and T5 encoder from Hugging
-Face into that shared cache, using about 8 GB of disk; future requests reuse the files.
+If the Wan 2.2 files are missing, prepare the model from **Models**. Preparation
+downloads the Q4 diffusion model, VAE, and T5 encoder into the shared cache,
+using about 8 GB of disk. Video requests use these cached files.
 The tested low-memory default generates a 17-frame, 16-fps, 480×320 WebM using CPU
 inference. Generation can take several minutes. Set `HEARTH_WAN22_BACKEND` in the Hearth
 service environment to select another sd.cpp backend, for example

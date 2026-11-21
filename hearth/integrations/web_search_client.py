@@ -1006,7 +1006,10 @@ _SHOPPING_SEARCH_TRIGGER_KEYWORDS = (
 # specifically to scrape more results, more thoroughly, than the default search does -
 # see its own docstring for why (asked explicitly to "browse", not just answered from
 # background search).
-_BROWSE_KEYWORDS = ("browse", "headless browser", "headless chrome", "use playwright", "chrome browser")
+_BROWSE_KEYWORDS = (
+    "browse", "headless browser", "headless chrome", "use playwright", "using playwright",
+    "via playwright", "with playwright", "invoke playwright", "run playwright", "chrome browser",
+)
 
 
 # Screenshots (and per-page content images) in the chat reply are opt-in per message
@@ -1090,18 +1093,32 @@ def is_explicit_search_request(query: str | None) -> bool:
     )
 
 
+def _browser_search_topic(query: str) -> str:
+    """Drop browser-method instructions while preserving Playwright as a possible topic."""
+    topic = re.sub(
+        r"^\s*(?:please\s+|(?:can|could|would) you\s+)?(?:use|invoke|run) playwright\b(?:\s+to\b)?",
+        "", query, flags=re.I,
+    )
+    topic = re.sub(r"\b(?:using|via|with) playwright\b", "", topic, flags=re.I)
+    topic = re.sub(r"\b(?:try|search|browse|look it up) again\b", "", topic, flags=re.I)
+    return topic.strip()
+
+
 def contextualize_search_query(query: str, messages: list[dict] | None) -> str:
     """Resolve a short research follow-up using the last substantive user topic."""
-    if _search_terms(query):
-        return query
+    topic = _browser_search_topic(query)
+    if extract_urls(topic) or _search_terms(topic):
+        return topic
     prior = list(messages or [])
     if prior and prior[-1].get("role") == "user" and prior[-1].get("content") == query:
         prior.pop()
     for message in reversed(prior):
         text = message.get("content")
-        if message.get("role") == "user" and isinstance(text, str) and _search_terms(text):
-            return text.strip()[:800]
-    return query
+        if message.get("role") == "user" and isinstance(text, str):
+            topic = _browser_search_topic(text)
+            if extract_urls(topic) or _search_terms(topic):
+                return topic[:800]
+    return ""
 
 
 def should_search_web(query: str | None) -> bool:

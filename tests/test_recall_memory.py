@@ -327,6 +327,40 @@ class MemoryInjectionPlacementTests(unittest.TestCase):
                 generic_search.assert_not_called()
                 model.assert_not_called()
 
+    def test_playwright_followup_uses_sources_even_if_model_denies_access(self):
+        from hearth.storage import chat_store
+
+        topic = "Find the launch date of the James Webb Space Telescope"
+        followup = "Search online using Playwright"
+        refusal = "I don't have access to the internet."
+        evidence = "- NASA mission (https://www.nasa.gov/mission/webb/): Webb launched on December 25, 2021."
+        cases = (
+            (evidence, refusal, "www.nasa.gov/mission/webb"),
+            (evidence, "Webb launched on December 25, 2021, according to NASA.", "according to NASA"),
+            (None, refusal, "did not return usable sources"),
+        )
+        for index, (note, answer, expected) in enumerate(cases):
+            with self.subTest(found=bool(note)), \
+                 patch.object(app.web_search, "should_search_web", wraps=self.should_search_web), \
+                 patch.object(app, "_web_search_context", return_value=(note, [])) as search, \
+                 patch.object(app.lms, "chat_stream", return_value=iter([
+                     "data: " + json.dumps({"choices": [{"delta": {"content": answer}}]}),
+                     "data: [DONE]",
+                 ])) as model:
+                conversation = f"research-{index}"
+                with self.client.post(
+                    "/api/chat", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"model": "test-model", "conversation_id": conversation,
+                          "messages": [{"role": "user", "content": text} for text in (topic, followup)]},
+                ) as response:
+                    self.assertEqual(response.status_code, 200)
+                    stream = response.get_data(as_text=True)
+                search.assert_called_once_with(topic)
+                self.assertEqual(model.called, bool(note))
+                self.assertNotIn(refusal, stream)
+                self.assertLess(stream.index(expected), stream.index("data: [DONE]"))
+                self.assertIn(expected, chat_store.get_conversation(conversation, "u")["messages"][-1]["content"])
+
     def test_remember_location_then_recall_city_and_weather_across_chats(self):
         cases = [
             ("remember-location", ["Note my location the city of Madison, Wisconsin"], "remember your location as Madison"),

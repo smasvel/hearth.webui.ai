@@ -25,12 +25,21 @@ browser with per-thread synchronization, or one browser process per worker threa
 from __future__ import annotations
 
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 
 from hearth.storage import browse_history_store
+
+playwright_progress = ContextVar("playwright_progress", default=None)
+
+
+def _report_progress(status: str) -> None:
+    callback = playwright_progress.get()
+    if callback is not None:
+        callback(status)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -200,10 +209,15 @@ def fetch_pages(
         u for u in dict.fromkeys(urls)
         if u and is_allowed_navigation_url(u)
     ]  # de-dupe, preserve order; ads are never navigation candidates
-    if not urls or not _PLAYWRIGHT_AVAILABLE:
+    if not urls:
+        return out
+    if not _PLAYWRIGHT_AVAILABLE:
+        _report_progress("Playwright is unavailable on this server.")
         return out
     if screenshot_dir is not None:
         screenshot_dir = Path(screenshot_dir)
+    _report_progress("Starting Playwright…")
+    launched = False
     try:
         with sync_playwright() as p:
             # GPU rendering explicitly disabled: this machine's iGPU is shared with the
@@ -213,6 +227,7 @@ def fetch_pages(
             # reason to let Chromium's default GPU usage add any risk of contending with
             # or destabilizing whatever model is currently loaded.
             browser = p.chromium.launch(headless=True, args=["--disable-gpu", "--disable-dev-shm-usage"])
+            launched = True
             try:
                 context = browser.new_context(user_agent=_USER_AGENT, viewport={"width": 1280, "height": 800})
                 # Block ad/tracker requests, including an ad redirect attempting to become
@@ -225,7 +240,8 @@ def fetch_pages(
                         route.abort()
 
                 context.route("**/*", block_ads)
-                for url in urls:
+                for index, url in enumerate(urls, start=1):
+                    _report_progress(f"Playwright is reading page {index} of {len(urls)}…")
                     # Every visit lands in browse_history — successes AND failures
                     # (the AI history page should show links that were attempted and
                     # didn't load, not silently omit them). history_query/source come
@@ -280,5 +296,9 @@ def fetch_pages(
             finally:
                 browser.close()
     except Exception:
-        return out
+        if not launched:
+            _report_progress("Playwright could not start.")
+            return out
+    read = sum(bool(page.get("text")) for page in out.values())
+    _report_progress(f"Playwright read {read} of {len(urls)} pages.")
     return out

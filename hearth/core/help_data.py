@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from hearth.backends import llamacpp_client as llamacpp
 from hearth.backends import lmstudio_client as lms
 from hearth.backends import lemonade_client as lemonade
 from hearth.backends import vllm_client as vllm
@@ -42,7 +43,7 @@ CADDY_ADMIN = "http://localhost:2019"
 CERT_FILENAME = "hearth-ca.crt"
 
 # Sensible fallbacks if a source is briefly unreachable, so the help still renders.
-_DEFAULT_PORTS = {"lmstudio": 8443, "lemonade": 8444, "vllm": 8445, "kobold": 8446, "fastflowlm": 8447}
+_DEFAULT_PORTS = {"lmstudio": 8443, "lemonade": 8444, "vllm": 8445, "kobold": 8446, "fastflowlm": 8447, "llamacpp": 8448}
 _UPSTREAM_BACKEND = {
     "1234": "lmstudio",
     "13307": "lmstudio",
@@ -51,18 +52,18 @@ _UPSTREAM_BACKEND = {
     # used to hit flm.service (see that module's docstring) — either upstream port means
     # "this Caddy block is the lemonade one."
     "13305": "lemonade", "13306": "lemonade",
-    "8000": "vllm", "5001": "kobold", "13308": "kobold",
+    "8000": "vllm", "8093": "llamacpp", "5001": "kobold", "13308": "kobold",
     # 52625 = FastFlowLM's own server; 52626 = flm_tool_shim.py, which Caddy's fastflowlm block
     # now proxies to instead so LAN clients get real tool_calls (see that module's docstring) —
     # either upstream port means "this Caddy block is the fastflowlm one."
     "52625": "fastflowlm", "52626": "fastflowlm",
 }
-_LABELS = {"lmstudio": "LM Studio", "lemonade": "Ryzen AI NPU", "vllm": "vLLM", "kobold": "KoboldCPP", "fastflowlm": "FastFlowLM"}
+_LABELS = {"lmstudio": "LM Studio", "lemonade": "Ryzen AI NPU", "vllm": "vLLM", "kobold": "KoboldCPP", "fastflowlm": "FastFlowLM", "llamacpp": "llama.cpp"}
 # FastFlowLM matches flm.service and stays below the NPU kernel limit, including
 # runtime padding. Lemonade uses its own context configuration.
-_CTX = {"lmstudio": 32768, "lemonade": 65536, "vllm": 8192, "kobold": 8192, "q38rocm": 262144, "fastflowlm": 8192}
-_OUT = {"lmstudio": 8192, "lemonade": 8192, "vllm": 4096, "kobold": 4096, "fastflowlm": 4096}
-_BACKENDS = ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
+_CTX = {"lmstudio": 32768, "lemonade": 65536, "vllm": 8192, "kobold": 8192, "q38rocm": 262144, "fastflowlm": 8192, "llamacpp": 8192}
+_OUT = {"lmstudio": 8192, "lemonade": 8192, "vllm": 4096, "kobold": 4096, "fastflowlm": 4096, "llamacpp": 4096}
+_BACKENDS = ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "llamacpp")
 _NON_CHAT = ("embeddings", "transcription", "tts")
 
 def compaction_for_window(window: int) -> dict:
@@ -380,9 +381,13 @@ def _all_models() -> list[dict]:
     # Broad excepts on purpose: this feeds a page render, so a backend being down (or a
     # client raising something unexpected) must degrade to "that backend's models are
     # absent", never a 500 on the whole page.
-    for client, name in ((lms, "lmstudio"), (lemonade, "lemonade"), (vllm, "vllm"), (kobold, "kobold"), (fastflowlm, "fastflowlm"), (zen, "opencode")):
+    for client, name in ((lms, "lmstudio"), (lemonade, "lemonade"), (vllm, "vllm"), (kobold, "kobold"), (fastflowlm, "fastflowlm"), (zen, "opencode"), (llamacpp, "llamacpp")):
         try:
             for m in client.list_models():
+                if name == "llamacpp":
+                    if m["state"] != "loaded":
+                        continue
+                    m["id"] = llamacpp.request_model_id(m["id"])
                 m["backend"] = name
                 out.append(m)
         except Exception:
@@ -404,12 +409,12 @@ def _pick_default(chat_by_be: dict, loaded_by_be: dict, override: str | None = N
         be, _, model_id = override.partition("/")
         if model_id in chat_by_be.get(be, []):
             return override
-    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "lmstudio"):
+    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "llamacpp", "lmstudio"):
         if loaded_by_be.get(be):
             return f"{be}/{loaded_by_be[be][0]}"
     if "qwen3.6-moe-35b-a3b" in chat_by_be.get("lemonade", []):
         return "lemonade/qwen3.6-moe-35b-a3b"
-    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "lmstudio"):
+    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "llamacpp", "lmstudio"):
         if chat_by_be.get(be):
             return f"{be}/{chat_by_be[be][0]}"
     return None
@@ -448,7 +453,9 @@ def build_continue_yaml(ip, token, ports, chat_by_be, embed_models, network_labe
 
     any_chat = False
     ctx_by_model = dict(ctx_by_model or {})
-    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "lmstudio"):
+    for be in ("lemonade", "vllm", "kobold", "fastflowlm", "llamacpp", "lmstudio"):
+        if be not in ports:
+            continue
         for mid in chat_by_be.get(be, []):
             any_chat = True
             lines += entry(f"{mid} ({_LABELS[be]}, {network_label})", mid, ports[be],
@@ -477,7 +484,9 @@ def build_opencode_config(ip, token, ports, chat_by_be, loaded_by_be, default_ov
     if not context_settings["advertise_loaded"]:
         ctx_by_model = {}
     provider = {}
-    for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm"):
+    for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "llamacpp"):
+        if be == "llamacpp" and (be not in ports or not chat_by_be.get(be)):
+            continue
         models = {}
         for mid in chat_by_be.get(be, []):
             ctx = _advertised_context(be, mid, ctx_by_model, context_settings["fallback"])
@@ -672,7 +681,7 @@ def _build_uncached(app_port: int = 5443) -> dict:
         be: [m["id"] for m in models
              if m.get("backend") == be and m.get("type") not in _NON_CHAT
              and m.get("loadable") is not False]
-        for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
+        for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "llamacpp")
     }
     # Which chat models are already loaded, per backend — used to default a LAN tool to a
     # warm model so its first request doesn't pay the cold-load (evict+load) cost.
@@ -680,7 +689,7 @@ def _build_uncached(app_port: int = 5443) -> dict:
         be: [m["id"] for m in models
              if m.get("backend") == be and m.get("type") not in _NON_CHAT
              and m.get("loadable") is not False and m.get("state") == "loaded"]
-        for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm")
+        for be in ("lmstudio", "lemonade", "vllm", "kobold", "fastflowlm", "llamacpp")
     }
     # A loaded model's active window is authoritative. A saved larger value only takes
     # effect on the next Load; advertising it early makes OpenCode send oversized turns.

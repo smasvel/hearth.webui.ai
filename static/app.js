@@ -1,5 +1,5 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", llamacpp: "llama.cpp", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
   let preferredChatModel = modelSelectEl.dataset.preferredModel || "";
@@ -403,7 +403,7 @@
     if (externallyManaged) {
       const note = document.createElement("span");
       note.className = "hint";
-      note.textContent = "Hosted remotely; managed by opencode.ai";
+      note.textContent = m.management_hint || "Hosted remotely; managed by opencode.ai";
       actions.appendChild(note);
     } else if (loaded) {
       const unloadBtn = document.createElement("button");
@@ -453,6 +453,7 @@
       { key: "lmstudio", label: "LM Studio" },
       { key: "lemonade", label: "Ryzen AI (NPU)" },
       { key: "vllm", label: "vLLM" },
+      { key: "llamacpp", label: "llama.cpp" },
       { key: "kobold", label: "KoboldCPP" },
       { key: "fastflowlm", label: "FastFlowLM (NPU)" },
     ];
@@ -672,6 +673,7 @@
 
   function newChat() {
     cancelChatSpeech();
+    renderResearchStatus();
     clearTimeout(generationPollTimer);
     conversationViewVersion++;
     renderedMessagesKey = null;
@@ -705,8 +707,15 @@
     }, delay);
   }
 
+  function renderResearchStatus(status = "") {
+    const element = document.getElementById("chat-research-status");
+    if (element.textContent !== status) element.textContent = status;
+    element.classList.toggle("hidden", !status);
+  }
+
   function renderConversationSnapshot(data) {
     const generation = data.generation;
+    renderResearchStatus(generation?.research_status);
     visibleGeneration = generation;
     const running = generation?.status === "running";
     const saved = [...data.messages];
@@ -917,6 +926,7 @@
   async function loadConversation(id, { refresh = false } = {}) {
     if (!refresh) {
       cancelChatSpeech();
+      renderResearchStatus();
       clearTimeout(generationPollTimer);
       conversationViewVersion++;
       currentConversationId = id;
@@ -1828,6 +1838,7 @@
     const model = modelSelectEl.value || (isSecurityScan ? "system-security-scan" : (isVideoRequest ? "gemini-omni-1.1-flash" : ""));
     if (!model && !isAgentChatRequest(text)) { addSystemMessage("Load a model first.", true); return; }
     cancelChatSpeech();
+    renderResearchStatus();
     if (!currentConversationId) currentConversationId = crypto.randomUUID();
     const id = currentConversationId;
     const version = conversationViewVersion;

@@ -100,6 +100,7 @@
     { key: "lmstudio", label: "LM Studio" },
     { key: "lemonade", label: "Ryzen AI (NPU)" },
     { key: "vllm", label: "vLLM" },
+    { key: "llamacpp", label: "llama.cpp" },
     { key: "opencode", label: "opencode.ai (remote)" },
     { key: "kobold", label: "KoboldCPP" },
     { key: "q38rocm", label: "q38rocm (Qwen 3.8 27B)" },
@@ -244,7 +245,7 @@
     }
     // Editable served context for backends that take ctx-size at load time. The saved
     // value is reused on every later Load, so an unloaded model keeps the chosen window.
-    const contextEditable = ["lemonade", "lmstudio", "vllm", "kobold"].includes(m.backend);
+    const contextEditable = m.context_editable === true || ["lemonade", "lmstudio", "vllm", "kobold"].includes(m.backend);
     if (contextEditable && m.type && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       const activeContext = Number(m.configured_context_length || m.loaded_context_length || m.context_window_tokens);
       const loadedContext = Number(m.loaded_context_length);
@@ -353,6 +354,7 @@
     } else if (externallyManaged) {
       const note = document.createElement("span");
       note.className = "hint";
+      note.textContent = m.management_hint || "";
       actions.appendChild(note);
     } else if (managedAutomatically) {
       const note = document.createElement("span");
@@ -399,7 +401,7 @@
       thinkingLabel.append(thinkingInput, document.createTextNode(" Enable thinking"));
       actions.appendChild(thinkingLabel);
     }
-    if (!managedAutomatically && !unavailable && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
+    if (!managedAutomatically && !unavailable && m.testable !== false && !NON_CHAT.includes(m.type) && m.type !== "embedding") {
       actions.appendChild(btn("Test Model", "", () => {
         window.location.assign(`/model-tests?backend=${encodeURIComponent(m.backend)}&model=${encodeURIComponent(m.id)}&action=test-model`);
       }, isBusy));

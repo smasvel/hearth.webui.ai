@@ -1,6 +1,6 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", q38rocm: "q38rocm (Vulkan/ROCmFPX)", fastflowlm: "FastFlowLM" };
-  const BACKEND_ORDER = ["fastflowlm", "q38rocm", "lemonade", "lmstudio", "kobold", "vllm", "opencode"];
+  const BACKEND_LABELS = { llamacpp: "llama.cpp", lmstudio: "LM Studio", lemonade: "Ryzen AI / Lemonade", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", q38rocm: "q38rocm (Vulkan/ROCmFPX)", fastflowlm: "FastFlowLM" };
+  const BACKEND_ORDER = ["llamacpp", "fastflowlm", "q38rocm", "lemonade", "lmstudio", "kobold", "vllm", "opencode"];
 
   const settingsForm = document.getElementById("settings-form");
   const restartBackendsBtn = document.getElementById("restart-backends");
@@ -155,6 +155,11 @@
   const settingsKoboldGpuLayersEl = document.getElementById("settings-kobold-gpu-layers");
   const settingsKoboldDraftModelEl = document.getElementById("settings-kobold-draft-model");
   const settingsKoboldDraftAmountEl = document.getElementById("settings-kobold-draft-amount");
+  const settingsLlamacppUrlEl = document.getElementById("settings-llamacpp-url");
+  const settingsLlamacppKeyEl = document.getElementById("settings-llamacpp-key");
+  const settingsTestLlamacppBtn = document.getElementById("settings-test-llamacpp");
+  const settingsTestLlamacppResultEl = document.getElementById("settings-test-llamacpp-result");
+  const restartLlamacppOption = document.getElementById("restart-llamacpp-option");
   const settingsQ38rocmUrlEl = document.getElementById("settings-q38rocm-url");
   const settingsQ38rocmKeyEl = document.getElementById("settings-q38rocm-key");
   const settingsFastflowlmUrlEl = document.getElementById("settings-fastflowlm-url");
@@ -263,7 +268,7 @@
       group.label = BACKEND_LABELS[backend] || backend;
       for (const m of backendModels) {
         const opt = document.createElement("option");
-        opt.value = `${m.backend}/${m.id}`;
+        opt.value = m.backend === "llamacpp" ? m.id : `${m.backend}/${m.id}`;
         // `quantization` is normalized by each client to the actual compute path when
         // known (NPU, GPU, CPU). This prevents an "-NPU" marketing/model name from being
         // mistaken for NPU execution when Lemonade reports a llamacpp/GPU recipe.
@@ -307,6 +312,10 @@
     settingsKoboldGpuLayersEl.value = data.kobold_gpu_layers || "";
     settingsKoboldDraftModelEl.value = data.kobold_draft_model || "";
     settingsKoboldDraftAmountEl.value = data.kobold_draft_amount || "";
+    settingsLlamacppUrlEl.value = data.llamacpp_base_url || "";
+    settingsLlamacppKeyEl.value = data.llamacpp_api_key || "";
+    restartLlamacppOption.hidden = !data.llamacpp_managed;
+    restartLlamacppOption.querySelector("input").disabled = !data.llamacpp_managed;
     settingsQ38rocmUrlEl.value = data.q38rocm_base_url || "";
     settingsQ38rocmKeyEl.value = data.q38rocm_api_key || "";
     settingsFastflowlmUrlEl.value = data.fastflowlm_base_url || "";
@@ -404,6 +413,8 @@
           kobold_gpu_layers: settingsKoboldGpuLayersEl.value.trim(),
           kobold_draft_model: settingsKoboldDraftModelEl.value.trim(),
           kobold_draft_amount: settingsKoboldDraftAmountEl.value.trim(),
+          llamacpp_base_url: settingsLlamacppUrlEl.value.trim(),
+          llamacpp_api_key: settingsLlamacppKeyEl.value.trim(),
           q38rocm_base_url: settingsQ38rocmUrlEl.value.trim(),
           q38rocm_api_key: settingsQ38rocmKeyEl.value.trim(),
           fastflowlm_base_url: settingsFastflowlmUrlEl.value.trim(),
@@ -474,6 +485,12 @@
     runTest(settingsTestLemonadeBtn, settingsTestLemonadeResultEl, "lemonade", {
       base_url: settingsLemonadeUrlEl.value.trim(),
       api_key: settingsLemonadeKeyEl.value.trim(),
+    })
+  );
+  settingsTestLlamacppBtn.addEventListener("click", () =>
+    runTest(settingsTestLlamacppBtn, settingsTestLlamacppResultEl, "llamacpp", {
+      base_url: settingsLlamacppUrlEl.value.trim(),
+      api_key: settingsLlamacppKeyEl.value.trim(),
     })
   );
   settingsTestQ38rocmBtn.addEventListener("click", () =>
