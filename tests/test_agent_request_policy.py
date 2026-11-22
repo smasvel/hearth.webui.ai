@@ -46,6 +46,23 @@ class ExplicitStopPolicyTests(unittest.TestCase):
         )
         self.assertNotEqual(agent_request_policy.prepare(body).get("tool_choice"), "none")
 
+    def test_aggregate_tool_history_budget_compacts_oldest_results_first(self):
+        body = self.body("Continue the current task.")
+        body["messages"] = [
+            {"role": "tool", "content": f"old-{index}-" + ("x" * 4990)}
+            for index in range(4)
+        ] + [{"role": "tool", "content": "newest-" + ("z" * 1000)}]
+
+        prepared = agent_request_policy.prepare(body)
+        tool_messages = [message for message in prepared["messages"] if message["role"] == "tool"]
+
+        self.assertLessEqual(
+            sum(len(message["content"]) for message in tool_messages),
+            agent_request_policy._TOOL_HISTORY_TOTAL_CHARS,
+        )
+        self.assertIn("compacted older tool output", tool_messages[0]["content"])
+        self.assertEqual(tool_messages[-1]["content"], body["messages"][-1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,13 +76,28 @@ def main() -> int:
             pass
 
     if existing:
-        # Preserve the user's chosen default model and hand-added agents; only
-        # refresh provider limits and compaction budgets for display.
-        if 'model' in existing:
-            config['model'] = existing['model']
-        if 'agents' in existing:
-            agents = existing['agents']
-            config.setdefault('agents', {}).update(agents)
+        # Keep the current model only while it remains in the live catalog. This
+        # avoids pinning OpenCode to a removed model after Hearth refreshes providers.
+        old_model = existing.get('model')
+        old_provider, separator, old_model_id = str(old_model or '').partition('/')
+        available_models = ((config.get('provider') or {}).get(old_provider) or {}).get('models') or {}
+        if separator and old_model_id in available_models:
+            config['model'] = old_model
+
+        # Preserve custom agents and settings while refreshing generated provider data.
+        existing_agents = existing.get('agent') or {}
+        generated_agents = config.get('agent') or {}
+        if existing_agents or generated_agents:
+            config['agent'] = {**existing_agents, **generated_agents}
+        default_agent = existing.get('default_agent')
+        if default_agent:
+            config['default_agent'] = default_agent
+        for key, value in existing.items():
+            if key not in {'$schema', 'model', 'provider', 'compaction', 'agent', 'default_agent'}:
+                config.setdefault(key, value)
+        for provider, value in (existing.get('provider') or {}).items():
+            if provider not in (config.get('provider') or {}):
+                config['provider'][provider] = value
 
     provider, _, model_id = str(config.get('model') or '').partition('/')
     window = (((config.get('provider') or {}).get(provider) or {})

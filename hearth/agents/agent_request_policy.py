@@ -49,6 +49,10 @@ _TOOL_HISTORY_HEAD_CHARS = 1500
 
 _TOOL_HISTORY_TAIL_CHARS = 3500
 
+# OpenCode resends every prior tool result on each turn. Per-result limits alone
+# still allow many medium-sized browser results to create a multi-minute prefill.
+_TOOL_HISTORY_TOTAL_CHARS = 16000
+
 import re
 
 
@@ -92,13 +96,14 @@ def prepare(body: dict, *, compact_history=True, qwen_penalty=True) -> dict:
     if body.get("tool_choice") == "none":
         return body
     # OpenCode resends the complete agent history on every turn. Raw HTML/command output can
-    # be hundreds of KB; one real DuckDuckGo debugging session consequently spent >300s in
-    # NPU prefill and the client disconnected before the first token. Preserve the useful
-    # beginning and most-recent tail of oversized tool results, but do not repeatedly prefill
-    # an entire webpage that the agent has already inspected.
+    # be hundreds of KB; several medium-sized results can be just as costly as one huge page.
+    # First cap individual results, then enforce an aggregate budget from oldest to newest so
+    # recent tool output remains available to the current turn.
+    tool_messages = []
     for message in messages if compact_history else []:
         if message.get("role") != "tool" or not isinstance(message.get("content"), str):
             continue
+        tool_messages.append(message)
         content = message["content"]
         if len(content) <= _TOOL_HISTORY_MAX_CHARS:
             continue
@@ -108,6 +113,23 @@ def prepare(body: dict, *, compact_history=True, qwen_penalty=True) -> dict:
             + f"\n\n[Hearth compacted {omitted:,} characters of historical tool output]\n\n"
             + content[-_TOOL_HISTORY_TAIL_CHARS:]
         )
+    total_tool_chars = sum(len(message["content"]) for message in tool_messages)
+    for message in tool_messages:
+        if total_tool_chars <= _TOOL_HISTORY_TOTAL_CHARS:
+            break
+        content = message["content"]
+        # Leave a compact clue for older calls, and spend the remaining budget on
+        # progressively newer results. The marker is intentionally kept outside excerpts.
+        marker = "[Hearth compacted older tool output]"
+        allowance = max(len(marker), len(content) - (total_tool_chars - _TOOL_HISTORY_TOTAL_CHARS))
+        if allowance >= len(content):
+            continue
+        excerpt_budget = allowance - len(marker)
+        head = min(400, excerpt_budget // 3)
+        tail = max(0, excerpt_budget - head)
+        compacted = content[:head] + marker + (content[-tail:] if tail else "")
+        total_tool_chars -= len(content) - len(compacted)
+        message["content"] = compacted
     if messages and messages[0].get("role") in ("system", "developer"):
         existing = messages[0].get("content") or ""
         messages[0]["content"] = f"{existing}\n\n{_AGENT_RELIABILITY_INSTRUCTION}"
