@@ -15,16 +15,23 @@ class ContextTests(unittest.TestCase):
         paused.start()
         self.addCleanup(paused.stop)
 
-    def test_launcher_uses_minicpm_maximum_without_raising_qwen_kernel_limit(self):
-        self.assertEqual(flm_serve.command('minicpm-v-4.7:1b')[-2], '262144')
-        self.assertEqual(flm_serve.command('flm/minicpm-v-4.7:1b')[-2], '262144')
+    def test_launcher_caps_context_at_65536_and_respects_smaller_kernel_limits(self):
+        self.assertEqual(flm_serve.command('minicpm-v-4.7:1b')[-2], '65536')
+        self.assertEqual(flm_serve.command('flm/minicpm-v-4.7:1b')[-2], '65536')
         self.assertEqual(flm_serve.command('qwen3.8-mtp:27b')[-2], '8192')
-        self.assertEqual(flm_serve.command('gemma4-it:e4b')[-2], '131072')
+        self.assertEqual(flm_serve.command('gemma4-it:e4b')[-2], '65536')
         self.assertEqual(flm_serve.command('gemma4e-flash:e4b')[-2], '1024')
-        self.assertEqual(flm_serve.command('llama3.2:1b')[-2], '131072')
+        self.assertEqual(flm_serve.command('llama3.2:1b')[-2], '65536')
         self.assertEqual(flm_serve.command('qwen3-it:4b')[-2], '32768')
         self.assertEqual(flm_serve.command('flm/qwen3-it:4b')[-2], '32768')
         self.assertEqual(flm_serve.command('unknown-model')[-2], '8192')
+
+    def test_lemonade_qwen_load_and_client_context_match_kernel_limit(self):
+        model = 'qwen3.8-mtp-27b-FLM'
+        self.assertEqual(context.lemonade_load_context(model, None), 8192)
+        self.assertEqual(context.lemonade_load_context(model, 4096), 4096)
+        self.assertEqual(help_data._advertised_context('lemonade', model, {('lemonade', model): 65536}, None), 8192)
+        self.assertEqual(context.lemonade_load_context('other-GGUF', 65536), 65536)
 
     def test_schema_annotations_removed_without_changing_constraints_or_property_names(self):
         body = {'messages': [{'role': 'user', 'content': 'Do not change my instructions.'}],
@@ -112,11 +119,13 @@ class ContextTests(unittest.TestCase):
 
     @patch.object(shim.flm_context, 'prepare', return_value=({}, context.overflow_error(8192, 9000)))
     @patch.object(shim.npu_request_lock, 'acquire')
-    def test_oversized_prompt_is_rejected_before_claiming_npu(self, acquire, _prepare):
+    @patch.object(shim, "live_report")
+    def test_oversized_prompt_is_rejected_before_claiming_npu(self, report, acquire, _prepare):
         response = shim.app.test_client().post('/v1/chat/completions', json={'messages': []})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json['error']['code'], 'context_length_exceeded')
         acquire.assert_not_called()
+        report.finish.assert_called_once_with(report.start.return_value, status="error", status_code=400)
 
     @patch.object(context, 'context_limit', return_value=8192)
     @patch.object(help_data.settings_store, 'get', return_value=None)

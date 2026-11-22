@@ -51,7 +51,7 @@
               <label><input data-tools-backend="lmstudio" type="checkbox" /> LM Studio</label>
               <label><input data-tools-backend="kobold" type="checkbox" /> KoboldCPP</label>
               <label><input data-tools-backend="fastflowlm" type="checkbox" /> FastFlowLM</label>
-              <label><input data-tools-backend="llamacpp" type="checkbox" /> llama.cpp</label>
+
               <label><input data-tools-backend="q38rocm" type="checkbox" /> q38rocm</label>
             </div>
             <p class="hint">Exclude unknown support to hide models whose catalog does not say whether they support tool calling. Backend filters show only models that declare support for that backend. Catalog metadata may be incomplete; backend configuration may also be required.</p>
@@ -172,19 +172,6 @@
             </div>
           </div>
 
-          <div class="console-card span-all">
-            <h2>llama.cpp — Hugging Face GGUF</h2>
-            <form id="llamacpp-search-form" class="download-form">
-              <div class="download-row">
-                <input id="llamacpp-search-input" class="panel-input" type="search" aria-label="Search llama.cpp models" placeholder="Search GGUF models" autocomplete="off" />
-                <button class="panel-btn" type="submit">Search</button>
-                <button id="llamacpp-download-exact" class="panel-btn" type="button">Download exact repo</button>
-              </div>
-            </form>
-            <div id="llamacpp-results" class="result-grid">
-              <p class="hint">Enter a search term or a Hugging Face repository, optionally followed by a quantization tag.</p>
-            </div>
-          </div>
 
           <div class="console-card span-all">
             <h2>q38rocm — local Vulkan GGUF</h2>

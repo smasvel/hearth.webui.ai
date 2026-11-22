@@ -84,13 +84,13 @@
           <p class="hint">
             Connect an AI coding tool (Continue, OpenCode) running on another PC on this network to
             a model served on this machine. LM Studio, Lemonade (Ryzen AI NPU), vLLM,
-            KoboldCPP, FastFlowLM, and llama.cpp use their own Caddy reverse-proxy ports for
+            KoboldCPP, and FastFlowLM use their own Caddy reverse-proxy ports for
             authenticated remote access; q38rocm is local to this desktop. These services do not
             expose unauthenticated model endpoints on the network. Each Caddy route in
             <code class="inline-code">/etc/caddy/Caddyfile</code> enforces a bearer token:
             <strong>port {{ help.ports.lmstudio }}</strong> for LM Studio, <strong>port {{ help.ports.lemonade }}</strong> for Lemonade, <strong>port {{ help.ports.vllm }}</strong> for vLLM,
             <strong>port {{ help.ports.kobold }}</strong> for KoboldCPP, <strong>port {{ help.ports.fastflowlm }}</strong> for FastFlowLM (the Ryzen AI NPU
-            runtime run standalone), and <strong>port {{ help.ports.llamacpp }}</strong> for llama.cpp.
+            runtime run standalone).
             They all share the same CA cert below (Step 1), but
             OpenCode and Continue each get their own dedicated bearer token (not a shared
             secret) — baked into their respective auto-generated configs below (Step 2) — so

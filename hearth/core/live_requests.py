@@ -239,11 +239,15 @@ def start(
     return req_id
 
 
-def update(req_id: int, *, delta_chars: int, delta_content: str | None = None, unowned_only=False) -> None:
+def update(req_id: int, *, delta_chars: int, delta_content: str | None = None, unowned_only=False, prompt_progress=None) -> None:
     with _lock:
         entry = _active.get(req_id)
         if entry is None or (unowned_only and entry.get("owner_id") is not None):
             return
+        if isinstance(prompt_progress, dict):
+            fields = ("processed", "cache", "total")
+            if all(type(prompt_progress.get(k)) is int and prompt_progress[k] >= 0 for k in fields):
+                entry["prompt_progress"] = {k: prompt_progress[k] for k in fields}
         if entry["first_token_at"] is None and delta_chars > 0:
             entry["first_token_at"] = time.time()
         entry["chars"] += delta_chars
@@ -251,7 +255,8 @@ def update(req_id: int, *, delta_chars: int, delta_content: str | None = None, u
         # object has it) - a ~4-chars-per-token estimate is what drives the live counter
         # and %-of-max-tokens bar; get_snapshot() below swaps in the real completion_tokens
         # once the request finishes.
-        entry["tokens"] = max(1, entry["chars"] // 4)
+        if delta_chars > 0:
+            entry["tokens"] = max(1, entry["chars"] // 4)
         if delta_content:
             remaining = _TRACE_MAX_CHARS - len(entry["response_content"])
             if remaining > 0:
@@ -350,6 +355,7 @@ def snapshot(limit: int = 500, *, viewer_id: str | None = None) -> list[dict]:
             "elapsed_s": round(elapsed, 1),
             "started_at": e.get("started_at"),
             "finished_at": e.get("finished_at"),
+            "prompt_progress": e.get("prompt_progress"),
             "ttft_s": (
                 round(e["first_token_at"] - e["started_at"], 3)
                 if e.get("first_token_at") and e.get("started_at") else None

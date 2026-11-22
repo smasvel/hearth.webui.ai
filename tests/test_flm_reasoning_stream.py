@@ -40,6 +40,25 @@ class ReasoningStreamingTests(unittest.TestCase):
             finally:
                 response.close()
 
+    def test_opencode_receives_finish_before_done(self):
+        for delta, original_finish, expected in (
+            ({"content": "Hello"}, None, "stop"),
+            ({"tool_calls": [{"index": 0}]}, None, "tool_calls"),
+            ({"content": "Partial"}, "length", "length"),
+        ):
+            with self.subTest(expected=expected):
+                event = {"choices": [{"index": 0, "delta": delta, "finish_reason": original_finish}]}
+                raw = [
+                    b"data:" + json.dumps(event).encode(), b"",
+                    b'data: {"choices":[],"usage":{"completion_tokens":2}}', b"", b"data: [DONE]",
+                ]
+                lines = [line for line in shim._flm_stream_lines(raw, "test") if line]
+                self.assertEqual(lines[-1], b"data: [DONE]")
+                events = [json.loads(line[5:]) for line in lines[:-1]]
+                self.assertEqual([c["finish_reason"] for e in events for c in e["choices"]
+                                  if c.get("finish_reason")], [expected])
+                self.assertTrue(any(e.get("usage") for e in events))
+
     def test_split_streams_reasoning_once_and_retains_tools_finish_and_usage(self):
         event = {'usage': {'total_tokens': 9}, 'choices': [{
             'index': 0, 'finish_reason': 'stop', 'delta': {

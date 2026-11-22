@@ -23,6 +23,20 @@ def supported_context(model):
     return MODEL_CONTEXTS.get(str(model).removeprefix('flm/'), DEFAULT_CONTEXT)
 
 
+def load_context(model):
+    """Keep FLM allocations within both the operational cap and the kernel limit."""
+    return min(65536, supported_context(model))
+
+
+def lemonade_load_context(model, requested):
+    """Apply known FLM kernel ceilings to Lemonade's catalog spelling."""
+    for tag in MODEL_CONTEXTS:
+        if str(model).casefold() == tag.replace(':', '-') + '-flm':
+            ceiling = load_context(tag)
+            return min(requested, ceiling) if requested and requested > 0 else ceiling
+    return requested
+
+
 def output_limit(model=None, limit=None):
     """Advertise a reply budget that leaves at least half the window for input."""
     limit = context_limit(model) if limit is None else limit
@@ -33,7 +47,8 @@ def output_limit(model=None, limit=None):
 
 def _model_aware_service():
     try:
-        return 'hearth.backends.flm_serve' in Path('/etc/systemd/system/flm.service').read_text()
+        unit = Path('/etc/systemd/system/flm.service').read_text()
+        return 'hearth.backends.flm_serve' in unit or '/flm_serve.py' in unit
     except OSError:
         return False
 
@@ -46,7 +61,7 @@ def context_limit(model=None):
         if not isinstance(saved, int) or isinstance(saved, bool) or saved <= 0:
             saved = model_metadata_store.get_model_configured_context('fastflowlm', str(model or ''))
         if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0:
-            return saved
+            return min(saved, load_context(model))
     except Exception:
         pass
     aware = _model_aware_service()
@@ -61,11 +76,11 @@ def context_limit(model=None):
                 value = int(args[args.index('--ctx-len') + 1])
                 if value > 0:
                     if model and aware and active and str(model).removeprefix('flm/') != active:
-                        return supported_context(model)
+                        return load_context(model)
                     return value
         except (psutil.Error, ValueError, IndexError):
             continue
-    return supported_context(model) if model and aware else DEFAULT_CONTEXT
+    return load_context(model) if model and aware else DEFAULT_CONTEXT
 
 
 def compact_tools(body):

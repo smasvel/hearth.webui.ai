@@ -50,13 +50,14 @@ def start(
         return None
 
 
-def update(req_id: int | None, *, delta_chars: int, delta_content: str | None = None) -> None:
+def update(req_id: int | None, *, delta_chars: int, delta_content: str | None = None, prompt_progress: dict | None = None) -> None:
     if req_id is None:
         return
     try:
         requests.post(
             f"{_APP_BASE}/api/internal/live/update",
-            json={"id": req_id, "delta_chars": delta_chars, "delta_content": delta_content},
+            json={"id": req_id, "delta_chars": delta_chars, "delta_content": delta_content,
+                  **({"prompt_progress": prompt_progress} if prompt_progress is not None else {})},
             timeout=_TIMEOUT, verify=False,
         )
     except requests.RequestException:

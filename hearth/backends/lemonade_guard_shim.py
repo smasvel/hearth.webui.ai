@@ -52,7 +52,9 @@ from hearth.core import npu_request_lock
 from hearth.core import generation_guard
 from hearth.backends import lemonade_templates
 from hearth.backends import lemonade_thinking
+from hearth.backends import flm_context
 from hearth.backends.flm_tool_shim import (
+    _flm_stream_lines,
     _repair_streamed_textual_tool_calls, _repair_textual_tool_calls,
     _streamable_text_prefix, _live_content_event, _remove_streamed_content_prefix,
 )
@@ -545,7 +547,7 @@ def _unload_before_implicit_load(model_id: str) -> None:
         health = requests.get(f"{LEMONADE_BASE}/v1/health", timeout=5)
         health.raise_for_status()
         models = health.json().get("all_models_loaded", [])
-        saved_context = _saved_model_context(model_id)
+        saved_context = flm_context.lemonade_load_context(model_id, _saved_model_context(model_id))
         for entry in models:
             if entry.get("model_name") == model_id and entry.get("loaded", True):
                 options = lemonade_templates.load_options(
@@ -681,6 +683,14 @@ def chat_completions():
     # Computed once and reused below for the live-feed's is_npu tag too, rather than a second
     # /v1/models?show_all=true round-trip - same answer either way, just avoid asking twice.
     is_npu = _is_npu_model(body.get("model"))
+    # Reports this request into the metrics page's live-activity feed (see live_report.py's
+    # docstring) - this shim is the only thing inline for real OpenCode/Continue Lemonade
+    # traffic, so it's the only place that can see it streaming in real time.
+    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
+        source=source, backend="lemonade",
+        model=model, max_tokens=body.get("max_tokens"), is_npu=is_npu,
+        request_content=_request_trace(body),
+    )
     npu_lock_held = False
     cross_npu_lock = None
     if is_npu:
@@ -696,6 +706,7 @@ def chat_completions():
         try:
             _unload_before_implicit_load(model)
         except RuntimeError as exc:
+            live_report.finish(live_id, status="error", status_code=503)
             if npu_lock_held:
                 _NPU_REQUEST_LOCK.release()
                 npu_request_lock.release(cross_npu_lock)
@@ -704,14 +715,6 @@ def chat_completions():
             return {"error": {"message": str(exc), "type": "model_unload_failed"}}, 503, {
                 "X-Hearth-Metrics-Recorded": "1"}
     streamed = bool(body.get("stream"))
-    # Reports this request into the metrics page's live-activity feed (see live_report.py's
-    # docstring) - this shim is the only thing inline for real OpenCode/Continue Lemonade
-    # traffic, so it's the only place that can see it streaming in real time.
-    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
-        source=source, backend="lemonade",
-        model=model, max_tokens=body.get("max_tokens"), is_npu=is_npu,
-        request_content=_request_trace(body),
-    )
     try:
         upstream, utf8_retries = _post_chat_with_utf8_recovery(
             body, _forward_headers(request.headers), streamed,
@@ -753,7 +756,7 @@ def chat_completions():
             failure_status = 502
             reader = _KeepaliveLineReader(upstream)
             try:
-                for raw_line in reader:
+                for raw_line in _flm_stream_lines(reader, model) if is_npu and upstream.ok else reader:
                     if raw_line is None:
                         # SSE comment: ignored by clients, but keeps OpenCode's undici
                         # body/header timeout from firing while prompt ingestion or

@@ -9,6 +9,8 @@
   let retryMs = 1000;
   let loaded = false;
   const traceCache = new Map();
+  const finalTraces = new Set();
+  const loadingTraces = new Set();
   const traceOpenState = new Map();
   let latestRows = [];
 
@@ -57,7 +59,7 @@
       addText(line, "dev-client", row.source || "unknown");
       addText(line, "dev-route", `${row.backend || "unknown"} / ${row.model || "unknown"}`);
       if (row.is_npu) addText(line, "dev-npu", "NPU");
-      addText(line, "dev-event", done ? (failed ? "request failed" : cancelled ? "client closed stream" : "generation completed") : "streaming");
+      addText(line, "dev-event", done ? (failed ? "request failed" : cancelled ? "client closed stream" : "generation completed") : row.ttft_s != null ? "streaming" : row.prompt_progress ? "processing prompt" : "waiting for first token");
       if (!done && row.can_cancel) {
         const stop = document.createElement("button");
         stop.className = "panel-btn danger";
@@ -74,10 +76,14 @@
         });
         line.appendChild(stop);
       }
-      const stats = [`${row.tokens ?? 0} tok`, row.tokens_per_sec != null ? `${row.tokens_per_sec} tok/s` : null,
+      const progress = row.prompt_progress;
+      const output = row.backend === "llamacpp" && !done && row.ttft_s == null && !row.tokens
+        ? "awaiting output" : `${row.tokens ?? 0} output tok`;
+      const stats = [output, row.tokens_per_sec != null ? `${row.tokens_per_sec} tok/s` : null,
         row.ttft_s != null ? `TTFT ${row.ttft_s}s` : null, `${row.elapsed_s ?? 0}s`,
         row.pct != null ? `${row.pct}% max` : null].filter(Boolean).join(" · ");
-      addText(line, "dev-stats", stats);
+      const input = progress ? `${progress.processed} input tokens processed · ${progress.cache} cached · ${progress.total} total input tokens` : "";
+      addText(line, "dev-stats", [input, stats].filter(Boolean).join(" · "));
       if (row.error_detail) addText(line, "dev-error-detail", row.error_detail);
       if (row.id != null) {
         const details = document.createElement("details");
@@ -103,21 +109,21 @@
         else addText(panel, "hint", "Open to load the request and response text.");
         details.addEventListener("toggle", async () => {
           traceOpenState.set(String(row.id), details.open);
-          if (!details.open || traceCache.has(row.id) || details.dataset.loading) return;
-          details.dataset.loading = "true";
-          panel.replaceChildren();
-          addText(panel, "hint", "Loading request trace…");
+          if (!details.isConnected || !details.open || finalTraces.has(row.id) || loadingTraces.has(row.id)) return;
+          loadingTraces.add(row.id);
+          if (!traceCache.has(row.id)) panel.textContent = "Loading request trace…";
           try {
             const response = await fetch(`/api/metrics/live/${encodeURIComponent(row.id)}/trace`);
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
             traceCache.set(row.id, data);
+            if (done) finalTraces.add(row.id);
             drawTrace(data);
-            if (search.value.trim()) render(latestRows);
           } catch (error) {
             panel.replaceChildren();
             addText(panel, "dev-error-detail", `Could not load trace: ${error.message}`);
-            delete details.dataset.loading;
+          } finally {
+            loadingTraces.delete(row.id);
           }
         });
         line.appendChild(details);

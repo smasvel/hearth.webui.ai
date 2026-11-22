@@ -128,7 +128,12 @@ def render_caddyfile(addresses: list[str], tokens: dict[str, str], backends=BACK
             ]
             labels = (*TOKEN_LABELS, *(label for label in tokens if label.startswith("user_")))
         for label in labels:
-            lines.append(f"\t\treverse_proxy @{label} localhost:{upstream}")
+            if _name == "llamacpp":
+                lines.append(f"\t\treverse_proxy @{label} localhost:{upstream} {{")
+                lines.append("\t\t\tflush_interval -1")
+                lines.append("\t\t}")
+            else:
+                lines.append(f"\t\treverse_proxy @{label} localhost:{upstream}")
         lines += ["\t\trespond 401", "\t}", "}"]
     return "\n".join(lines) + "\n"
 

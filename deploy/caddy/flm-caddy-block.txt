@@ -5,7 +5,7 @@
 
 	route {
 		@authorized header Authorization "Bearer {$HEARTH_BACKEND_TOKEN}"
-		reverse_proxy @authorized localhost:52625
+		reverse_proxy @authorized localhost:52626
 		respond 401
 	}
 }

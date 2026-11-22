@@ -239,7 +239,12 @@ def _server_model() -> dict | None:
         response = requests.get(f"{base_url()}/v1/models", headers=_headers(), timeout=4)
         response.raise_for_status()
         entries = response.json().get("data", [])
-        return entries[0] if entries else None
+        # Lemonade can reuse this port after q38rocm stops.
+        for entry in entries:
+            model_id = entry.get("id") if isinstance(entry, dict) else None
+            if isinstance(model_id, str) and Path(model_id).name in {_MODEL_NAME, _HF_FILE, _MODEL_PATH.name}:
+                return entry
+        return None
     except (requests.RequestException, ValueError, TypeError):
         return None
 
@@ -310,6 +315,8 @@ def load_model(model_id: str) -> None:
 
 def unload_model(model_id: str | None = None) -> None:
     _systemctl("stop", timeout=60)
+    if _server_model():
+        raise Q38RocmError("q38rocm.service stopped, but the configured endpoint still serves the model.")
 
 
 def prepare_request(body):

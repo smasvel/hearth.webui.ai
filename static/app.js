@@ -1,5 +1,5 @@
 (() => {
-  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", llamacpp: "llama.cpp", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM", q38rocm: "q38rocm", wan22: "Video generation" };
+  const BACKEND_LABELS = { lmstudio: "LM Studio", lemonade: "Ryzen AI", vllm: "vLLM", opencode: "opencode.ai", kobold: "KoboldCPP", fastflowlm: "FastFlowLM", q38rocm: "q38rocm", wan22: "Video generation" };
   const modelListEl = document.getElementById("model-list");
   const modelSelectEl = document.getElementById("model-select");
   let preferredChatModel = modelSelectEl.dataset.preferredModel || "";

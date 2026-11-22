@@ -1801,17 +1801,15 @@ def api_service_status():
         service_name = "Lemonade"
         status = "unknown"
         detail = docker_detail or "status unknown"
+    # Avoid duplicate Lemonade entries (stored state vs docker).
+    services = [s for s in services if s.get("service") not in ("Lemonade", "Lemonade (docker)")]
     services.append({
         "service": service_name,
         "status": status,
         "updated_at": time.time(),
         "detail": detail
     })
-    if llamacpp.base_url():
-        ready, message = llamacpp.health()
-        services = [entry for entry in services if entry.get("service") != "llama.cpp"]
-        services.append({"service": "llama.cpp", "status": "active" if ready else "inactive",
-                         "updated_at": time.time(), "detail": message})
+    # standalone llama.cpp service removed; keep LM Studio/Lemonade handling only.
     return jsonify({"services": services})
 
 
@@ -2184,6 +2182,7 @@ def api_internal_live_update():
         live_requests.update(
             req_id, delta_chars=body.get("delta_chars") or 0,
             delta_content=body.get("delta_content"), unowned_only=True,
+            prompt_progress=body.get("prompt_progress"),
         )
     return jsonify({"ok": True})
 
@@ -4584,7 +4583,10 @@ def api_load_model():
             fastflowlm.check_loadable(model_key)
         except fastflowlm.FastFlowLMError as exc:
             return jsonify({"error": str(exc)}), 422
-        npu_handle = npu_request_lock.acquire()
+        try:
+            npu_handle = npu_request_lock.acquire(timeout=15)
+        except TimeoutError as exc:
+            return jsonify({"error": str(exc)}), 409
         try:
             # Free the NPU from Lemonade first (mutually exclusive), then activate FLM.
             _free_npu_except("fastflowlm", npu_lock_held=True)

@@ -32,14 +32,10 @@ class UnloadBeforeLoadTests(unittest.TestCase):
     @patch.object(flm_tool_shim.fastflowlm, "unload_model")
     @patch.object(flm_tool_shim.fastflowlm, "current_served_model", return_value="flm/old")
     @patch.object(flm_tool_shim.fastflowlm, "is_active", return_value=True)
-    def test_opencode_fastflow_switch_unloads_before_load(self, _active, _current, unload, load):
-        calls = Mock()
-        calls.attach_mock(unload, "unload")
-        calls.attach_mock(load, "load")
+    def test_opencode_fastflow_switch_records_active_without_service_handoff(self, _active, _current, unload, load):
         flm_tool_shim._ensure_fastflow_ready("flm/new")
-        unload.assert_called_once_with(npu_lock_held=True)
-        load.assert_called_once_with("flm/new")
-        self.assertEqual([call[0] for call in calls.mock_calls], ["unload", "load"])
+        unload.assert_not_called()
+        load.assert_not_called()
 
     @patch.object(lemonade_guard_shim.requests, "post")
     @patch.object(lemonade_guard_shim.requests, "get")

@@ -22,11 +22,16 @@ class ManualUnloadTests(unittest.TestCase):
             ):
                 flm.unload_model('flm/test')
                 self.assertTrue(flm.requests_paused())
-                with patch.object(shim.npu_request_lock, 'acquire') as acquire:
+                with (
+                    patch.object(shim.npu_request_lock, 'acquire') as acquire,
+                    patch.object(shim, 'live_report') as report,
+                ):
                     response = shim.app.test_client().post('/v1/chat/completions', json={'model': 'test'})
                     self.assertEqual(response.status_code, 503)
                     self.assertEqual(response.json['error']['code'], 'model_manually_unloaded')
                     acquire.assert_not_called()
+                    report.start.assert_called_once()
+                    report.finish.assert_called_once_with(report.start.return_value, status="error", status_code=503)
                 flm.load_model('flm/test')
                 self.assertFalse(flm.requests_paused())
 

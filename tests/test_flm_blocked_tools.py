@@ -100,7 +100,11 @@ class BlockedToolTests(unittest.TestCase):
 
     def test_existing_block_loop_stops_without_upstream_generation(self):
         for stream in (False, True):
-            with patch.object(shim.fastflowlm, 'requests_paused', return_value=False), patch.object(shim.requests, 'post') as upstream:
+            with (
+                patch.object(shim.fastflowlm, 'requests_paused', return_value=False),
+                patch.object(shim, 'live_report') as report,
+                patch.object(shim.requests, 'post') as upstream,
+            ):
                 response = shim.app.test_client().post('/v1/chat/completions', json={
                     **BODY, 'model': 'minicpm-v-4.7:1b', 'stream': stream,
                     'messages': [{'role': 'user', 'content': 'Fix it'},
@@ -109,3 +113,4 @@ class BlockedToolTests(unittest.TestCase):
                 event = json.loads(response.data.splitlines()[0][6:]) if stream else response.json
                 self.assertEqual(event['choices'][0]['finish_reason'], 'stop')
                 upstream.assert_not_called()
+                report.finish.assert_called_once_with(report.start.return_value, status="done", status_code=200)

@@ -100,7 +100,7 @@
     { key: "lmstudio", label: "LM Studio" },
     { key: "lemonade", label: "Ryzen AI (NPU)" },
     { key: "vllm", label: "vLLM" },
-    { key: "llamacpp", label: "llama.cpp" },
+
     { key: "opencode", label: "opencode.ai (remote)" },
     { key: "kobold", label: "KoboldCPP" },
     { key: "q38rocm", label: "q38rocm (Qwen 3.8 27B)" },
@@ -189,7 +189,8 @@
     const externallyManaged = m.externally_managed === true;
     const isBusy = m.id === busyModelId || m.download_state === "downloading";
     const size = fmtSize(m.size_gb);
-    const metaParts = [m.publisher, m.quantization, m.type, size].filter(Boolean);
+    const backendLabel = loaded && m.backend !== "opencode" ? LABEL[m.backend] || m.backend : "";
+    const metaParts = [backendLabel, m.publisher, m.quantization, m.type, size].filter(Boolean);
     const meta = metaParts.map(esc).join(" · ");
     const c = document.createElement("div");
     c.className = "model-card2" + (loaded ? " loaded" : "") + (isBusy ? " busy" : "");
@@ -498,7 +499,6 @@
   function renderGroups() {
     const q = (searchEl.value || "").trim().toLowerCase();
     groupsEl.innerHTML = "";
-    let shown = 0;
     const ordered = [...GROUPS, ...[...new Set(models.map((m) => m.backend))]
       .filter((k) => !LABEL[k]).map((k) => ({ key: k, label: k || "Other" }))];
     const activeModels = models.filter((m) => activeView === "online"
@@ -506,26 +506,24 @@
     const matching = activeModels.filter((m) =>
       (!q || (m.id || "").toLowerCase().includes(q)) &&
       (!warningsOnlyEl?.checked || m.resource_warning || m.load_status?.state === "error"));
-    shown = matching.length;
-    // Put every loaded local model before unloaded ones, including across backend
-    // sections. Keep the existing backend sections and model order within each state.
-    const loadedFirst = (a, b) => Number(b.state === "loaded") - Number(a.state === "loaded");
-    const loadedBackends = new Set(matching.filter((m) => m.state === "loaded").map((m) => m.backend));
-    const backendOrder = [...ordered].sort((a, b) =>
-      Number(loadedBackends.has(b.key)) - Number(loadedBackends.has(a.key)));
-    for (const g of backendOrder) {
-      const list = matching.filter((m) => m.backend === g.key).sort(loadedFirst);
+    const isLoadedLocal = (m) => activeView === "local" && m.state === "loaded";
+    const remaining = matching.filter((m) => !isLoadedLocal(m));
+    const sections = [
+      { label: "Loaded models", list: matching.filter(isLoadedLocal) },
+      ...ordered.map((g) => ({ label: g.label, list: remaining.filter((m) => m.backend === g.key) })),
+    ];
+    for (const { label, list } of sections) {
       if (!list.length) continue;
       const section = document.createElement("div");
       section.className = "console-card span-all model-group";
-      section.innerHTML = `<h3>${esc(g.label)} <span class="hint">· ${list.length}</span></h3>`;
+      section.innerHTML = `<h3>${esc(label)} <span class="hint">· ${list.length}</span></h3>`;
       const grid = document.createElement("div");
       grid.className = "model-card2-grid";
       list.forEach((m) => grid.appendChild(card(m)));
       section.appendChild(grid);
       groupsEl.appendChild(section);
     }
-    if (!shown) {
+    if (!matching.length) {
       groupsEl.innerHTML = warningsOnlyEl?.checked
         ? `<p class="hint">No models with recorded resource warnings match this filter.</p>` : q
         ? `<p class="hint">No models match “${esc(q)}”.</p>`

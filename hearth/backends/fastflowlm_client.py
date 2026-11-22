@@ -853,7 +853,10 @@ def load_model(model_id: str) -> None:
     record it active. app.py must have already freed the NPU from Lemonade before calling.
     (FLM auto-switches on request, so no restart is needed to change models.)"""
     tag = resolve_model(model_id)
-    if not any((m.get("model") or m.get("name")) == tag for m in _installed()):
+    inst = _installed()
+    with open('/tmp/opencode/flm_debug.log', 'a') as fh:
+        fh.write(f"load_model called tag={tag!r} installed={[m.get('model') for m in inst]}\n")
+    if not any((m.get("model") or m.get("name")) == tag for m in inst):
         raise FastFlowLMError(f"'{tag}' isn't downloaded. Pull it first from the Downloads panel.")
     previous = _read_active()
     # The service launcher reads this tag to select the model-specific context.

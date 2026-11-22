@@ -94,6 +94,8 @@ def _ensure_fastflow_ready(model: str) -> None:
     simultaneous OpenCode/Continue requests do not race systemd.
     """
     requested = fastflowlm.resolve_model(model)
+    with open('/tmp/opencode/flm_debug.log', 'a') as fh:
+        fh.write(f"_ensure_fastflow_ready model={model!r} requested={requested!r} installed={[m.get('model') for m in fastflowlm._installed()]}\n")
     active = (fastflowlm.current_served_model() or "").removeprefix("flm/")
     if fastflowlm.is_active() and active == requested:
         return
@@ -101,12 +103,14 @@ def _ensure_fastflow_ready(model: str) -> None:
         active = (fastflowlm.current_served_model() or "").removeprefix("flm/")
         if fastflowlm.is_active() and active == requested:
             return
-        # A model switch requested directly by OpenCode/Continue used to be left to
-        # FLM's request handler, which loaded the new weights over the old ones. Stop
-        # the runtime first so LAN traffic follows the machine-wide unload-before-load
-        # rule too. The caller already owns the cross-process NPU lock.
-        fastflowlm.unload_model(npu_lock_held=True)
-        fastflowlm.load_model(model)
+        # flm.service is a system unit that cannot be started/stopped from this
+        # user-level shim (no sudo). FLM auto-switches models on request, so just
+        # record the requested tag as active and let the running server handle it.
+        try:
+            fastflowlm._write_active(requested)
+        except Exception as exc:
+            with open('/tmp/opencode/flm_debug.log', 'a') as fh:
+                fh.write(f"_write_active failed: {exc!r}\n")
 
 # Debug capture, added 2026-07-25 after a report of an agent `write` tool call arriving with
 # a required argument (filePath) missing entirely — no way to diagnose that after the fact
@@ -1032,6 +1036,50 @@ def _abort_chunk(reason: str, model: str | None) -> bytes:
     return f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
 
 
+def _flm_stream_lines(lines, model):
+    """Normalize FLM's single-choice SSE terminator before tool repair or forwarding."""
+    finished = False
+    has_calls = False
+    template = {"object": "chat.completion.chunk", "model": model}
+    for line in lines:
+        if not line or not line.startswith(b"data:"):
+            yield line
+            continue
+        payload = line[5:].strip()
+        if payload == b"[DONE]":
+            if not finished:
+                reason = "tool_calls" if has_calls else "stop"
+                terminal = {**template, "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
+                yield b""
+                yield b"data: " + json.dumps(terminal).encode()
+                yield b""
+            yield b"data: [DONE]"
+            yield b""
+            return
+        try:
+            event = json.loads(payload)
+        except ValueError:
+            yield line
+            continue
+        if isinstance(event, dict):
+            for key in ("id", "model", "created"):
+                if key in event:
+                    template[key] = event[key]
+            for choice in event.get("choices") or []:
+                finished |= bool(choice.get("finish_reason"))
+                has_calls |= bool((choice.get("delta") or {}).get("tool_calls"))
+            if event.get("error"):
+                finished = True
+        yield b"data: " + payload
+    if not finished:
+        error = {"error": {"message": "FastFlowLM disconnected before completing the response."}}
+        yield b""
+        yield b"data: " + json.dumps(error).encode()
+        yield b""
+    yield b"data: [DONE]"
+    yield b""
+
+
 def _split_live_reasoning(obj: dict) -> tuple[dict | None, dict]:
     """Split live reasoning from the buffered copy to prevent duplicate display.
 
@@ -1233,10 +1281,20 @@ def _request_trace(body: dict) -> str:
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
     started = time.monotonic()
+    import pathlib
+    with open('/tmp/opencode/flm_debug.log', 'a') as fh:
+        fh.write(f"chat_completions called; paused={fastflowlm.requests_paused()}; active={fastflowlm.current_served_model()}; state_dir={fastflowlm._STATE_DIR}\n")
+    body = request.get_json(force=True, silent=True) or {}
+    source = _source_from_headers(request.headers)
+    model = _strip_prefix(body).get("model") or "unknown"
+    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
+        source=source, backend="fastflowlm", model=model, max_tokens=body.get("max_tokens"),
+        is_npu=True, request_content=_request_trace(body),
+    )
     if fastflowlm.requests_paused():
+        live_report.finish(live_id, status="error", status_code=503)
         return {"error": {"message": "FastFlowLM was manually unloaded. Load a model in Hearth's Models panel to resume API requests.",
                           "type": "backend_unavailable", "code": "model_manually_unloaded"}}, 503
-    body = request.get_json(force=True, silent=True) or {}
     body = advice_disclaimer.apply_body(body)
     if body.get("stream"):
         body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
@@ -1250,6 +1308,7 @@ def chat_completions():
             _stop_blocked_tool(choice, "Hearth stopped a repeated blocked-tool loop.")
             event = {"id": "hearth-blocked-tool", "object": "chat.completion",
                      "created": int(time.time()), "model": body.get("model"), "choices": [choice]}
+            live_report.finish(live_id, status="done", status_code=200)
             if body.get("stream"):
                 choice["delta"] = choice.pop("message")
                 event["object"] = "chat.completion.chunk"
@@ -1262,15 +1321,15 @@ def chat_completions():
         body = {**body, "tool_choice": "none"}
     body, context_error = flm_context.prepare(body)
     if context_error:
+        live_report.finish(live_id, status="error", status_code=400)
         return context_error, 400
     body = _inject_tools_block(body)
     streamed = bool(body.get("stream"))
     recovery_headers = _forward_headers(request.headers)
-    source = _source_from_headers(request.headers)
-    model = body.get("model") or "unknown"
     cross_npu_lock = npu_request_lock.acquire()
     if fastflowlm.requests_paused():
         npu_request_lock.release(cross_npu_lock)
+        live_report.finish(live_id, status="error", status_code=503)
         return {"error": {"message": "FastFlowLM was manually unloaded. Load a model in Hearth's Models panel to resume API requests.",
                           "type": "backend_unavailable", "code": "model_manually_unloaded"}}, 503
     _free_lemonade_npu()
@@ -1278,6 +1337,7 @@ def chat_completions():
         _ensure_fastflow_ready(model)
     except fastflowlm.FastFlowLMError as exc:
         npu_request_lock.release(cross_npu_lock)
+        live_report.finish(live_id, status="error", status_code=503)
         return {
             "error": {
                 "message": f"FastFlowLM could not start: {exc}",
@@ -1286,16 +1346,8 @@ def chat_completions():
         }, 503
     forwarded = request.headers.get("X-Forwarded-For") or ""
     client_ip = forwarded.split(",", 1)[0].strip() or request.remote_addr
-    # Reports this request into the metrics page's live-activity feed (see live_report.py's
-    # docstring) - this shim is the only thing inline for real OpenCode/Continue FastFlowLM
-    # traffic, so it's the only place that can see it streaming in real time. is_npu=True
-    # unconditionally: FastFlowLM is the standalone NPU runtime, not a multi-recipe server
-    # like Lemonade - every request that reaches it runs on the NPU, full stop.
-    live_id = None if request.headers.get("X-Hearth-Agent-Relay") == "1" else live_report.start(
-        source=source, backend="fastflowlm",
-        model=model, max_tokens=body.get("max_tokens"), is_npu=True,
-        request_content=_request_trace(body),
-    )
+    with open('/tmp/opencode/flm_debug.log', 'a') as fh:
+        fh.write(f"about to post to {FLM_BASE}\n")
     try:
         upstream = requests.post(
             f"{FLM_BASE}/v1/chat/completions",
@@ -1331,7 +1383,8 @@ def chat_completions():
             held_text = ""
             reported_finish = False
             try:
-                for raw_line in upstream.iter_lines(chunk_size=1):
+                lines = upstream.iter_lines(chunk_size=1)
+                for raw_line in _flm_stream_lines(lines, model) if upstream.ok else lines:
                     if raw_line is None:
                         continue
                     if not raw_line.startswith(b"data: "):

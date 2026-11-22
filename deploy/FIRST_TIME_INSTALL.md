@@ -171,9 +171,9 @@ It refreshes alongside the chat model list; unknown tool-call support means no e
 capability was reported. Re-copy generated client configs after changing models or context.
 Loaded models show a separate **loaded ctx-size** line with the runtime's active context;
 unloaded models do not show this line.
-On the **Models** page, backend sections with loaded models appear first, and loaded
-models are listed before unloaded models within each backend section. Search and warning
-filters continue to apply to the displayed list.
+Under **Models → Local models**, the **Loaded models** section lists every loaded local
+model with its backend. Other local models appear below, grouped by backend. Search and
+warning filters apply to both.
 Large OpenCode prompts can take many minutes to prefill on CPU. Lemonade is configured
 with a one-hour request timeout to prevent its internal HTTP client from aborting those
 requests. New backend installs set this automatically. For an existing Docker install,
@@ -885,10 +885,23 @@ replacing other sites or rotating tokens:
 sudo python3 tools/caddy_gateway_setup.py --add-llamacpp --system-file /etc/caddy/Caddyfile
 ```
 
+To enable **Live logs** for llama.cpp gateway requests, install the host user service from the checkout:
+
+```bash
+mkdir -p "$HOME/.config/systemd/user"
+sed "s|%h/ai-webui|$PWD|g" deploy/systemd/llamacpp-shim.service > "$HOME/.config/systemd/user/llamacpp-shim.service"
+systemctl --user daemon-reload
+systemctl --user enable --now llamacpp-shim.service
+```
+
+For streaming requests, Live logs shows llama.cpp prompt processing and cache counts before the first output token. Open traces refresh as reasoning, tool arguments, and answer text arrive.
+
+The service routes the existing authenticated Caddy upstream through localhost port 13309 at startup. After manually reloading a Caddyfile that sends traffic directly to port 8093, restart the user service to reapply the live logging route.
+
 Clients connect to HTTPS port `8448` using the existing Caddy bearer token and
 trusted local CA. The gateway allows `GET /v1/models` and
 `POST /v1/chat/completions`. Model lifecycle operations stay inside Hearth.
-**Help** includes loaded llama.cpp models in the generated client configs.
+**Help** includes installed models from the running llama.cpp router in the generated client configs, including models waiting to load. In OpenCode, select them as `llamacpp/<router model ID>`.
 
 ### Optional q38rocm backend
 
@@ -1148,6 +1161,12 @@ The **Live logs** page also has **Clear my live logs**, which clears completed h
 captured request/response traces after two confirmation warnings. In-flight rows remain
 visible, keep their saved checkpoints, and are recorded after they finish. Interrupted entries
 are retained if Hearth restarts before a request completes.
+For Lemonade’s `qwen3.8-mtp-27b-FLM`, use an 8,192-token context in OpenCode Desktop. Hearth applies this kernel limit on load and in generated client configs.
+
+Standalone FastFlowLM starts with up to 65,536 context tokens, capped at the model’s supported kernel limit.
+
+For standalone FastFlowLM clients, route chat requests through the reporting shim on port 52626. Direct engine requests on port 52625 bypass live reporting.
+
 Live logs also include text search across request metadata and opened traces. Admins
 can kill active Hearth chat and agent relay requests from their rows. Requests handled
 entirely by an external backend cannot be stopped from Hearth.

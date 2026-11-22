@@ -54,7 +54,7 @@
             <div style="margin-bottom: 10px;">
               <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="LM Studio" checked /> LM Studio</label>
               <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="Lemonade" checked /> Lemonade (Ryzen AI)</label>
-              <label id="restart-llamacpp-option" hidden><input type="checkbox" class="restart-backend-cb" value="llama.cpp" disabled /> llama.cpp</label>
+
               <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="vLLM" checked /> vLLM</label>
               <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="KoboldCPP" checked /> KoboldCPP</label>
               <label style="display: block; margin-bottom: 4px;"><input type="checkbox" class="restart-backend-cb" value="q38rocm" checked /> q38rocm</label>
@@ -129,15 +129,6 @@
             <p class="hint">Hearth starts and stops the local q38rocm service from Models. Restart it here after a backend issue; an unloaded service stays unloaded. The default loaded context is 131,072 tokens; the model maximum is 262,144. Models shows the runtime's current window.</p>
           </div>
 
-          <div class="console-card span-all">
-            <h2>llama.cpp</h2>
-            <div class="download-form">
-              <input id="settings-llamacpp-url" class="panel-input" type="url" aria-label="llama.cpp endpoint" placeholder="http://127.0.0.1:8093" autocomplete="off" />
-              <input id="settings-llamacpp-key" class="panel-input" type="password" aria-label="llama.cpp API key" placeholder="Optional API key" autocomplete="off" />
-              <button id="settings-test-llamacpp" class="panel-btn" type="button">Test connection</button>
-              <p id="settings-test-llamacpp-result" class="hint" role="status"></p>
-            </div>
-          </div>
 
           <div class="console-card span-all">
             <h2>vLLM</h2>

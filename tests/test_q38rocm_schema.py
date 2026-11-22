@@ -9,6 +9,23 @@ from tools import test_flm_model as harness
 
 
 class Q38SchemaTests(unittest.TestCase):
+    def test_unload_ignores_another_model_served_on_the_same_port(self):
+        with (
+            patch.object(q38, '_systemctl') as control,
+            patch.object(q38, 'base_url', return_value='http://localhost:8008'),
+            patch.object(q38, '_headers', return_value={}),
+            patch.object(q38.requests, 'get') as get,
+        ):
+            response = get.return_value
+            response.json.return_value = {'data': [{'id': 'deepseek-r1:8b'}]}
+            q38.unload_model(q38._MODEL_ID)
+            control.assert_called_once_with('stop', timeout=60)
+            self.assertIsNone(q38._server_model())
+            response.json.return_value['data'].append({'id': '/models/' + q38._HF_FILE})
+            self.assertEqual(q38._server_model()['id'], '/models/' + q38._HF_FILE)
+            with self.assertRaisesRegex(q38.Q38RocmError, 'still serves'):
+                q38.unload_model(q38._MODEL_ID)
+
     def test_inventory_reports_live_context_separately_from_model_maximum(self):
         path = Mock()
         path.is_file.return_value = True

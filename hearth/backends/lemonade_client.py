@@ -39,7 +39,7 @@ from hearth.models import model_test_profiles
 
 from hearth.storage import settings_store
 from hearth.backends import q38rocm_client
-from hearth.backends import lemonade_templates
+from hearth.backends import flm_context, lemonade_templates
 from hearth.backends import lemonade_thinking
 from hearth.storage import model_metadata_store
 
@@ -723,7 +723,7 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     # load on memory-constrained systems. Users can increase via the Models page.
     if not context_length:
         context_length = 4096
-    payload["ctx_size"] = context_length
+    payload["ctx_size"] = flm_context.lemonade_load_context(model_key, context_length)
 
     # A cold load of a large MoE GGUF (or Lemonade mid-evicting a previous model) can return a
     # transient 500 even though the model is fine and the very next attempt succeeds — confirmed
