@@ -516,7 +516,6 @@
       { key: "lmstudio", label: "LM Studio" },
       { key: "lemonade", label: "Ryzen AI (NPU)" },
       { key: "vllm", label: "vLLM" },
-      { key: "llamacpp", label: "llama.cpp" },
       { key: "kobold", label: "KoboldCPP" },
       { key: "fastflowlm", label: "FastFlowLM (NPU)" },
     ];

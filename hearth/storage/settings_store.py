@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS settings (
 _LEGACY_ENV_SETTINGS = {
     'LMSTUDIO_BASE_URL': 'lmstudio_base_url', 'LMSTUDIO_API_KEY': 'lmstudio_api_key',
     'LEMONADE_BASE_URL': 'lemonade_base_url', 'LEMONADE_API_KEY': 'lemonade_api_key',
-    'LLAMACPP_BASE_URL': 'llamacpp_base_url', 'LLAMACPP_API_KEY': 'llamacpp_api_key',
     'VLLM_BASE_URL': 'vllm_base_url', 'VLLM_API_KEY': 'vllm_api_key',
     'KOBOLD_BASE_URL': 'kobold_base_url', 'KOBOLD_API_KEY': 'kobold_api_key',
     'Q38ROCM_BASE_URL': 'q38rocm_base_url', 'Q38ROCM_API_KEY': 'q38rocm_api_key',

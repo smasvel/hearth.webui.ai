@@ -174,6 +174,8 @@ unloaded models do not show this line.
 Under **Models → Local models**, the **Loaded models** section lists every loaded local
 model with its backend. Other local models appear below, grouped by backend. Search and
 warning filters apply to both.
+For standalone greetings such as “hi” or “hello,” OpenCode Desktop through the
+Lemonade gateway receives a short reply directly from Hearth without model inference.
 Large OpenCode prompts can take many minutes to prefill on CPU. Lemonade is configured
 with a one-hour request timeout to prevent its internal HTTP client from aborting those
 requests. New backend installs set this automatically. For an existing Docker install,
@@ -1327,8 +1329,6 @@ An explicitly configured remote URL is preserved even when local runtimes are in
 Administrators can restart managed inference services from **Settings → Service
 controls → Restart all backends**. Hearth restarts LM Studio, Lemonade's gateway,
 vLLM, KoboldCPP, q38rocm, and FastFlowLM independently and reports each result.
-The llama.cpp Compose container is managed separately and can be restarted from its
-Settings card or with the Compose command in the Direct llama.cpp router section.
 Use **Restart q38rocm** on its Settings card to restart only that service; it must
 already be loaded. A backend
 restart interrupts active inference and may require loading the model again. Use

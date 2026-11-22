@@ -43,7 +43,7 @@
         <div class="console-head">
           <h1>Live developer logs <span id="live-count" class="hint"></span>
             <span id="npu-status" class="metric-npu-status"></span></h1>
-          <p class="hint">Timestamped request lifecycle logs, updated every second and retained for two days — Hearth chat and named clients going through Lemonade, FastFlowLM, or the llama.cpp gateway. Active rows update token counts and throughput in place; completed and failed rows remain available for diagnosis. Streaming tokens are visible for Hearth chat and OpenCode/Continue traffic through Lemonade, FastFlowLM, or the llama.cpp gateway. LM Studio/vLLM/KoboldCPP LAN traffic has no per-token visibility at the proxy layer; see Help. Each row shows whether it is running on the NPU, since a model name alone does not establish which recipe is serving it.</p>
+          <p class="hint">Timestamped request lifecycle logs, updated every second and retained for two days — Hearth chat and named clients going through Lemonade or FastFlowLM. Active rows update token counts and throughput in place; completed and failed rows remain available for diagnosis. Streaming tokens are visible for Hearth chat and OpenCode/Continue traffic through Lemonade or FastFlowLM. LM Studio/vLLM/KoboldCPP LAN traffic has no per-token visibility at the proxy layer; see Help. Each row shows whether it is running on the NPU, since a model name alone does not establish which recipe is serving it.</p>
         </div>
         <div class="model-test-controls">
           <input id="live-search" class="panel-input" type="search" placeholder="Search visible log text" aria-label="Search live logs" />

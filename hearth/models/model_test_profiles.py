@@ -5,8 +5,7 @@ RECIPE = 'strict-tools-v1'
 
 
 def key(backend, model):
-    prefix = {'fastflowlm': 'flm/', 'llamacpp': 'llamacpp/'}.get(backend, '')
-    canonical = str(model).removeprefix(prefix)
+    canonical = str(model).removeprefix('flm/') if backend == 'fastflowlm' else str(model)
     return 'tool_test_profile:' + backend + ':' + canonical
 
 

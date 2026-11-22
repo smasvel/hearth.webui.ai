@@ -15,6 +15,46 @@ from unittest.mock import patch
 from hearth.backends import lemonade_guard_shim as shim
 
 
+class OpenCodeGreetingTests(unittest.TestCase):
+    def test_exact_greeting_streams_without_contacting_the_model(self):
+        request = {
+            "model": "fixture",
+            "messages": [
+                {"role": "system", "content": "coding context " * 5000},
+                {"role": "user", "content": [{"type": "text", "text": "Hai!"}]},
+            ],
+            "tools": [{"type": "function", "function": {"name": "read"}}],
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        with patch.object(shim, "_post_chat_with_utf8_recovery") as upstream:
+            response = shim.app.test_client().post("/v1/chat/completions", json=request,
+                                                  headers={"X-Hearth-Client": "opencode"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Hearth-Response-Source"], "gateway-greeting")
+        data = response.get_data(as_text=True)
+        self.assertIn("Hi! How can I help?", data)
+        self.assertIn('"total_tokens": 0', data)
+        self.assertTrue(data.endswith("data: [DONE]\n\n"))
+        upstream.assert_not_called()
+
+    def test_task_prompts_structured_requests_and_agent_relays_keep_their_context(self):
+        direct = {"X-Hearth-Client": "opencode"}
+        bare = {"messages": [{"role": "user", "content": "Hi"}]}
+        body = {"messages": [{"role": "system", "content": "Coding context."}, *bare["messages"]]}
+        for request, headers in (
+            (bare, direct),
+            ({"messages": [body["messages"][0], {"role": "user", "content": "Hi, inspect this file"}]}, direct),
+            ({**body, "tool_choice": "required"}, direct),
+            ({**body, "response_format": {"type": "json_object"}}, direct),
+            (body, {**direct, "X-Hearth-Agent-Relay": "1"}),
+            (body, {"X-Hearth-Client": "lan"}),
+        ):
+            with self.subTest(request=request, headers=headers):
+                self.assertFalse(shim._is_opencode_greeting(request, headers))
+
+
 def sse(delta: dict, finish=None) -> bytes:
     return b"data: " + json.dumps(
         {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}

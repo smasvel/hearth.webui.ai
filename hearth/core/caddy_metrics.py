@@ -23,7 +23,7 @@ LOG_PATH = "/var/log/caddy/access.jsonl"
 
 _PORT_BACKEND = {
     "8443": "lmstudio", "8444": "lemonade", "8445": "vllm",
-    "8446": "kobold", "8447": "fastflowlm", "8448": "llamacpp",
+    "8446": "kobold", "8447": "fastflowlm",
 }
 _started = False
 _model_hint_cache: dict[str, tuple[float, str | None]] = {}

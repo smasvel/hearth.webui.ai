@@ -28,10 +28,6 @@
   const npuSearchInput = document.getElementById("npu-search-input");
   const npuResultsEl = document.getElementById("npu-results");
 
-  const llamacppSearchForm = document.getElementById("llamacpp-search-form");
-  const llamacppSearchInput = document.getElementById("llamacpp-search-input");
-  const llamacppResults = document.getElementById("llamacpp-results");
-  const llamacppDownloadExact = document.getElementById("llamacpp-download-exact");
   const q38SearchForm = document.getElementById("q38-search-form");
   const q38SearchInput = document.getElementById("q38-search-input");
   const q38ResultsEl = document.getElementById("q38-results");
@@ -87,7 +83,7 @@
 
   function trackDownload(backend, modelId) {
     currentDownload = { backend, model_id: modelId };
-    cancelBtn.classList.toggle("hidden", !["lmstudio", "vllm", "fastflowlm", "llamacpp"].includes(backend));
+    cancelBtn.classList.toggle("hidden", !["lmstudio", "vllm", "fastflowlm"].includes(backend));
     cancelBtn.disabled = false;
   }
 
@@ -99,12 +95,9 @@
 
   cancelBtn.addEventListener("click", async () => {
     if (!currentDownload || cancelBtn.disabled) return;
-    const paused = currentDownload.backend === "llamacpp";
-    const confirmText = paused ? `Pause the download for ${currentDownload.model_id}?` :
-      `Cancel ${currentDownload.model_id} and delete its partial download files?`;
-    if (!window.confirm(confirmText)) return;
+    if (!window.confirm(`Cancel ${currentDownload.model_id} and delete its partial download files?`)) return;
     cancelBtn.disabled = true;
-    progressDetail.textContent = paused ? "Pausing the download…" : "Cancelling and clearing partial files…";
+    progressDetail.textContent = "Cancelling and clearing partial files…";
     try {
       const res = await fetch("/api/models/downloads/cancel", {
         method: "POST",
@@ -113,7 +106,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      progressDetail.textContent = paused ? "Download paused. Start it again to resume." :
+      progressDetail.textContent =
         `Cancelled. Cleared ${data.files_removed} partial file(s) (${formatBytes(data.bytes_removed)}).`;
       finishTracking();
       busy = false;
@@ -265,13 +258,6 @@
     backend: "fastflowlm", container: npuResultsEl, input: npuSearchInput, emptyIsCatalog: true,
     onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(id, "fastflowlm", btn, () => searchFastflow(npuSearchInput.value.trim()), sizeGb),
     browseHint: "Search FastFlowLM's NPU catalog.",
-  });
-  const searchLlamacpp = (q) => searchBackend(q, {
-    backend: "llamacpp", container: llamacppResults, input: llamacppSearchInput,
-    onDownload: (id, _src, btn, sizeGb) => downloadStructuredCard(
-      id, "llamacpp", btn, () => searchLlamacpp(llamacppSearchInput.value.trim()), sizeGb,
-    ),
-    browseHint: "Search Hugging Face for a GGUF model.",
   });
   const searchQ38 = (q) => searchBackend(q, {
     backend: "q38rocm", container: q38ResultsEl, input: q38SearchInput,
@@ -525,16 +511,9 @@
     }
   }
 
-  function llamaCppDownloadDetail(progress) {
-    if (!progress.bytes_total) {
-      return progress.bytes_downloaded
-        ? `${formatBytes(progress.bytes_downloaded)} downloaded`
-        : "Waiting for transfer progress…";
-    }
-    return `${formatBytes(progress.bytes_downloaded)} / ${formatBytes(progress.bytes_total)}`;
-  }
-
-  // Stream structured byte-level progress and refresh the originating grid.
+  // Card "Download" for backends whose download yields structured byte-level progress
+  // (KoboldCPP, FastFlowLM) — same stream/render as downloadVllmModel, just generic over
+  // backend, and refreshes the originating grid when done.
   async function downloadStructuredCard(query, backend, triggerBtn, refresh, sizeGb) {
     if (busy) return;
     if (!window.confirm(`Download ${query} (${formatSize(sizeGb)})? This may take a while depending on size and your connection.`)) return;
@@ -553,11 +532,9 @@
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       let sawError = null;
-      let completed = false;
       await streamSse(res, (payload) => {
         if (payload.error) { sawError = payload.error; return; }
         if (payload.done) {
-          completed = true;
           progressBar.style.width = "100%";
           progressPct.textContent = "100%";
           progressDetail.textContent = "Download complete.";
@@ -566,15 +543,11 @@
         const pct = payload.percent ?? 0;
         progressBar.style.width = `${pct}%`;
         progressPct.textContent = payload.percent != null ? `${pct}%` : "";
-        progressDetail.textContent = backend === "llamacpp" ? llamaCppDownloadDetail(payload) : payload.bytes_total
+        progressDetail.textContent = payload.bytes_total
           ? `${formatBytes(payload.bytes_downloaded)} / ${formatBytes(payload.bytes_total)}`
           : (payload.file || "");
       });
       if (sawError) throw new Error(sawError);
-      if (!completed && backend === "llamacpp") {
-        progressDetail.textContent = "Live progress connection closed. Checking for the active download…";
-        return;
-      }
       if (refresh) await refresh();
     } catch (err) {
       progressDetail.textContent = `Error: ${err.message}`;
@@ -648,14 +621,6 @@
     searchFastflow(npuSearchInput.value.trim());
   });
 
-  llamacppSearchForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    searchLlamacpp(llamacppSearchInput.value.trim());
-  });
-  llamacppDownloadExact?.addEventListener("click", () => {
-    const repo = llamacppSearchInput.value.trim();
-    if (repo) downloadStructuredCard(repo, "llamacpp", llamacppDownloadExact, () => {});
-  });
   q38SearchForm.addEventListener("submit", (e) => {
     e.preventDefault();
     searchQ38(q38SearchInput.value.trim());
@@ -767,8 +732,7 @@
   let observingRemoteBackend = null;
 
   function renderFromSnapshot(entry) {
-    const autoPick = entry.source === "huggingface" && entry.backend !== "llamacpp";
-    const label = autoPick ? `${entry.model_id} (auto-picking a quantization)…` : `${entry.model_id}…`;
+    const label = entry.source === "huggingface" ? `${entry.model_id} (auto-picking a quantization)…` : `${entry.model_id}…`;
     progressWrap.classList.remove("hidden");
     trackDownload(entry.backend, entry.model_id);
     progressTitle.textContent = `Downloading ${label}`;
@@ -776,11 +740,10 @@
       const p = entry.progress;
       const pct = p.percent || 0;
       progressBar.style.width = `${pct}%`;
-      progressPct.textContent = p.done ? "100%" : entry.backend === "llamacpp" && p.percent == null ? "" : `${pct}%`;
+      progressPct.textContent = p.done ? "100%" : `${pct}%`;
       const bytesText = p.bytes_total ? ` — ${formatBytes(p.bytes_downloaded)} / ${formatBytes(p.bytes_total)}` : "";
       progressDetail.textContent = p.done
         ? "Download complete."
-        : entry.backend === "llamacpp" ? llamaCppDownloadDetail(p)
         : `${p.file || ""} (file ${p.file_index ?? "?"}/${p.total_files ?? "?"})${bytesText}`;
       progressLog.classList.add("hidden");
     } else {
@@ -812,7 +775,6 @@
             kobold: () => searchKobold(koboldSearchInput.value.trim()),
             fastflowlm: () => searchFastflow(npuSearchInput.value.trim()),
             lmstudio: () => searchLmstudio(lmSearchInput.value.trim()),
-            llamacpp: () => searchLlamacpp(llamacppSearchInput.value.trim()),
           };
           (refreshers[observingRemoteBackend] || (() => searchCatalog(searchInput.value.trim())))();
           observingRemoteBackend = null;

@@ -33,6 +33,7 @@ import queue
 import re
 import threading
 import time
+import uuid
 
 import requests
 from hearth.models import model_test_profiles
@@ -127,6 +128,50 @@ def _source_from_headers(headers) -> str:
         return agent_name
     client = (headers.get("X-Hearth-Client") or "").lower()
     return client if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", client) else "lan"
+
+
+def _is_opencode_greeting(body: dict, headers) -> bool:
+    """Recognize plain greetings without intercepting assignments or structured work."""
+    if (_source_from_headers(headers) != "opencode" or headers.get("X-Hearth-Agent-Relay") == "1"
+            or body.get("tool_choice") not in (None, "auto", "none")
+            or body.get("response_format") or body.get("function_call") or body.get("functions")):
+        return False
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    if len(messages) == 1 and not body.get("tools"):
+        return False
+    latest = messages[-1]
+    if not isinstance(latest, dict) or latest.get("role") != "user":
+        return False
+    content = latest.get("content")
+    if (isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+            and content[0].get("type") == "text"):
+        content = content[0].get("text")
+    return isinstance(content, str) and bool(re.fullmatch(r"(?:hi|hai|hello|hey)[!.]*", content.strip(), re.I))
+
+
+def _opencode_greeting_response(body: dict):
+    """Return the same OpenAI-compatible shape without starting model inference."""
+    headers = {"X-Hearth-Response-Source": "gateway-greeting", "Cache-Control": "no-store"}
+    result = {"id": "chatcmpl-" + uuid.uuid4().hex, "created": int(time.time()), "model": body.get("model")}
+    message = {"role": "assistant", "content": "Hi! How can I help?"}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    if not body.get("stream"):
+        return {**result, "object": "chat.completion", "usage": usage,
+                "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}, 200, headers
+
+    def events():
+        chunk = {**result, "object": "chat.completion.chunk"}
+        for delta, finish in ((message, None), ({}, "stop")):
+            event = {**chunk, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            yield f"data: {json.dumps(event)}\n\n"
+        options = body.get("stream_options")
+        if isinstance(options, dict) and options.get("include_usage"):
+            yield f"data: {json.dumps({**chunk, 'choices': [], 'usage': usage})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(events(), headers=headers, content_type="text/event-stream")
 
 
 def _client_ip(headers, fallback: str | None) -> str | None:
@@ -667,6 +712,8 @@ class _KeepaliveLineReader:
 def chat_completions():
     started = time.monotonic()
     body = request.get_json(force=True, silent=True) or {}
+    if _is_opencode_greeting(body, request.headers):
+        return _opencode_greeting_response(body)
     body = advice_disclaimer.apply_body(body)
     body = lemonade_thinking.apply(model_test_profiles.apply(body, "lemonade"))
     body = _prepare_agent_request(body)

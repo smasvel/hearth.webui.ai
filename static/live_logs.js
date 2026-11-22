@@ -77,7 +77,7 @@
         line.appendChild(stop);
       }
       const progress = row.prompt_progress;
-      const output = row.backend === "llamacpp" && !done && row.ttft_s == null && !row.tokens
+      const output = !done && row.ttft_s == null && !row.tokens
         ? "awaiting output" : `${row.tokens ?? 0} output tok`;
       const stats = [output, row.tokens_per_sec != null ? `${row.tokens_per_sec} tok/s` : null,
         row.ttft_s != null ? `TTFT ${row.ttft_s}s` : null, `${row.elapsed_s ?? 0}s`,

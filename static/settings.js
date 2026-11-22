@@ -265,7 +265,7 @@
       group.label = BACKEND_LABELS[backend] || backend;
       for (const m of backendModels) {
         const opt = document.createElement("option");
-        opt.value = m.backend === "llamacpp" ? m.id : `${m.backend}/${m.id}`;
+        opt.value = `${m.backend}/${m.id}`;
         // `quantization` is normalized by each client to the actual compute path when
         // known (NPU, GPU, CPU). This prevents an "-NPU" marketing/model name from being
         // mistaken for NPU execution when Lemonade reports a llamacpp/GPU recipe.

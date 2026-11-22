@@ -62,7 +62,7 @@ class AdminAccountIsolationTests(unittest.TestCase):
 
     def test_downloads_are_serialized_across_backends_and_admins(self):
         with (
-            patch.object(app, "_active_download_threads", {"llamacpp:owner/one": Mock()}),
+            patch.object(app, "_active_download_threads", {"fastflowlm:owner/one": Mock()}),
             patch.object(app.video_generation, "model_download_active", return_value=False),
             patch.object(app.video_generation, "start_model_download") as prepare,
         ):
