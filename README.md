@@ -43,7 +43,6 @@ runtime or optional hosted provider.
 | [LM Studio](https://lmstudio.ai) | Local chat and GGUF models | CPU or GPU execution supported by the installed runtime |
 | [Lemonade](https://github.com/lemonade-sdk/lemonade) | Local chat, speech, image, and video models | Supports compatible CPU, GPU, and Ryzen AI NPU recipes |
 | [vLLM](https://github.com/vllm-project/vllm) | Local model serving | Connect Hearth to a configured vLLM OpenAI-compatible endpoint |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Local GGUF chat | Upstream llama-server with model management, downloads, tests, and an authenticated client gateway |
 | [KoboldCPP](https://github.com/LostRuins/koboldcpp) | Local GGUF chat models | CPU or GPU execution supported by the installed build |
 | [FastFlowLM](https://github.com/ROCm/FastFlowLM) | Ryzen AI NPU chat models | Runs as a separate host service |
 | q38rocm | Qwen 3.8 local inference | Optional Radeon Vulkan backend; see the setup guide |
