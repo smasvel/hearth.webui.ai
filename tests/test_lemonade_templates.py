@@ -56,6 +56,33 @@ class DevstralTemplateTests(unittest.TestCase):
             {},
         )
 
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=24 * 1024**3)
+    def test_qwen_27b_uses_rocm_when_installed_and_reduces_attention_cache(self, budget):
+        model = 'PhillyLabs-Qwen3.8-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS'
+        current = {'ctx_size': 65536, 'llamacpp_args': '--parallel 1'}
+
+        options = lemonade_templates.load_options(
+            model, current, model_size_gb=15.4, rocm_available=True,
+        )
+
+        self.assertEqual(options['llamacpp_backend'], 'rocm')
+        self.assertEqual(options['ctx_size'], 65536)
+        self.assertIn('--flash-attn on', options['llamacpp_args'])
+        self.assertIn('--cache-type-k q8_0', options['llamacpp_args'])
+        self.assertIn('--cache-type-v q8_0', options['llamacpp_args'])
+        self.assertIn('--parallel 1', options['llamacpp_args'])
+        self.assertEqual(current['llamacpp_args'], '--parallel 1')
+
+    @patch.object(lemonade_templates, '_amd_shared_gpu_budget_bytes', return_value=24 * 1024**3)
+    def test_qwen_27b_keeps_safe_cpu_fallback_when_rocm_is_unavailable(self, budget):
+        options = lemonade_templates.load_options(
+            'Qwen3.8-27B-GGUF', model_size_gb=15.4, rocm_available=False,
+        )
+
+        self.assertEqual(options['llamacpp_backend'], 'cpu')
+        self.assertIn('--flash-attn on', options['llamacpp_args'])
+        self.assertIn('--cache-type-v q8_0', options['llamacpp_args'])
+
     def test_scoped_override_preserves_context_and_is_idempotent(self):
         current = {"ctx_size": 63569, "llamacpp_args": "--parallel 1"}
         options = lemonade_templates.load_options("Devstral-Small-2507-GGUF", current)

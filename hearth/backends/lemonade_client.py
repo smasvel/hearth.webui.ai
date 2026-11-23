@@ -57,6 +57,9 @@ EMBEDDING_MODEL_ID = os.environ.get("LEMONADE_EMBEDDING_MODEL_ID", "nomic-embed-
 _LOAD_RETRIES = 5
 _LOAD_RETRY_BACKOFF_SECONDS = 3.0
 _LOAD_RETRY_JITTER_SECONDS = 2.0
+_LLAMACPP_BACKENDS_TTL = 300.0
+_llamacpp_backends_cache: tuple[float, set[str]] | None = None
+_llamacpp_backends_lock = threading.Lock()
 
 
 def base_url() -> str:
@@ -72,6 +75,28 @@ def api_key() -> str | None:
 def _auth_headers() -> dict:
     key = api_key()
     return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def llamacpp_backend_installed(backend: str) -> bool:
+    """Check Lemonade's runtime capability list; cached to avoid a request on each load."""
+    global _llamacpp_backends_cache
+    now = time.monotonic()
+    with _llamacpp_backends_lock:
+        if (_llamacpp_backends_cache is not None
+                and now - _llamacpp_backends_cache[0] < _LLAMACPP_BACKENDS_TTL):
+            return backend in _llamacpp_backends_cache[1]
+        try:
+            response = requests.get(
+                f"{base_url()}/v1/system-info", headers=_auth_headers(), timeout=5,
+            )
+            response.raise_for_status()
+            backends = response.json().get("recipes", {}).get("llamacpp", {}).get("backends", {})
+            installed = {name for name, details in backends.items()
+                         if isinstance(details, dict) and details.get("state") == "installed"}
+            _llamacpp_backends_cache = (now, installed)
+        except (requests.RequestException, ValueError, TypeError):
+            return False
+        return backend in installed
 
 
 class LemonadeError(RuntimeError):
@@ -717,7 +742,13 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
                             f"'{model_key}' has an incomplete download and cannot be loaded yet.")
     payload: dict = {"model_name": model_key}
     model_size = inventory_entry.get("size_gb") if inventory_entry else None
-    payload.update(lemonade_templates.load_options(model_key, model_size_gb=model_size))
+    recipe = (inventory_entry or {}).get("recipe")
+    if recipe in (None, "llamacpp"):
+        payload.update(lemonade_templates.load_options(
+            model_key,
+            model_size_gb=model_size,
+            rocm_available=llamacpp_backend_installed("rocm"),
+        ))
     # Default to a 4096-token context window when none is specified; Lemonade's own
     # default (1280) is far too small for real chat, but large windows can fail to
     # load on memory-constrained systems. Users can increase via the Models page.
@@ -731,48 +762,66 @@ def load_model(model_key: str, context_length: int | None = None, **_ignored) ->
     # connection errors get a few retries with backoff. Non-5xx HTTP responses are *not* transient
     # (an unknown model key / RAM-refusal / bad payload fails identically every attempt) — fail
     # fast on those rather than burning the whole backoff budget and surfacing a misleading error.
-    last_error = ""
     # Lemonade may download and verify missing FLM weights inside the load call.
     # Match the Docker request window so a large first load isn't retried mid-pull.
     load_timeout = 3600 if (inventory_entry or {}).get("recipe") == "flm" else 600
-    for attempt in range(1, _LOAD_RETRIES + 1):
-        try:
-            resp = requests.post(
-                f"{base_url()}/v1/load", json=payload, headers=_auth_headers(), timeout=load_timeout
-            )
-            if resp.status_code < 500:
-                break
-            # Include the response body so crash details (e.g. "exited before
-            # becoming healthy") are available for the error message below.
+    def post_load(load_payload: dict) -> tuple[requests.Response | None, str]:
+        last_error = ""
+        response = None
+        for attempt in range(1, _LOAD_RETRIES + 1):
             try:
-                body_text = resp.text[:500]
-            except Exception:
-                body_text = ""
-            last_error = f"Server Error (HTTP {resp.status_code}) from url: {resp.url}: {body_text}"
-        except requests.RequestException as exc:
-            # Connection reset / timeout while the backend process is spawning — transient, retry.
-            last_error = str(exc)
-            resp = None
-        if attempt < _LOAD_RETRIES:
-            # If Lemonade is down (service crashed), don't retry — it won't help.
-            try:
-                requests.get(f"{base_url()}/v1/health", headers=_auth_headers(), timeout=5).raise_for_status()
-            except requests.RequestException:
-                raise LemonadeError(
-                    f"Failed to load '{model_key}' on Lemonade: the backend service "
-                    f"went down during loading. Restart Lemonade and retry."
+                response = requests.post(
+                    f"{base_url()}/v1/load", json=load_payload,
+                    headers=_auth_headers(), timeout=load_timeout,
                 )
-            time.sleep(_LOAD_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, _LOAD_RETRY_JITTER_SECONDS))
-    else:
+                if response.status_code < 500:
+                    return response, last_error
+                try:
+                    body_text = response.text[:500]
+                except Exception:
+                    body_text = ""
+                last_error = (
+                    f"Server Error (HTTP {response.status_code}) from url: "
+                    f"{response.url}: {body_text}"
+                )
+            except requests.RequestException as exc:
+                # Connection reset / timeout while the backend process is spawning — transient.
+                last_error = str(exc)
+                response = None
+            if attempt < _LOAD_RETRIES:
+                try:
+                    requests.get(
+                        f"{base_url()}/v1/health", headers=_auth_headers(), timeout=5,
+                    ).raise_for_status()
+                except requests.RequestException:
+                    return None, f"{last_error}; Lemonade went down during model loading"
+                time.sleep(
+                    _LOAD_RETRY_BACKOFF_SECONDS * attempt
+                    + random.uniform(0, _LOAD_RETRY_JITTER_SECONDS)
+                )
+        return response, last_error
+
+    resp, last_error = post_load(payload)
+    if (resp is None or resp.status_code >= 400) and payload.get("llamacpp_backend") == "rocm":
+        # ROCm may be available yet fail for a particular model or driver. Keep the
+        # configured context and cache settings, but recover on the safe CPU backend.
+        rocm_error = last_error or (
+            f"HTTP {resp.status_code}: {resp.text[:300]}" if resp is not None
+            else "no response from Lemonade"
+        )
+        fallback_payload = {**payload, "llamacpp_backend": "cpu"}
+        resp, fallback_error = post_load(fallback_payload)
+        if resp is not None and resp.status_code < 400:
+            payload = fallback_payload
+        else:
+            last_error = f"ROCm failed ({rocm_error}); CPU fallback failed ({fallback_error})"
+
+    if resp is None or resp.status_code >= 400:
         if "exited before becoming healthy" in last_error or "llama-server" in last_error:
             raise LemonadeError(
-                f"Failed to load '{model_key}' on Lemonade after {_LOAD_RETRIES} attempts: "
-                f"the backend (llama-server) crashed during loading. Free up RAM or check "
-                f"the model file integrity and retry."
+                f"Failed to load '{model_key}' on Lemonade: llama-server crashed during loading. "
+                f"Free up RAM or check the model file integrity and retry."
             )
-        raise LemonadeError(f"Failed to load '{model_key}' on Lemonade after {_LOAD_RETRIES} attempts: {last_error}")
-
-    if resp is None or resp.status_code >= 500:
         raise LemonadeError(f"Failed to load '{model_key}' on Lemonade: {last_error}")
     try:
         resp.raise_for_status()

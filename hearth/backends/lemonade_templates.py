@@ -7,6 +7,7 @@ falls straight through to `{}` (no options), so this never breaks a model it doe
 recognize.
 """
 import shlex
+import re
 from pathlib import Path
 
 
@@ -37,14 +38,31 @@ _LARGE_CONTEXT_FLM_MODELS = {
 }
 _LARGE_CONTEXT_TOKENS = 120_000
 
+_QWEN_27B_ACCELERATION_ARGS = (
+    ("--flash-attn", "on"),
+    ("--cache-type-k", "q8_0"),
+    ("--cache-type-v", "q8_0"),
+)
 
-def load_options(model_id: str, current: dict | None = None, model_size_gb: float | None = None) -> dict:
-    if model_id.lower() in _LARGE_CONTEXT_FLM_MODELS:
-        options = dict(current or {})
+
+def load_options(model_id: str, current: dict | None = None, model_size_gb: float | None = None,
+                 *, rocm_available: bool = False) -> dict:
+    model_key = model_id.lower()
+    options = dict(current or {})
+    if model_key in _LARGE_CONTEXT_FLM_MODELS:
         options.setdefault('ctx_size', _LARGE_CONTEXT_TOKENS)
-        return options
+    is_qwen_27b = bool(re.search(r"qwen.*\b27b\b", model_key))
+    if is_qwen_27b:
+        args = shlex.split(options.get("llamacpp_args") or "")
+        for flag, value in _QWEN_27B_ACCELERATION_ARGS:
+            if flag not in args:
+                args.extend((flag, value))
+        options["llamacpp_args"] = shlex.join(args)
+        if rocm_available:
+            options["llamacpp_backend"] = "rocm"
+
     shared_gpu_budget = _amd_shared_gpu_budget_bytes()
-    known_gpu_heavy = model_id.lower() in {
+    known_gpu_heavy = model_key in {
             'nvidia-nemotron-3.5-lightning-30b-a3b-gguf',
             'ornith-1.5-35b-a3b-gguf',
             'k2-horizon-mova-36b-a4b-gguf',
@@ -56,12 +74,11 @@ def load_options(model_id: str, current: dict | None = None, model_size_gb: floa
     if (shared_gpu_budget is not None and shared_gpu_budget < 32 * 1024**3
             and (known_gpu_heavy or (model_size_gb is not None and
                  model_size_gb * 1e9 >= shared_gpu_budget * 0.5))):
-        options = dict(current or {})
-        options['llamacpp_backend'] = 'cpu'
+        if not (is_qwen_27b and rocm_available):
+            options['llamacpp_backend'] = 'cpu'
         return options
-    if model_id.lower() != "devstral-small-2507-gguf":
-        return {}
-    options = dict(current or {})
+    if model_key != "devstral-small-2507-gguf":
+        return options if (is_qwen_27b or model_key in _LARGE_CONTEXT_FLM_MODELS) else {}
     args = shlex.split(options.get("llamacpp_args") or "--parallel 1")
     if "--chat-template" in args and args[args.index("--chat-template") + 1] == "mistral-v7":
         pos = args.index("--chat-template")

@@ -34,6 +34,7 @@ class LoadModelRetryTests(unittest.TestCase):
         resp = types.SimpleNamespace(
             status_code=status_code,
             url="http://localhost:13305/v1/load",
+            text="test backend error",
         )
 
         def raise_for_status():
@@ -69,6 +70,23 @@ class LoadModelRetryTests(unittest.TestCase):
                                        self._response(200)]) as post:
             lemonade_client.load_model("K2-Horizon-MoVA-36B-A4B-GGUF")
             self.assertEqual(post.call_count, 2)
+
+    def test_qwen_rocm_load_falls_back_to_cpu_with_same_context_and_cache_flags(self):
+        model = "PhillyLabs-Qwen3.8-27B-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS"
+        inventory = [{"id": model, "recipe": "llamacpp", "size_gb": 15.4}]
+        with patch.object(lemonade_client, "list_models", return_value=inventory), \
+             patch.object(lemonade_client, "llamacpp_backend_installed", return_value=True), \
+             patch.object(lemonade_client.lemonade_templates, "_amd_shared_gpu_budget_bytes",
+                          return_value=24 * 1024**3), \
+             patch.object(lemonade_client.requests, "post",
+                          side_effect=[self._response(400), self._response(200)]) as post:
+            lemonade_client.load_model(model, context_length=65536)
+
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["llamacpp_backend"], "rocm")
+        fallback = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(fallback["llamacpp_backend"], "cpu")
+        self.assertEqual(fallback["ctx_size"], 65536)
+        self.assertIn("--cache-type-v q8_0", fallback["llamacpp_args"])
 
 
 if __name__ == "__main__":

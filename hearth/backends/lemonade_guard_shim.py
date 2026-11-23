@@ -46,6 +46,7 @@ from hearth.compat import granite_tool_compat
 from flask import Flask, Response, request
 
 from hearth.backends import fastflowlm_client as fastflowlm
+from hearth.backends import lemonade_client
 from hearth.core import live_report
 from hearth.core import advice_disclaimer
 from hearth.storage import model_metadata_store
@@ -77,17 +78,21 @@ def _saved_model_context(model_id: str) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
-def _catalog_model_size_gb(model_id: str) -> float | None:
-    """Read Lemonade's local size metadata for the implicit-load safety policy."""
+def _catalog_model_info(model_id: str) -> dict:
+    """Read Lemonade's local recipe and size metadata for implicit-load policy."""
     try:
         response = requests.get(f"{LEMONADE_BASE}/v1/models", params={"show_all": "true"}, timeout=5)
         response.raise_for_status()
         for entry in response.json().get("data", []):
-            if entry.get("id") == model_id and isinstance(entry.get("size"), (int, float)):
-                return float(entry["size"])
+            if entry.get("id") == model_id:
+                return {
+                    "size_gb": float(entry["size"])
+                    if isinstance(entry.get("size"), (int, float)) else None,
+                    "recipe": entry.get("recipe"),
+                }
     except (requests.RequestException, ValueError):
         pass
-    return None
+    return {}
 
 
 def _normalize_tool_choice(body: dict) -> dict:
@@ -588,7 +593,12 @@ def _unload_before_implicit_load(model_id: str) -> None:
     models remain resident.
     """
     try:
-        model_size_gb = _catalog_model_size_gb(model_id)
+        model_info = _catalog_model_info(model_id)
+        model_size_gb = model_info.get("size_gb")
+        rocm_available = (
+            model_info.get("recipe") == "llamacpp"
+            and lemonade_client.llamacpp_backend_installed("rocm")
+        )
         health = requests.get(f"{LEMONADE_BASE}/v1/health", timeout=5)
         health.raise_for_status()
         models = health.json().get("all_models_loaded", [])
@@ -596,7 +606,8 @@ def _unload_before_implicit_load(model_id: str) -> None:
         for entry in models:
             if entry.get("model_name") == model_id and entry.get("loaded", True):
                 options = lemonade_templates.load_options(
-                    model_id, entry.get("recipe_options"), model_size_gb=model_size_gb
+                    model_id, entry.get("recipe_options"), model_size_gb=model_size_gb,
+                    rocm_available=rocm_available,
                 )
                 if saved_context:
                     options["ctx_size"] = saved_context
@@ -616,7 +627,9 @@ def _unload_before_implicit_load(model_id: str) -> None:
                     json={"model_name": loaded_id}, timeout=60,
                 )
                 resp.raise_for_status()
-        options = lemonade_templates.load_options(model_id, model_size_gb=model_size_gb)
+        options = lemonade_templates.load_options(
+            model_id, model_size_gb=model_size_gb, rocm_available=rocm_available,
+        )
         if saved_context:
             # Load explicitly before forwarding the chat request so Lemonade cannot
             # auto-load this model at its catalog/default context and ignore Hearth's

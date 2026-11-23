@@ -1039,6 +1039,17 @@ remain grouped by backend and show their load state and lifecycle controls; host
 opencode.ai models appear on the Online models tab and are managed by the provider.
 The **Loaded now** summary lists local runtime models only.
 
+For Qwen 27B GGUF models, Hearth enables Flash Attention and Q8 KV caches without
+changing the model's configured context. On supported AMD GPUs, installing Lemonade's
+ROCm llama.cpp backend enables Hearth to select ROCm for these models on their next load:
+
+```bash
+docker exec lemonade-server /opt/lemonade/lemonade backends install llamacpp:rocm
+```
+
+If ROCm is unavailable, Hearth keeps the safe CPU backend. FLM Qwen models use the AMD
+NPU through Lemonade's FLM recipe and are configured separately from GGUF models.
+
 ```bash
 docker compose --env-file .env.postgres ps
 systemctl --user status ai-webui.service
