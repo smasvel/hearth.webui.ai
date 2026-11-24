@@ -2434,7 +2434,9 @@ def api_list_models():
     # opencode.ai — remote hosted gateway; no key configured is an empty group.
     try:
         zen_models = zen.list_models()
-    except zen.OpenCodeError:
+    except Exception:
+        # A missing, invalid, or undecryptable opencode.ai credential must never
+        # hide the local models in this list — only the remote group goes empty.
         zen_models = []
     for m in zen_models:
         m["backend"] = "opencode"

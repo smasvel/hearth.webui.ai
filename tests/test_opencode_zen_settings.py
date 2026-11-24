@@ -74,6 +74,12 @@ class OpenCodeKeyStorageTests(unittest.TestCase):
         self.assertEqual(settings_store.get('opencode_api_key'), 'sk-live-zen-key')
         self.assertIsNone(settings_store.get('opencode_api_base_url'))
 
+    def test_corrupt_stored_key_is_treated_as_unconfigured(self):
+        from hearth.backends import opencode_client as zen
+        with database.connect() as conn:
+            conn.execute("INSERT INTO settings(key,value) VALUES('opencode_api_key','v1:corrupt')")
+        self.assertEqual(zen.api_key(), '')
+
     def test_unknown_test_target_is_rejected(self):
         import app
         with patch.object(app, '_read_caddy_info', return_value=None):

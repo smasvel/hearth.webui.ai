@@ -75,7 +75,12 @@ def _models_url() -> str:
 
 
 def api_key() -> str:
-    return settings_store.get("opencode_api_key") or ""
+    try:
+        return settings_store.get("opencode_api_key") or ""
+    except Exception:
+        # A corrupt/stale encrypted credential must degrade to "unconfigured"
+        # rather than breaking model listing and Help config generation.
+        return ""
 
 
 def _headers() -> dict[str, str]:
