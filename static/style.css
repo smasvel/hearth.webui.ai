@@ -1240,6 +1240,12 @@ h6.msg-heading { font-size: 14px; color: var(--text-dim); text-transform: upperc
   padding: 12px 16px;
   border-top: 1px solid var(--border);
 }
+.code-modal-footer .composer-icon-btn {
+  width: auto;
+  height: 36px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
 
 #chat-input:focus { outline: none; border-color: var(--accent); }
 
