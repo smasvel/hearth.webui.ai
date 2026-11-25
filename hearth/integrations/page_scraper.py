@@ -24,6 +24,7 @@ browser with per-thread synchronization, or one browser process per worker threa
 
 from __future__ import annotations
 
+import re
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
@@ -65,6 +66,31 @@ _AD_HOST_PARTS = (
 _AD_PATH_PARTS = (
     "/sponsored/", "/sponsor/", "/advertisement/", "/adclick", "/clickserve",
 )
+# Reserved/non-public suffixes must never be navigated to as "search results".
+# Search backends (and models) occasionally emit synthetic hosts like
+# https://duckduckgo.invalid/ — Playwright would happily try to resolve them.
+_INVALID_HOST_SUFFIXES = (
+    ".invalid", ".test", ".localhost", ".example", ".local", ".internal",
+)
+
+
+_BLOCKED_PAGE_RE = re.compile(
+    r"\b(?:404|not found|403|forbidden|401|unauthorized|access denied|permission denied)\b",
+    re.I,
+)
+
+
+def _page_is_unusable(status: int | None, title: str, text: str) -> bool:
+    """Reject HTTP error pages and bot/auth walls before their text reaches research.
+
+    Playwright happily renders a 404/403/401 body and a plain snapshot of "Access
+    Denied" looks like real content to the model. Callers use this to skip such a
+    result and continue with the next candidate instead of reasoning from an error.
+    """
+    if isinstance(status, int) and status >= 400:
+        return True
+    head = (title + "\n" + text[:600]).lower()
+    return bool(_BLOCKED_PAGE_RE.search(head))
 
 
 def is_allowed_navigation_url(url: str) -> bool:
@@ -74,6 +100,12 @@ def is_allowed_navigation_url(url: str) -> bool:
         host = (parsed.hostname or "").lower()
         path = (parsed.path or "").lower()
         if parsed.scheme not in ("http", "https") or not host:
+            return False
+        if any(host.endswith(suffix) for suffix in _INVALID_HOST_SUFFIXES):
+            return False
+        # A routable public host needs a dotted, alphabetic TLD; bare hostnames and
+        # numeric-only labels are not valid destinations for online research.
+        if "." not in host or not host.rsplit(".", 1)[-1].isalpha():
             return False
         if any(part in host for part in _AD_HOST_PARTS):
             return False
@@ -252,7 +284,8 @@ def fetch_pages(
                     try:
                         page = context.new_page()
                         try:
-                            page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                            status = getattr(response, "status", None)
                             if not is_allowed_navigation_url(page.url):
                                 continue
                             page.wait_for_timeout(settle_ms)
@@ -260,6 +293,9 @@ def fetch_pages(
                                 visit_title = (page.title() or "").strip() or None
                             except Exception:
                                 visit_title = None
+                            if _page_is_unusable(status, visit_title or "", ""):
+                                _report_progress(f"Skipped {url}: page is unavailable or access denied.")
+                                continue
                             screenshot_name = None
                             page_images: list[str] = []
                             if screenshot_dir is not None:
@@ -277,6 +313,9 @@ def fetch_pages(
                                     page_images = []
                             text = (page.evaluate(_EXTRACT_TEXT_JS) or "").strip()
                             html = page.content()
+                            if _page_is_unusable(status, visit_title or "", text):
+                                _report_progress(f"Skipped {url}: page is unavailable or access denied.")
+                                continue
                             if text or html:
                                 visit_ok = True
                                 out[url] = {

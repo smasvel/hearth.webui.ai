@@ -23,6 +23,11 @@ class MCPEventLoopTests(unittest.TestCase):
         self.assertNotIn("playwright__browser_run_code_unsafe", selected_names)
         self.assertNotIn("playwright__browser_take_screenshot", selected_names)
 
+    def test_blocked_page_snapshot_is_flagged_for_skip(self):
+        self.assertIsNotNone(mcp_tools_client._blocked_page_notice("403 Forbidden"))
+        self.assertIsNotNone(mcp_tools_client._blocked_page_notice("Page not found"))
+        self.assertIsNone(mcp_tools_client._blocked_page_notice("Article about HTTP status codes"))
+
     def test_large_browser_result_is_bounded_with_beginning_and_end_preserved(self):
         result = "START" + ("x" * 5000) + "END"
         compacted = mcp_tools_client.compact_chat_tool_result(result)

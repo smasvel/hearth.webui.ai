@@ -290,6 +290,20 @@ async def _call(server_name: str, tool_name: str, arguments: dict) -> str:
     return text
 
 
+_BLOCKED_PAGE_RE = re.compile(
+    r"\b(?:404|not found|403|forbidden|401|unauthorized|access denied|permission denied)\b",
+    re.I,
+)
+
+
+def _blocked_page_notice(snapshot: str) -> str | None:
+    """Detect an error/auth page so the model skips it instead of treating it as evidence."""
+    head = (snapshot or "")[:800]
+    if _BLOCKED_PAGE_RE.search(head):
+        return "Page validation: unavailable, not found, or access denied — skip this result and try the next one."
+    return None
+
+
 async def _inspect_open_tabs() -> str:
     """Wait for pages/popups, then select and snapshot every open browser tab."""
     wait_result = await _call("playwright", "browser_wait_for", {"time": 2})
@@ -299,7 +313,9 @@ async def _inspect_open_tabs() -> str:
     tab_lines = [line for line in tabs.splitlines() if re.match(r"\s*-\s*\d+:", line)]
     if not tab_lines:
         snapshot = await _call("playwright", "browser_snapshot", {"depth": 4})
-        return f"Open-page inspection (current page):\n{snapshot}"
+        notice = _blocked_page_notice(snapshot)
+        return (f"Open-page inspection (current page):\n{notice}" if notice
+                else f"Open-page inspection (current page):\n{snapshot}")
 
     sections = ["Open pages discovered (including popup tabs):", tabs]
     for line in tab_lines:
@@ -313,6 +329,10 @@ async def _inspect_open_tabs() -> str:
             continue
         page_wait = await _call("playwright", "browser_wait_for", {"time": 2})
         snapshot = await _call("playwright", "browser_snapshot", {"depth": 4})
+        notice = _blocked_page_notice(snapshot)
+        if notice:
+            sections.append(f"\n{line}\nPage settled: {page_wait}\n{notice}")
+            continue
         if len(snapshot) > 850:
             snapshot = snapshot[:620] + "\n[… page snapshot shortened …]\n" + snapshot[-190:]
         sections.append(f"\n{line}\nPage settled: {page_wait}\nPage snapshot:\n{snapshot}")
