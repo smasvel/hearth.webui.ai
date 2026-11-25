@@ -54,6 +54,24 @@ class PostgreSQLStoreTests(unittest.TestCase):
         self.assertEqual(users_store.count_users(), 1)
         self.assertEqual(users_store.count_admins(), 1)
 
+    def test_caddy_token_is_encrypted_at_rest_and_readable_through_store(self):
+        user = users_store.create_user('token-owner', 'password', 'admin')
+        with database.connect() as conn:
+            stored = conn.execute(
+                'SELECT caddy_token FROM users WHERE id = %s', (user['id'],)
+            ).fetchone()['caddy_token']
+        self.assertTrue(stored.startswith('v1:'))
+        self.assertNotEqual(stored, user['caddy_token'])
+        self.assertEqual(users_store.get_caddy_token(user['id']), user['caddy_token'])
+        regenerated = users_store.regenerate_caddy_token(user['id'])
+        self.assertNotEqual(regenerated, user['caddy_token'])
+        with database.connect() as conn:
+            rotated = conn.execute(
+                'SELECT caddy_token FROM users WHERE id = %s', (user['id'],)
+            ).fetchone()['caddy_token']
+        self.assertTrue(rotated.startswith('v1:'))
+        self.assertEqual(users_store.get_caddy_token(user['id']), regenerated)
+
     def test_chat_ownership_truncation_and_cascade(self):
         chat_store.ensure_conversation('c', 'owner', 'model', 'First message')
         for value in ('one', 'two', 'three'):

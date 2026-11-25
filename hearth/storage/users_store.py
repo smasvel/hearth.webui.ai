@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from hearth.storage import database
+from hearth.storage import secret_store
 import time
 import uuid
 
@@ -40,6 +41,25 @@ def _new_caddy_token() -> str:
     return secrets.token_hex(32)
 
 
+def _store_caddy_token(token: str) -> str:
+    """Persist a personal Caddy credential encrypted at rest."""
+    try:
+        return secret_store.encrypt_setting(token)
+    except Exception:
+        raise RuntimeError("Could not encrypt the Caddy token; secret storage is unavailable.")
+
+
+def _read_caddy_token(stored: str | None) -> str | None:
+    if not stored:
+        return None
+    if not stored.startswith('v1:'):
+        return stored  # legacy plaintext row not migrated yet
+    try:
+        return secret_store.decrypt_setting(stored)
+    except Exception:
+        return None
+
+
 def _connect():
     return database.connect()
 
@@ -66,10 +86,18 @@ def init_db() -> None:
         )
         if not has_agent_permission:
             conn.execute("UPDATE users SET agentic_workflow_enabled = (role = 'admin')")
-        for row in conn.execute("SELECT id FROM users WHERE caddy_token IS NULL").fetchall():
-            conn.execute(
-                "UPDATE users SET caddy_token = %s WHERE id = %s", (_new_caddy_token(), row["id"])
-            )
+        for row in conn.execute("SELECT id, caddy_token FROM users").fetchall():
+            stored = row["caddy_token"]
+            if stored is None:
+                conn.execute(
+                    "UPDATE users SET caddy_token = %s WHERE id = %s",
+                    (_store_caddy_token(_new_caddy_token()), row["id"]),
+                )
+            elif not stored.startswith('v1:'):
+                conn.execute(
+                    "UPDATE users SET caddy_token = %s WHERE id = %s",
+                    (_store_caddy_token(stored), row["id"]),
+                )
 
 
 def new_id() -> str:
@@ -186,13 +214,14 @@ def _insert_user(username: str, password_hash: str, role: str, created_at: float
                  agentic_workflow_enabled: bool | None = None) -> dict:
     user_id = new_id()
     caddy_token = _new_caddy_token()
+    stored_token = _store_caddy_token(caddy_token)
     if agentic_workflow_enabled is None:
         agentic_workflow_enabled = role == "admin"
     with _connect() as conn:
         conn.execute(
             "INSERT INTO users (id, username, password_hash, role, created_at, caddy_token, "
             "agentic_workflow_enabled) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (user_id, username, password_hash, role, created_at, caddy_token,
+            (user_id, username, password_hash, role, created_at, stored_token,
              agentic_workflow_enabled),
         )
     return {
@@ -215,6 +244,7 @@ def create_first_admin(username: str, password: str) -> dict | None:
     user_id = new_id()
     created_at = time.time()
     caddy_token = _new_caddy_token()
+    stored_token = _store_caddy_token(caddy_token)
     with _connect() as conn:
         # Serialize simultaneous first visits so only one browser can claim setup.
         conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (74192610, 2))
@@ -223,7 +253,7 @@ def create_first_admin(username: str, password: str) -> dict | None:
         conn.execute(
             "INSERT INTO users (id, username, password_hash, role, created_at, caddy_token, "
             "agentic_workflow_enabled) VALUES (%s, %s, %s, 'admin', %s, %s, TRUE)",
-            (user_id, username, password_hash, created_at, caddy_token),
+            (user_id, username, password_hash, created_at, stored_token),
         )
     return {
         "id": user_id, "username": username, "role": "admin", "created_at": created_at,
@@ -268,7 +298,7 @@ def set_password(user_id: str, new_password: str) -> None:
 def get_caddy_token(user_id: str) -> str | None:
     with _connect() as conn:
         row = conn.execute("SELECT caddy_token FROM users WHERE id = %s", (user_id,)).fetchone()
-        return row["caddy_token"] if row else None
+        return _read_caddy_token(row["caddy_token"]) if row else None
 
 
 def regenerate_caddy_token(user_id: str) -> str | None:
@@ -280,7 +310,7 @@ def regenerate_caddy_token(user_id: str) -> str | None:
         return None
     token = _new_caddy_token()
     with _connect() as conn:
-        conn.execute("UPDATE users SET caddy_token = %s WHERE id = %s", (token, user_id))
+        conn.execute("UPDATE users SET caddy_token = %s WHERE id = %s", (_store_caddy_token(token), user_id))
     return token
 
 
